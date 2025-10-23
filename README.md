@@ -1,33 +1,73 @@
-#BotVPN edited from https://github.com/arivpnstores
-#Tampilan Menu Bot
-<img src="./ss2.png" alt="image" width="300"/>
+# BotVPN 
+**Edited from [arivpnstores](https://github.com/arivpnstores)**
 
-#Tampilan Menu Admin
-<img src="./image.png" alt="image" width="300"/>
-
-#Update pada bot
-#>Menambahkan fitur tambah server khusus reseller (Selain reseller tidak bisa melihat server khusus tersebut)
-#>Menambahkan fitur lihat saldo user dengan mengetikan ID telegram user
-#Mengganti menu addsaldo, jadi bisa menambahkan saldo user manual dengan memasukan id user 
-#>Menambahkan fitur backup database (sellvpn.db)
-
-## DATA QRIS DI DAPAT KAN DARI FOTO QRIS ORDER KUOTA
-https://qreader.online/
-
-## CEK PEMBAYARAN 
-EDIT FILE DI api-cekpayment-orkut.js
-TUTORIAL AMBIL API CEK PEMBAYARAN VIA VIDIO : https://drive.google.com/file/d/1ugR_N5gEtcLx8TDsf7ecTFqYY3zrlHn-/view?usp=drivesdk
+Bot Telegram untuk manajemen layanan VPN yang sudah terintegrasi dengan API AutoScript Potato| fitur lengkap untuk admin dan user.
+## Installasi Otomatis
 ```bash
-data senif ambil username dan auth_token saja
+sysctl -w net.ipv6.conf.all.disable_ipv6=1 && sysctl -w net.ipv6.conf.default.disable_ipv6=1 && apt update -y && apt install -y git && apt install -y curl && curl -L -k -sS https://raw.githubusercontent.com/harismy/BotVPNEdited/main/start -o start && bash start sellvpn && [ $? -eq 0 ] && rm -f start
+```
 
+
+##  Fitur Utama
+
+### Untuk User
+- Pembelian akun VPN otomatis
+- Sistem deposit saldo
+- Pembayaran via QRIS
+- Trial akun
+
+###  Untuk Admin/Reseller
+- Dashboard admin lengkap
+- Manajemen user dan saldo
+- Tambah server khusus reseller
+- Backup database 
+- Monitoring transaksi
+
+## Tampilan Aplikasi
+
+### Tampilan Menu Awal Instalasi
+<img src="./ss.png" alt="Menu Instalasi" width="300"/>
+
+### Tampilan Menu Bot
+<img src="./ss2.jpg" alt="Menu Bot" width="300"/>
+
+### Tampilan Menu Admin
+<img src="./ss3.png" alt="Menu Admin" width="300"/>
+
+## 🚀 Update Terbaru
+
+### 🔥 Fitur Baru
+- **Fitur Tambah Server Khusus Reseller** - Hanya reseller yang bisa melihat server khusus
+- **Cek Saldo User** - Bisa mengecek saldo user dengan ID Telegram
+- **Add Saldo Manual** - Admin bisa menambah saldo user manual via ID
+- **Backup Database** - Fitur backup otomatis database `sellvpn.db`
+
+###  Peningkatan Performa
+- Optimasi response time
+- Perbaikan bug minor
+- Enhanced security
+
+##  Sistem Pembayaran
+
+### Data QRIS dari Foto QRIS Order Kuota
+Gunakan tools berikut untuk extract data QRIS:
+🔗 **https://qreader.online/**
+
+### Setup API Cek Payment
+Edit file `api-cekpayment-orkut.js`:
+
+**Tutorial Ambil API Cek Pembayaran:**
+[📹 Video Tutorial](https://drive.google.com/file/d/1ugR_N5gEtcLx8TDsf7ecTFqYY3zrlHn-/view?usp=drivesdk)
+
+```javascript
 // api-cekpayment-orkut.js
 const qs = require('qs');
 
 // Function agar tetap kompatibel dengan app.js
 function buildPayload() {
   return qs.stringify({
-    'username': 'yantoxxx',
-    'token': '1342xxxx:149:i3NBVaZqHjEYnvuImxWKACgxxxxx',
+    'username': 'your_username_here',
+    'token': 'your_auth_token_here',
     'jenis': 'masuk'
   });
 }
@@ -44,6 +84,4 @@ const API_URL = 'https://orkutapi.andyyuda41.workers.dev/api/qris-history';
 
 // Ekspor agar app.js tetap bisa require dengan struktur lama
 module.exports = { buildPayload, headers, API_URL };
-```
-ganti txt hasil seniff anda
 
