@@ -49,7 +49,7 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 && sysctl -w net.ipv6.conf.default.di
 - Perbaikan bug minor
 - Enhanced security
 
-##  Sistem Pembayaran
+##  Sistem Pembayaran untuk (Top Up saldo otomatis)
 
 ### Data QRIS dari Foto QRIS Order Kuota
 Gunakan tools berikut untuk extract data QRIS:
@@ -86,5 +86,6 @@ const API_URL = 'https://orkutapi.andyyuda41.workers.dev/api/qris-history';
 
 // Ekspor agar app.js tetap bisa require dengan struktur lama
 module.exports = { buildPayload, headers, API_URL };
+
 
 
