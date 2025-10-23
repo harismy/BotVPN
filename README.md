@@ -32,7 +32,7 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 && sysctl -w net.ipv6.conf.default.di
 <img src="./ss2.jpg" alt="Menu Bot" width="300"/>
 
 ### Tampilan Menu Admin
-<img src="./ss3.png" alt="Menu Admin" width="300"/>
+<img src="./image.png" alt="Menu Admin" width="300"/>
 
 ## 🚀 Update Terbaru
 
@@ -41,6 +41,8 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 && sysctl -w net.ipv6.conf.default.di
 - **Cek Saldo User** - Bisa mengecek saldo user dengan ID Telegram
 - **Add Saldo Manual** - Admin bisa menambah saldo user manual via ID
 - **Backup Database** - Fitur backup otomatis database `sellvpn.db`
+- **Top Up saldo manual** - Fitur baru top up saldo manual via Qris
+- **Upload Foto Qris** - Fitur upload foto qris untuk menambahkan foto qris ke menu Top Up saldo manual
 
 ###  Peningkatan Performa
 - Optimasi response time
@@ -84,4 +86,5 @@ const API_URL = 'https://orkutapi.andyyuda41.workers.dev/api/qris-history';
 
 // Ekspor agar app.js tetap bisa require dengan struktur lama
 module.exports = { buildPayload, headers, API_URL };
+
 
