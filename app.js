@@ -458,7 +458,7 @@ const messageText = `
    ᯓ★ Bot VPN Premium 
    ᯓ★ Layanan Bot Otomatis
    ᯓ★ Server aman dan terpercaya !
-   <b>『••EDITED BOT BY 1FORCR• •』</b></i>
+     <b>『••EDITED BOT BY 1FORCR• •』</b></i>
 
 <code>╭────────────────────╮</code>
 <code>👤 USER INFO</code>
