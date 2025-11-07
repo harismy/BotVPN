@@ -22,7 +22,7 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 && sysctl -w net.ipv6.conf.default.di
 - Dashboard admin lengkap
 - Manajemen user dan saldo
 - Tambah server khusus reseller
-- Backup database 
+- Backup database manual
 - Monitoring transaksi
 
 ## Tampilan Aplikasi
@@ -42,7 +42,7 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 && sysctl -w net.ipv6.conf.default.di
 - **Fitur Tambah Server Khusus Reseller** - Hanya reseller yang bisa melihat server khusus
 - **Cek Saldo User** - Bisa mengecek saldo user dengan ID Telegram
 - **Add Saldo Manual** - Admin bisa menambah saldo user manual via ID
-- **Backup Database** - Fitur backup otomatis database `sellvpn.db`
+- **Backup Database** - Fitur backup manual database `sellvpn.db`
 - **Top Up saldo manual** - Fitur baru top up saldo manual via Qris
 - **Upload Foto Qris** - Fitur upload foto qris untuk menambahkan foto qris ke menu Top Up saldo manual
 
@@ -88,6 +88,7 @@ const API_URL = 'https://orkutapi.andyyuda41.workers.dev/api/qris-history';
 
 // Ekspor agar app.js tetap bisa require dengan struktur lama
 module.exports = { buildPayload, headers, API_URL };
+
 
 
 
