@@ -3,7 +3,7 @@
 
 Bot Telegram untuk manajemen layanan VPN yang sudah terintegrasi dengan API AutoScript Potato| fitur lengkap untuk admin dan user.
 ## Installasi Otomatis
-~Gunakan Versi Ubuntu 24 / Debian 12
+~Rekomendasi Versi Ubuntu 24 / Debian 12
 ```bash
 sysctl -w net.ipv6.conf.all.disable_ipv6=1 && sysctl -w net.ipv6.conf.default.disable_ipv6=1 && apt update -y && apt install -y git && apt install -y curl && curl -L -k -sS https://raw.githubusercontent.com/harismy/BotVPN/main/start -o start && bash start sellvpn && [ $? -eq 0 ] && rm -f start
 ```
@@ -90,6 +90,7 @@ const API_URL = 'https://orkutapi.andyyuda41.workers.dev/api/qris-history';
 
 // Ekspor agar app.js tetap bisa require dengan struktur lama
 module.exports = { buildPayload, headers, API_URL };
+
 
 
 
