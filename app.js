@@ -455,10 +455,9 @@ const messageText = `
 <code>╰────────────────────╯</code>
 
 <i>🌐 Koneksi cepat, aman, dan stabil.
-   ᯓ★ Bot VPN Premium 
-   ᯓ★ Layanan Bot Otomatis
-   ᯓ★ Server aman dan terpercaya !
-</i>
+   ☾ Bot VPN Premium ☽
+   ☾ Layanan Bot Otomatis ☽
+   ☾ Server aman dan terpercaya ☽</i>
 
 <code>╭────────────────────╮</code>
 <code>👤 USER INFO</code>
@@ -467,11 +466,13 @@ const messageText = `
 • Saldo  : <code>Rp ${saldo}</code>  
 • Status : <code>${statusReseller}</code>
 <code>╰────────────────────╯</code>
+
 <code>📊 STATISTIK HARI INI</code>
 • Hari Ini   : <b>${userToday}</b> akun  
 • Minggu Ini : <b>${userWeek}</b> akun  
 • Bulan Ini  : <b>${userMonth}</b> akun  
 <code>╰────────────────────╯</code>
+
 <code>🌍 STATISTIK KESELURUHAN</code>
 • Hari Ini   : <b>${globalToday}</b> akun  
 • Minggu Ini : <b>${globalWeek}</b> akun  
@@ -482,14 +483,14 @@ const messageText = `
 🏠 /start       → Menu Utama  
 🔑 /admin       → Menu Admin  
 🛡️ /helpadmin  → Panel Admin  
-<b>『••Edited by 1FORCR••』</b>
 
 <code>╭────────────────────╮</code>
 👥 <b>Users:</b> ${jumlahPengguna}  
 ⏱️ <b>Latency:</b> ${latency} ms  
+👦 <b>Edited by 1FORCR</b>
 <code>╰────────────────────╯</code>
 `;
-
+  
   const keyboard = [
     [
       { text: '➕ Buat Akun', callback_data: 'service_create' },
