@@ -20,20 +20,15 @@ loading_spinner() {
     local spin='|/-\'
     local i=0
 
-    # tampilkan pesan awal
     echo -ne "${cyan}⏳ ${message}... ${neutral}"
 
-    # loop spinner
-    while [ "$STOP_SPINNER" != "1" ]; do
+    while [ "$(cat /tmp/spinner_stop)" != "1" ]; do
         printf "\b${spin:i++%${#spin}:1}"
         sleep 0.1
     done
 
-    # bersihkan spinner
     printf "\b"
-    STOP_SPINNER=0
 }
-
 
 print_rainbow_center() {
     local text="$1"
@@ -66,16 +61,19 @@ input_field() {
         read value
     done
 
-    STOP_SPINNER=0
+    echo 0 >/tmp/spinner_stop   # reset sinyal stop
+
     loading_spinner "Memproses" &
     SPIN_PID=$!
 
     sleep 1
-    STOP_SPINNER=1
+
+    echo 1 >/tmp/spinner_stop   # hentikan spinner
     wait $SPIN_PID 2>/dev/null
 
     eval "$varname='$value'"
 }
+
 
 show_header() {
     clear
