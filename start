@@ -67,9 +67,12 @@ input_field() {
     done
 
     STOP_SPINNER=0
-    loading_spinner "Memproses"
+    loading_spinner "Memproses" &
+    SPIN_PID=$!
+
     sleep 1
     STOP_SPINNER=1
+    wait $SPIN_PID 2>/dev/null
 
     eval "$varname='$value'"
 }
