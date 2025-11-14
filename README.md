@@ -20,13 +20,17 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 && sysctl -w net.ipv6.conf.default.di
 - Pembayaran via QRIS
 - Trial akun
 
-###  Untuk Admin/Reseller
+###  Untuk Admin
 - Dashboard admin lengkap
 - Manajemen user dan saldo
 - Tambah server khusus reseller
 - Backup database manual
 - Monitoring transaksi
 - Lihat sisa saldo user byId telegram
+
+### Untuk Reseller
+- Akses server khusus reseller harga berbeda dengan server untuk buyer
+  
 ## Tampilan Aplikasi
 
 ### Tampilan Menu Awal Instalasi
@@ -91,6 +95,7 @@ const API_URL = 'https://orkutapi.andyyuda41.workers.dev/api/qris-history';
 
 // Ekspor agar app.js tetap bisa require dengan struktur lama
 module.exports = { buildPayload, headers, API_URL };
+
 
 
 
