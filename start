@@ -16,14 +16,24 @@ cyan="\e[38;5;87m"
 bold_white="\e[1;37m"
 
 loading_spinner() {
-    local msg="$1"
+    local message="$1"
     local spin='|/-\'
-    for ((i=0; i<18; i++)); do
-        printf "\r${cyan}⏳ ${msg} ${spin:i%4:1}${neutral}"
-        sleep 0.08
+    local i=0
+
+    # tampilkan pesan awal
+    echo -ne "${cyan}⏳ ${message}... ${neutral}"
+
+    # loop spinner
+    while [ "$STOP_SPINNER" != "1" ]; do
+        printf "\b${spin:i++%${#spin}:1}"
+        sleep 0.1
     done
-    printf "\r%*s\r" 60 ""
+
+    # bersihkan spinner
+    printf "\b"
+    STOP_SPINNER=0
 }
+
 
 print_rainbow_center() {
     local text="$1"
@@ -44,16 +54,23 @@ input_field() {
     local prompt="$1"
     local varname="$2"
     local value=""
+
     echo ""
     echo -e "${purple}[ ${neutral}${bold_white}${prompt}${neutral}${purple} ]${neutral}"
     echo -ne "${cyan}> ${neutral}"
     read value
+
     while [ -z "$value" ]; do
         echo -e "${red}⚠ Input tidak boleh kosong!${neutral}"
         echo -ne "${cyan}> ${neutral}"
         read value
     done
+
+    STOP_SPINNER=0
     loading_spinner "Memproses"
+    sleep 1
+    STOP_SPINNER=1
+
     eval "$varname='$value'"
 }
 
