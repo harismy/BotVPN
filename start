@@ -15,7 +15,6 @@ purple="\e[38;5;135m"
 cyan="\e[38;5;87m"
 bold_white="\e[1;37m"
 
-# Efek ketik (tidak digunakan untuk teks berwarna)
 type_effect() {
     local text="$1"
     local delay=0.002
@@ -27,7 +26,7 @@ type_effect() {
 
 loading_spinner() {
     local msg="$1"
-    local spin='|/-\''
+    local spin='|/-\\'
     for ((i=0; i<18; i++)); do
         printf "\r${cyan}⏳ ${msg} ${spin:i%4:1}${neutral}"
         sleep 0.08
@@ -54,18 +53,15 @@ input_field() {
     local prompt="$1"
     local varname="$2"
     local value=""
-
     echo ""
     echo -e "${purple}[ ${neutral}${bold_white}${prompt}${neutral}${purple} ]${neutral}"
     echo -ne "${cyan}> ${neutral}"
     read value
-
     while [ -z "$value" ]; do
         echo -e "${red}⚠ Input tidak boleh kosong!${neutral}"
         echo -ne "${cyan}> ${neutral}"
         read value
     done
-
     loading_spinner "Memproses"
     eval "$varname='$value'"
 }
@@ -87,8 +83,7 @@ cek_status() {
 setup_bot() {
     timedatectl set-timezone Asia/Jakarta >/dev/null 2>&1
     if ! dpkg -s nodejs >/dev/null 2>&1; then
-        curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-        apt install -y nodejs
+        curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt install -y nodejs
     fi
     rm -rf /root/BotVPN
     git clone https://github.com/harismy/BotVPN.git /root/BotVPN
@@ -99,13 +94,11 @@ setup_bot() {
 
 server_app() {
     show_header
-
     input_field "Masukkan Token Bot" token
     input_field "Masukkan Admin ID" adminid
     input_field "Masukkan Nama Store" namastore
     input_field "Masukkan Data QRIS" dataqris
     input_field "Masukkan ID Group Notif" groupid
-
     merchantid="NONE"
     apikey="NONE"
 
