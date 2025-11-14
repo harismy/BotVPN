@@ -25,7 +25,7 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 && sysctl -w net.ipv6.conf.default.di
 - Tambah server khusus reseller
 - Backup database manual
 - Monitoring transaksi
-
+- Lihat sisa saldo user byId telegram
 ## Tampilan Aplikasi
 
 ### Tampilan Menu Awal Instalasi
@@ -46,6 +46,7 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 && sysctl -w net.ipv6.conf.default.di
 - **Backup Database** - Fitur backup manual database `sellvpn.db`
 - **Top Up saldo manual** - Fitur baru top up saldo manual via Qris
 - **Upload Foto Qris** - Fitur upload foto qris untuk menambahkan foto qris ke menu Top Up saldo manual
+- **Lihat saldo User** -Lihat saldo user menggunakan id telegram user, bisa lihat sisa saldo user tinggal berapa
 
 ###  Peningkatan Performa
 - Optimasi response time
@@ -89,6 +90,7 @@ const API_URL = 'https://orkutapi.andyyuda41.workers.dev/api/qris-history';
 
 // Ekspor agar app.js tetap bisa require dengan struktur lama
 module.exports = { buildPayload, headers, API_URL };
+
 
 
 
