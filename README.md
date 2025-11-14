@@ -1,5 +1,6 @@
 # BotVPN 1FORCR
 **Edited from [arivpnstores](https://github.com/arivpnstores)**
+**Based BOT: Fightertunnel**
 
 Bot Telegram untuk manajemen layanan VPN yang sudah terintegrasi dengan API AutoScript Potato| fitur lengkap untuk admin dan user.
 ## Installasi Otomatis
@@ -90,6 +91,7 @@ const API_URL = 'https://orkutapi.andyyuda41.workers.dev/api/qris-history';
 
 // Ekspor agar app.js tetap bisa require dengan struktur lama
 module.exports = { buildPayload, headers, API_URL };
+
 
 
 
