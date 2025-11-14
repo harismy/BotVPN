@@ -1,4 +1,5 @@
 #!/bin/bash
+export TERM=xterm-256color
 dpkg-statoverride --remove /var/spool/exim4 2>/dev/null
 dpkg --configure -a
 apt -f install -y
