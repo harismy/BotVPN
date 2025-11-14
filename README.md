@@ -29,10 +29,10 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 && sysctl -w net.ipv6.conf.default.di
 ## Tampilan Aplikasi
 
 ### Tampilan Menu Awal Instalasi
-<img src="./ss.png" alt="Menu Instalasi" width="300"/>
+<img src="./tampilaninstalasi.png" alt="Menu Instalasi" width="300"/>
 
 ### Tampilan Menu Bot
-<img src="./ss2.jpg" alt="Menu Bot" width="300"/>
+<img src="./tampilanmenu.png" alt="Menu Bot" width="300"/>
 
 ### Tampilan Menu Admin
 <img src="./image.png" alt="Menu Admin" width="300"/>
@@ -90,6 +90,7 @@ const API_URL = 'https://orkutapi.andyyuda41.workers.dev/api/qris-history';
 
 // Ekspor agar app.js tetap bisa require dengan struktur lama
 module.exports = { buildPayload, headers, API_URL };
+
 
 
 
