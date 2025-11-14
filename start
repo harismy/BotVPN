@@ -5,7 +5,6 @@ apt -f install -y
 mv /var/lib/dpkg/statoverride /var/lib/dpkg/statoverride.old 2>/dev/null
 touch /var/lib/dpkg/statoverride
 
-# Warna ANSI
 neutral="\e[0m"
 red="\e[38;5;196m"
 yellow="\e[38;5;226m"
@@ -15,10 +14,28 @@ purple="\e[38;5;135m"
 cyan="\e[38;5;87m"
 bold_white="\e[1;37m"
 
-# Fungsi gradasi ungu → aqua (tengah)
+type_effect() {
+    local text="$1"
+    local delay=0.002
+    for ((i=0; i<${#text}; i++)); do
+        printf "%s" "${text:$i:1}"
+        sleep $delay
+    done
+}
+
+loading_spinner() {
+    local msg="$1"
+    local spin='|/-\'
+    for ((i=0; i<18; i++)); do
+        printf "\r${cyan}⏳ ${msg} ${spin:i%4:1}${neutral}"
+        sleep 0.08
+    done
+    echo ""
+}
+
 print_rainbow_center() {
     local text="$1"
-    local width=$(tput cols)
+    local width=70
     local len=${#text}
     local pad=$(( (width - len) / 2 ))
     printf "%${pad}s" ""
@@ -31,70 +48,61 @@ print_rainbow_center() {
     echo -e "${neutral}"
 }
 
+input_field() {
+    local prompt="$1"
+    local varname="$2"
+    local value=""
+    echo ""
+    type_effect "${purple}[ ${neutral}${bold_white}${prompt}${neutral}${purple} ]${neutral}"
+    echo -ne "${cyan}> ${neutral}"
+    read value
+    while [ -z "$value" ]; do
+        echo -e "${red}⚠ Input tidak boleh kosong!${neutral}"
+        echo -ne "${cyan}> ${neutral}"
+        read value
+    done
+    loading_spinner "Memproses"
+    eval "$varname='$value'"
+}
+
+show_header() {
+    clear
+    echo -e "${purple}====================================================================${neutral}"
+    print_rainbow_center "⚡ INSTALASI BOT TELEGRAM • SELLVPN ⚡"
+    echo -e "${purple}====================================================================${neutral}"
+    echo ""
+    type_effect "${cyan}Menyiapkan panel input...${neutral}"
+    echo ""
+}
+
 cek_status() {
     pm2 status | grep -q sellvpn && echo "aktif" || echo "nonaktif"
 }
 
 setup_bot() {
-    timedatectl set-timezone Asia/Jakarta >/dev/null 2>&1 || echo -e "${red}Gagal set timezone.${neutral}"
-
+    timedatectl set-timezone Asia/Jakarta >/dev/null 2>&1
     if ! dpkg -s nodejs >/dev/null 2>&1; then
-        curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt install -y nodejs
+        curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+        apt install -y nodejs
     fi
-
     rm -rf /root/BotVPN
     git clone https://github.com/harismy/BotVPN.git /root/BotVPN
-
     npm install -g npm@latest pm2
     npm install --prefix /root/BotVPN sqlite3 express crypto telegraf axios dotenv
     chmod +x /root/BotVPN/*
 }
 
-# Fungsi input interaktif dengan efek warna
-input_field() {
-    local prompt="$1"
-    local varname="$2"
-    local value=""
-    echo -ne "${cyan}➤${neutral} ${bold_white}${prompt}${neutral}: "
-    read value
-    while [ -z "$value" ]; do
-        echo -e "   ${red}⚠ Tidak boleh kosong!${neutral}"
-        echo -ne "${cyan}➤${neutral} ${bold_white}${prompt}${neutral}: "
-        read value
-    done
-    eval "$varname='$value'"
-}
-
 server_app() {
-    clear
-    width=$(tput cols)
-    echo ""
-    echo -e "${purple}╔══════════════════════════════════════════════════════════════════════╗${neutral}"
-    print_rainbow_center "BOT SELLVPN TELEGRAM SERVER"
-    echo -e "${purple}╚══════════════════════════════════════════════════════════════════════╝${neutral}"
-    echo ""
-    echo -e "${cyan}•${neutral} server create user"
-    echo -e "${cyan}•${neutral} server renew user"
-    echo -e "${cyan}•${neutral} server lock user"
-    echo -e "${cyan}•${neutral} server unlock user"
-    echo -e "${cyan}•${neutral} server delete user"
-    echo -e "${cyan}•${neutral} server addsaldo user"
-    echo -e "${cyan}•${neutral} server ceksaldo user"
-    echo -e "${purple}──────────────────────────────────────────────────────────────────────${neutral}"
-    echo ""
-
-    # Input interaktif
+    show_header
     input_field "Masukkan Token Bot" token
     input_field "Masukkan Admin ID" adminid
     input_field "Masukkan Nama Store" namastore
     input_field "Masukkan Data QRIS" dataqris
     input_field "Masukkan ID Group Notif" groupid
-
     merchantid="NONE"
     apikey="NONE"
 
-    # Simpan ke konfigurasi
-    cat >/root/BotVPN/.vars.json <<EOF
+cat >/root/BotVPN/.vars.json <<EOF
 {
   "BOT_TOKEN": "$token",
   "USER_ID": "$adminid",
@@ -113,8 +121,7 @@ EOF
     pm2 save
     cd ~
 
-    # Cron job backup otomatis
-    cat >/etc/cron.d/backup_sellvpn <<'EOF'
+cat >/etc/cron.d/backup_sellvpn <<'EOF'
 SHELL=/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 0 0 * * * root /usr/bin/backup_sellvpn
@@ -124,13 +131,13 @@ EOF
     chmod +x /usr/bin/sellvpn 2>/dev/null
     service cron restart >/dev/null 2>&1
 
+    echo -e "${purple}====================================================================${neutral}"
+    print_rainbow_center "🎉 BOT BERHASIL DIINSTAL 🎉"
+    echo -e "${purple}====================================================================${neutral}"
     echo ""
-    echo -e "${purple}──────────────────────────────────────────────────────────────────────${neutral}"
-    print_rainbow_center "🎉 BOT TELAH BERHASIL DIINSTAL 🎉"
+    echo -e " Status Server : ${green}$(cek_status)${neutral}"
+    echo -e " Jalankan di Telegram: ${bold_white}/start${neutral}"
     echo ""
-    echo -e "   Status Server : ${green}$(cek_status)${neutral}"
-    echo -e "   Jalankan di Telegram: ${bold_white}/start${neutral} atau ${bold_white}menu${neutral}"
-    echo -e "${purple}──────────────────────────────────────────────────────────────────────${neutral}"
 }
 
 if [[ $1 == "sellvpn" ]]; then
