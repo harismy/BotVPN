@@ -15,23 +15,14 @@ purple="\e[38;5;135m"
 cyan="\e[38;5;87m"
 bold_white="\e[1;37m"
 
-type_effect() {
-    local text="$1"
-    local delay=0.002
-    for ((i=0; i<${#text}; i++)); do
-        printf "%s" "${text:$i:1}"
-        sleep $delay
-    done
-}
-
 loading_spinner() {
     local msg="$1"
-    local spin='|/-\\'
+    local spin='|/-\'
     for ((i=0; i<18; i++)); do
         printf "\r${cyan}⏳ ${msg} ${spin:i%4:1}${neutral}"
         sleep 0.08
     done
-    echo ""
+    printf "\r%*s\r" 60 ""
 }
 
 print_rainbow_center() {
@@ -71,6 +62,15 @@ show_header() {
     echo -e "${purple}====================================================================${neutral}"
     print_rainbow_center "⚡ INSTALASI BOT TELEGRAM • SELLVPN ⚡"
     echo -e "${purple}====================================================================${neutral}"
+    echo -e "${cyan}${bold}Fitur penting yang tersedia:${neutral}"
+    echo -e "${cyan}•${neutral} create user"
+    echo -e "${cyan}•${neutral} renew user"
+    echo -e "${cyan}•${neutral} lock user"
+    echo -e "${cyan}•${neutral} unlock user"
+    echo -e "${cyan}•${neutral} delete user"
+    echo -e "${cyan}•${neutral} addsaldo user"
+    echo -e "${cyan}•${neutral} ceksaldo user"
+    echo -e "${cyan}•${neutral} tambah server khusus reseller"
     echo ""
     echo -e "${cyan}Menyiapkan panel input...${neutral}"
     echo ""
@@ -83,7 +83,8 @@ cek_status() {
 setup_bot() {
     timedatectl set-timezone Asia/Jakarta >/dev/null 2>&1
     if ! dpkg -s nodejs >/dev/null 2>&1; then
-        curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt install -y nodejs
+        curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+        apt install -y nodejs
     fi
     rm -rf /root/BotVPN
     git clone https://github.com/harismy/BotVPN.git /root/BotVPN
@@ -99,6 +100,7 @@ server_app() {
     input_field "Masukkan Nama Store" namastore
     input_field "Masukkan Data QRIS" dataqris
     input_field "Masukkan ID Group Notif" groupid
+
     merchantid="NONE"
     apikey="NONE"
 
@@ -119,18 +121,8 @@ EOF
     pm2 start ecosystem.config.js
     pm2 startup
     pm2 save
-    cd ~
 
-cat >/etc/cron.d/backup_sellvpn <<'EOF'
-SHELL=/bin/sh
-PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
-0 0 * * * root /usr/bin/backup_sellvpn
-EOF
-
-    chmod +x /usr/bin/backup_sellvpn 2>/dev/null
-    chmod +x /usr/bin/sellvpn 2>/dev/null
-    service cron restart >/dev/null 2>&1
-
+    echo ""
     echo -e "${purple}====================================================================${neutral}"
     print_rainbow_center "🎉 BOT BERHASIL DIINSTAL 🎉"
     echo -e "${purple}====================================================================${neutral}"
