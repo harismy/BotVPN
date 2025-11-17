@@ -4,9 +4,13 @@ const express = require('express');
 const { Telegraf } = require('telegraf');
 const app = express();
 const axios = require('axios');
+const fs = require('fs');
+const fsPromises = require('fs/promises');
+
 const { buildPayload, headers, API_URL } = require('./api-cekpayment-orkut');
 const { isUserReseller, addReseller, removeReseller, listResellersSync } = require('./modules/reseller');
 const winston = require('winston');
+
 const logger = winston.createLogger({
   level: 'info',
   format: winston.format.combine(
@@ -77,9 +81,54 @@ const {
   unlockshadowsocks 
 } = require('./modules/unlock');
 
-const fsPromises = require('fs/promises');
 const path = require('path');
 const trialFile = path.join(__dirname, 'trial.db');
+
+// === 💾 AUTO BACKUP DATABASE SETIAP 24 JAM ===
+try {
+  const schedule = require('node-schedule');
+  const fetch = require('node-fetch');
+  const FormData = require('form-data');
+
+  const dbPath = path.join(__dirname, 'sellvpn.db');
+  const backupDir = path.join(__dirname, 'backups');
+  if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir);
+
+  async function sendBackupToAdmin(filePath) {
+    try {
+      const form = new FormData();
+      form.append('chat_id', adminIds[0]);
+      form.append('caption', `🗄️ Backup harian database berhasil dibuat:\n${new Date().toLocaleString()}`);
+      form.append('document', fs.createReadStream(filePath));
+
+      await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, {
+        method: 'POST',
+        body: form
+      });
+      logger.info(`📦 Backup harian terkirim ke admin: ${filePath}`);
+    } catch (err) {
+      logger.error('❌ Gagal mengirim backup ke Telegram:', err);
+    }
+  }
+
+  // Jadwal backup otomatis setiap 24 jam sekali (jam 00:00)
+  schedule.scheduleJob('0 0 * * *', async () => {
+    try {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const backupFile = path.join(backupDir, `sellvpn_backup_${timestamp}.db`);
+      fs.copyFileSync(dbPath, backupFile);
+      logger.info(`✅ Backup harian dibuat: ${backupFile}`);
+
+      // Kirim file ke admin Telegram
+      await sendBackupToAdmin(backupFile);
+    } catch (err) {
+      logger.error('❌ Gagal membuat backup database:', err);
+    }
+  });
+} catch (err) {
+  console.error('❌ Modul backup otomatis gagal dimuat:', err);
+}
+
 
 // Mengecek apakah user sudah pakai trial hari ini
 async function checkTrialAccess(userId) {
@@ -131,7 +180,6 @@ async function saveTrialAccess(userId) {
   await fsPromises.writeFile(trialFile, JSON.stringify(trialData, null, 2));
 }
 
-const fs = require('fs');
 const vars = JSON.parse(fs.readFileSync('./.vars.json', 'utf8'));
 
 const BOT_TOKEN = vars.BOT_TOKEN;
@@ -450,47 +498,57 @@ const statusReseller = isReseller ? 'Reseller' : 'Bukan Reseller';
   const latency = (Math.random() * 0.1 + 0.01).toFixed(2);
 
 const messageText = `
-<code>╭────────────────────╮</code>
-<b>⚡ BOT VPN ${NAMA_STORE} ⚡</b>
-<code>╰────────────────────╯</code>
+<code>┏━━━━━━━━━━━━━━━━━━━━┓</code>
+<b>🚀 BOT VPN ${NAMA_STORE}</b>
+<code>┗━━━━━━━━━━━━━━━━━━━━┛</code>
 
-<i>🌐 Koneksi cepat, aman, dan stabil.
-   ☾ Bot VPN Premium ☽
-   ☾ Layanan Bot Otomatis ☽
-   ☾ Server aman dan terpercaya ☽</i>
+<em>⚡ Koneksi cepat, aman, dan stabil
+✨ Bot VPN Premium 
+🤖 Layanan Bot Otomatis 
+🛡️ Server aman dan terpercaya</em>
 
-<code>╭────────────────────╮</code>
-<code>👤 USER INFO</code>
-• Nama   : <b>${userName}</b>  
-• ID     : <code>${userId}</code>  
-• Saldo  : <code>Rp ${saldo}</code>  
-• Status : <code>${statusReseller}</code>
-<code>╰────────────────────╯</code>
+<code>┏━━━━━━━━━━━━━━━━━━━━┓</code>
+<b>👤 INFORMASI PENGGUNA</b>
+<code>┣━━━━━━━━━━━━━━━━━━━━┫</code>
+• 👤 <b>Nama</b>    : ${userName}
+• 🆔 <b>ID</b>      : <code>${userId}</code>
+• 💰 <b>Saldo</b>   : <code>Rp ${saldo}</code>
+• 🏷️ <b>Status</b>  : ${statusReseller}
+<code>┗━━━━━━━━━━━━━━━━━━━━┛</code>
 
-<code>📊 STATISTIK HARI INI</code>
-• Hari Ini   : <b>${userToday}</b> akun  
-• Minggu Ini : <b>${userWeek}</b> akun  
-• Bulan Ini  : <b>${userMonth}</b> akun  
-<code>╰────────────────────╯</code>
+<code>┏━━━━━━━━━━━━━━━━━━━━┓</code>
+<b>📊 STATISTIK ANDA HARI INI</b>
+<code>┣━━━━━━━━━━━━━━━━━━━━┫</code>
+• 📅 <b>Hari Ini</b>   : ${userToday} akun
+• 📆 <b>Minggu Ini</b> : ${userWeek} akun  
+• 🗓️ <b>Bulan Ini</b>  : ${userMonth} akun
+<code>┗━━━━━━━━━━━━━━━━━━━━┛</code>
 
-<code>🌍 STATISTIK KESELURUHAN</code>
-• Hari Ini   : <b>${globalToday}</b> akun  
-• Minggu Ini : <b>${globalWeek}</b> akun  
-• Bulan Ini  : <b>${globalMonth}</b> akun  
-<code>╰────────────────────╯</code>
+<code>┏━━━━━━━━━━━━━━━━━━━━┓</code>
+<b>🌍 STATISTIK GLOBAL</b>
+<code>┣━━━━━━━━━━━━━━━━━━━━┫</code>
+• 📅 <b>Hari Ini</b>   : ${globalToday} akun
+• 📆 <b>Minggu Ini</b> : ${globalWeek} akun
+• 🗓️ <b>Bulan Ini</b>  : ${globalMonth} akun
+<code>┗━━━━━━━━━━━━━━━━━━━━┛</code>
 
-<code>⚙️ COMMAND PANEL</code>
-🏠 /start       → Menu Utama  
-🔑 /admin       → Menu Admin  
-🛡️ /helpadmin  → Panel Admin  
+<code>┏━━━━━━━━━━━━━━━━━━━━┓</code>
+<b>⚙️ PANEL PERINTAH</b>
+<code>┣━━━━━━━━━━━━━━━━━━━━┫</code>
+🏠 /start       → Menu Utama
+🔑 /admin       → Menu Admin
+🛡️ /helpadmin  → Panel Admin
+<code>┗━━━━━━━━━━━━━━━━━━━━┛</code>
 
-<code>╭────────────────────╮</code>
-👥 <b>Users:</b> ${jumlahPengguna}  
-⏱️ <b>Latency:</b> ${latency} ms  
-👦 <b>Edited by 1FORCR</b>
-<code>╰────────────────────╯</code>
+<code>┏━━━━━━━━━━━━━━━━━━━━┓</code>
+<b>📈 STATUS SISTEM</b>
+<code>┣━━━━━━━━━━━━━━━━━━━━┫</code>
+👥 <b>Users</b>    : ${jumlahPengguna}
+⏱️ <b>Latency</b>  : ${latency} ms
+👨‍💻 <b>Edited by</b> : 1FORCR
+<code>┗━━━━━━━━━━━━━━━━━━━━┛</code>
 `;
-  
+
   const keyboard = [
     [
       { text: '➕ Buat Akun', callback_data: 'service_create' },
@@ -498,7 +556,7 @@ const messageText = `
     ],
     [
       { text: '❌ Hapus Akun', callback_data: 'service_del' },
-      { text: '📶 Cek Server', callback_data: 'cek_service' }
+      { text: '📶 Cek Server', callback_data: 'cek_server' }
     ],
     [
       { text: '🗝️ Kunci Akun', callback_data: 'service_lock' },
@@ -508,15 +566,17 @@ const messageText = `
       { text: '⌛ Trial Akun', callback_data: 'service_trial' },
     ],
     [
-      { text: '🤝 Jadi Reseller harga lebih murah!!', callback_data: 'jadi_reseller' }
+      { text: '📘 Tutorial Penggunaan Bot', callback_data: 'tutorial_bot' }
     ],
     [
-      { text: '💰 TopUp Saldo Otomatis', callback_data: 'topup_saldo' }
+      { text: '🤝 Jadi Reseller harga lebih murah!!', callback_data: 'jadi_reseller' }
     ],
     [
       { text: '💰 TopUp Saldo Manual via (QRIS)', callback_data: 'topup_manual' }
     ],
-
+    [
+      { text: '💰 TopUp Saldo Otomatis(belum tersedia)', callback_data: 'topup_saldo' }
+    ],
 
   ];
 
@@ -1144,6 +1204,56 @@ bot.on('photo', async (ctx) => {
   logger.info('🖼️ QRIS image uploaded by admin');
   delete userState[adminId];
 });
+
+// 📡 CEK SERVER – LIST SERVER
+bot.action("cek_server", async (ctx) => {
+    try {
+        db.all("SELECT * FROM Server ORDER BY id ASC", [], async (err, rows) => {
+            if (err) {
+                logger.error("❌ Gagal mengambil data server:", err.message);
+                return ctx.reply("⚠️ Terjadi kesalahan saat mengambil data server.");
+            }
+
+            if (!rows || rows.length === 0) {
+                return ctx.reply("⚠️ Belum ada server yang ditambahkan.");
+            }
+
+            let message = "🌐 *DAFTAR SERVER TERSEDIA*\n\n";
+
+            rows.forEach((srv) => {
+                const domainSafe = srv.domain ? srv.domain.replace(/_/g, "\\_") : "-";
+
+                message +=
+`🔰 *Nama:* ${srv.nama_server || "-"}
+🌍 *Domain:* ${domainSafe}
+🔐 *IP Limit:* ${srv.iplimit || 0}
+──────────────────────\n`;
+            });
+
+            await ctx.reply(message, { parse_mode: "Markdown" });
+        });
+    } catch (error) {
+        logger.error("❌ Error di cek_server:", error);
+        return ctx.reply("⚠️ Terjadi kesalahan.");
+    }
+});
+
+
+// === 🎥 TUTORIAL PENGGUNAAN BOT ===
+bot.action('tutorial_bot', async (ctx) => {
+  try {
+    await ctx.reply(
+      '📘 *Panduan Penggunaan Bot*\n\n' +
+      'Tonton video tutorial lengkap cara menggunakan bot ini di YouTube:\n\n' +
+      '[👉 Klik di sini untuk menonton](https://youtu.be/gUVoAuZqyxo)',
+      { parse_mode: 'Markdown' }
+    );
+  } catch (err) {
+    logger.error('❌ Error di tombol tutorial_bot:', err.message);
+    await ctx.reply('⚠️ Terjadi kesalahan saat membuka tutorial.');
+  }
+});
+
 // === 🖼️ UPLOAD GAMBAR QRIS ===
 bot.action('upload_qris', async (ctx) => {
   const adminId = ctx.from.id;
@@ -1182,8 +1292,7 @@ bot.action('topup_manual', async (ctx) => {
       `📲 *Top Up Saldo Manual via QRIS*\n\n` +
       `💬 Silakan transfer menggunakan QRIS di atas.\n\n` +
       `Setelah transfer, kirim bukti pembayaran ke admin:\n` +
-      `🧑‍💻 @MYCAN20\n` +
-      `atau hubungi via WhatsApp: [Klik di sini](http://wa.me/6289527159281)\n\n` +
+      `hubungi via WhatsApp: [Klik di sini](http://wa.me/6289612745096)\n\n` +
       `📝 *Kirim bukti pembayaran dan sertakan format pesan seperti ini:*\n` +
       `\`\`\`\nSaya sudah top up via QRIS min dan ini ID Telegram saya ${ctx.from.id}\n\`\`\`\n\n` +
       `_Pastikan nominal sesuai dengan saldo yang ingin ditambahkan._`;
@@ -1252,11 +1361,24 @@ bot.action('jadi_reseller', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const userId = ctx.from.id;
 
-  await ctx.reply(
-    `📩 Hubungi admin ${ADMIN_USERNAME} untuk menjadi Reseller.\n\n` +
-    `Kirim pesan ke admin dengan format pesan:\n\`Mau jadi reseller  ${userId}\``,
-    { parse_mode: 'Markdown' }
-  );
+await ctx.reply(
+  `💼 *Bergabunglah Menjadi RESELLER Resmi Kami!*\n\n` +
+  `🔥 Dapatkan harga spesial 6K per akun!!, keuntungan menarik, dan akses penuh untuk membuat akun premium langsung dari bot ini!\n\n` +
+  `📩 Hubungi admin melalui [Klik di sini](http://wa.me/6289612745096) untuk mendaftar.\n\n` +
+  `📝 *Kirim pesan ke admin dengan format berikut:*\n` +
+  `\`Mau jadi reseller ${userId}\`\n\n` +
+  `🎯 *Keuntungan jadi reseller:*\n` +
+  `• Harga akun jauh lebih murah\n` +
+  `• Bisa buat akun premium kapan saja\n` +
+  `• Dapat dukungan langsung dari admin\n` +
+  `• Bonus dan promo menarik setiap bulan\n\n` +
+  `💰 *Syarat Bergabung:*\n` +
+  `> Deposit awal sebesar *Rp18.000* (langsung masuk ke saldo akun kamu)\n` +
+  `> Minimal penjualan *3 akun premium per bulan*\n\n` +
+  `✨ Jadilah bagian dari komunitas reseller kami dan nikmati penghasilan tambahan dari setiap penjualan akun VPN!`,
+  { parse_mode: 'Markdown' }
+);
+
 });
 
 ///////
@@ -1727,7 +1849,7 @@ bot.action(/(trial)_username_(vmess|vless|trojan|shadowsocks|ssh)_(\d+)/, async 
     await ctx.reply(
       `⚠️ *PERHATIAN*\n\n` +
       `Anda sedang membuat akun *TRIAL ${type.toUpperCase()}* di server *${server.nama_server || server.domain}*.\n\n` +
-      `Layanan trial hanya berlaku *1x per hari* dan akan aktif selama *3 Jam*.\n\n` +
+      `Layanan trial hanya berlaku *1x per hari* dan akan aktif selama *1 Jam*.\n\n` +
       `Kecuali User *RESSELLER VPN*.\n\n` +
       `Lanjutkan hanya jika Anda sudah yakin.`,
       { parse_mode: 'Markdown' }
@@ -2016,16 +2138,16 @@ fs.readFile(resselDbPath, 'utf8', async (err, data) => {
     state.username = text;
 
     if (!state.username) {
-      return ctx.reply('❌ *Username tidak valid. Masukkan username yang valid.*', { parse_mode: 'Markdown' });
+      return ctx.reply('❌ *Username tidak valid. Masukkan username yang valid| Masukan Ulang Username: *', { parse_mode: 'Markdown' });
     }
     if (state.username.length < 4 || state.username.length > 20) {
-      return ctx.reply('❌ *Username harus terdiri dari 4 hingga 20 karakter.*', { parse_mode: 'Markdown' });
+      return ctx.reply('❌ *Username harus terdiri dari 4 hingga 20 karakter| Masukan Ulang Username: *', { parse_mode: 'Markdown' });
     }
     if (/[A-Z]/.test(state.username)) {
-      return ctx.reply('❌ *Username tidak boleh menggunakan huruf kapital. Gunakan huruf kecil saja.*', { parse_mode: 'Markdown' });
+      return ctx.reply('❌ *Username tidak boleh menggunakan huruf kapital. Gunakan huruf kecil saja| Masukan Ulang Username: *', { parse_mode: 'Markdown' });
     }
     if (/[^a-z0-9]/.test(state.username)) {
-      return ctx.reply('❌ *Username tidak boleh mengandung karakter khusus atau spasi. Gunakan huruf kecil dan angka saja.*', { parse_mode: 'Markdown' });
+      return ctx.reply('❌ *Username tidak boleh mengandung karakter khusus atau spasi. Gunakan huruf kecil dan angka saja| Masukan Ulang Username: *', { parse_mode: 'Markdown' });
     }
     const { type, action } = state;
     if (action === 'create') {
@@ -2043,13 +2165,13 @@ fs.readFile(resselDbPath, 'utf8', async (err, data) => {
   } else if (state.step.startsWith('password_')) {
     state.password = ctx.message.text.trim();
     if (!state.password) {
-      return ctx.reply('❌ *Password tidak valid. Masukkan password yang valid.*', { parse_mode: 'Markdown' });
+      return ctx.reply('❌ *Password tidak valid. Masukkan password yang valid| Masukan Ulang Password: *', { parse_mode: 'Markdown' });
     }
     if (state.password.length < 3) {
-      return ctx.reply('❌ *Password harus terdiri dari minimal 3 karakter.*', { parse_mode: 'Markdown' });
+      return ctx.reply('❌ *Password harus terdiri dari minimal 3 karakter| Masukan Ulang Password: *', { parse_mode: 'Markdown' });
     }
     if (/[^a-zA-Z0-9]/.test(state.password)) {
-      return ctx.reply('❌ *Password tidak boleh mengandung karakter khusus atau spasi.*', { parse_mode: 'Markdown' });
+      return ctx.reply('❌ *Password tidak boleh mengandung karakter khusus atau spasi| Masukan Ulang Password: *', { parse_mode: 'Markdown' });
     }
     state.step = `exp_${state.action}_${state.type}`;
     await ctx.reply('⏳ *Masukkan masa aktif (hari):*', { parse_mode: 'Markdown' });
@@ -3941,11 +4063,22 @@ async function recordAccountTransaction(userId, type) {
 
 
 app.listen(port, () => {
-  bot.launch().then(() => {
-      logger.info('Bot telah dimulai');
-  }).catch((error) => {
-      logger.error('Error saat memulai bot:', error);
-  });
-  logger.info(`Server berjalan di port ${port}`);
+  bot.launch()
+    .then(async () => {
+      logger.info('✅ Bot telah dimulai');
+
+      // === 🧭 DAFTAR MENU COMMAND TELEGRAM ===
+      await bot.telegram.setMyCommands([
+        { command: 'start', description: 'Mulai bot dan tampilkan menu utama' },
+        { command: 'admin', description: 'Menu admin (khusus admin)' }
+      ]);
+
+      logger.info('✅ Command menu berhasil diset.');
+    })
+    .catch((error) => {
+      logger.error('❌ Error saat memulai bot:', error);
+    });
+
+  logger.info(`🚀 Server berjalan di port ${port}`);
 });
 
