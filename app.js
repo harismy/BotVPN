@@ -566,9 +566,6 @@ const messageText = `
       { text: '⌛ Trial Akun', callback_data: 'service_trial' },
     ],
     [
-      { text: '📘 Tutorial Penggunaan Bot', callback_data: 'tutorial_bot' }
-    ],
-    [
       { text: '🤝 Jadi Reseller harga lebih murah!!', callback_data: 'jadi_reseller' }
     ],
     [
