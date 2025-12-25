@@ -2050,7 +2050,8 @@ bot.action(/(lock)_username_(vmess|vless|trojan|shadowsocks|ssh)_(.+)/, async (c
 
 bot.on('text', async (ctx) => {
   const state = userState[ctx.chat.id];
-
+  if (!state || !state.step) return;
+  
   if (state.step === 'add_server_domain') {
   state.data.domain = ctx.message.text.trim();
   state.step = 'add_server_auth';
