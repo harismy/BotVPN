@@ -29,7 +29,7 @@ async function trialssh(username, password, exp, iplimit, serverId) {
 -H "Authorization: ${AUTH_TOKEN}" \
 -H "Content-Type: application/json" \
 -H "Accept: application/json" \
--d '{"timelimit":"3h"}'`;
+-d '{"timelimit":"1h"}'`;
 
       exec(curlCommand, (_, stdout) => {
         let d;
@@ -49,55 +49,52 @@ async function trialssh(username, password, exp, iplimit, serverId) {
 
         const s = d.data;
 
-        const msg = `✅ *SSH Account Created Successfully!*
+const msg = `
+=============================
+     *TRIAL SSH ACCOUNT*
+=============================
 
-*🔐 SSH Premium Details*
-────────────────────────
-📡 *SSH WS*       : \`${s.hostname}:80@${s.username}:${s.password}\`
-🔒 *SSH SSL*      : \`${s.hostname}:443@${s.username}:${s.password}\`
-📶 *SSH UDP*      : \`${s.hostname}:1-65535@${s.username}:${s.password}\`
-🌐 *DNS SELOW*    : \`${s.hostname}:5300@${s.username}:${s.password}\`
-────────────────────────
-🌍 *Hostname*     : \`${s.hostname}\`
-👤 *Username*     : \`${s.username}\`
-🔑 *Password*     : \`${s.password}\`
-📅 *Expiry Date*  : \`${s.exp}\`
-⏰ *Expiry Time*  : \`${s.time}\`
-📌 *IP Limit*     : \`${LIMIT_IP}\`
-────────────────────────
-🛠 *Ports*:
-• TLS         : \`${s.port.tls}\`
-• Non-TLS     : \`${s.port.none}\`
-• OVPN TCP    : \`${s.port.ovpntcp}\`
-• OVPN UDP    : \`${s.port.ovpnudp}\`
-• SSH OHP     : \`${s.port.sshohp}\`
-• UDP Custom  : \`${s.port.udpcustom}\`
-────────────────────────
-🧩 *Payload WS*:
-\`
-GET / HTTP/1.1
-Host: ${s.hostname}
-Connection: Upgrade
-User-Agent: [ua]
-Upgrade: websocket
-\`
+*[ SSH PREMIUM DETAILS ]*
+-----------------------------
+*SSH WS*       : \`${s.hostname}:80@${s.username}:${s.password}\`
+*SSH SSL*      : \`${s.hostname}:443@${s.username}:${s.password}\`
+*DNS SELOW*    : \`${s.hostname}:5300@${s.username}:${s.password}\`
 
-🧩 *Payload Enhanced*:
-\`
-PATCH / HTTP/1.1
-Host: ${s.hostname}
-Host: bug.com
-Connection: Upgrade
-User-Agent: [ua]
-Upgrade: websocket
-\`
+*[ HOST INFORMATION ]*
+-----------------------------
+*Hostname*     : \`${s.hostname}\`
+*Username*     : \`${s.username}\`
+*Password*     : \`${s.password}\`
+*Expiry Date*  : \`${s.exp}\`
+*Expiry Time*  : \`${s.time}\`
+*IP Limit*     : 1 pengguna
 
-📥 *Download Config*:
-🔗 http://${s.hostname}:81/myvpn-config.zip
+*[ PORTS ]*
+-----------------------------
+*TLS*          : \`${s.port.tls}\`
+*Non-TLS*      : \`${s.port.none}\`
+*OVPN TCP*     : \`${s.port.ovpntcp}\`
+*OVPN UDP*     : \`${s.port.ovpnudp}\`
+*SSH OHP*      : \`${s.port.sshohp}\`
+*UDP Custom*   : \`${s.port.udpcustom}\`
 
-*© Telegram Bots - 2025*
-✨ Terima kasih telah menggunakan layanan kami!
+*[ PAYLOAD WS ]*
+-----------------------------
+\`GET wss://[host_port]/ HTTP/1.1[crlf]Host: [host_port][crlf]Upgrade: Websocket[crlf]Connection: Keep-Alive[crlf][crlf]\`
+
+*[ PAYLOAD ENHANCED + SPLIT ]*
+-----------------------------
+\`PATCH /ssh-ws HTTP/1.1[crlf]Host: [host][crlf]Host: www.google.com[crlf]Upgrade: websocket[crlf]Connection: Upgrade[crlf]User-Agent: [ua][crlf][crlf][split]HTTP/1.1 200 OK[crlf][crlf]\`
+
+*[ DOWNLOAD CONFIG ]*
+-----------------------------
+http://${s.hostname}:81/myvpn-config.zip
+
+-----------------------------
+*© Telegram Bots 1forcr - 2025*
+*Terima kasih telah menggunakan layanan kami.*
 `;
+
         return resolve(msg);
       });
     });
@@ -130,7 +127,7 @@ async function trialvmess(username, exp, quota, limitip, serverId) {
 -H "Authorization: ${AUTH_TOKEN}" \
 -H "Content-Type: application/json" \
 -H "Accept: application/json" \
--d '{"timelimit":"3h"}'`;
+-d '{"timelimit":"1h"}'`;
 
       exec(curlCommand, (_, stdout) => {
         let d;
@@ -150,45 +147,57 @@ async function trialvmess(username, exp, quota, limitip, serverId) {
 
         const s = d.data;
 
-        const msg = `✅ *VMess Account Created Successfully!*
+const msg = `
+=============================
+    *TRIAL VMESS ACCOUNT*
+=============================
 
-🔐 *Akun VMess Premium*
-──────────────
-👤 *Username*     : \`${s.username}\`
-🌍 *Host*         : \`${s.hostname}\`
-🛡 *UUID*         : \`${s.uuid}\`
-🧾 *Expired*      : \`${s.expired}\` (${s.time})
-📦 *Quota*        : \`${KUOTA === "0" ? "Unlimited" : KUOTA} GB\`
-🔢 *IP Limit*     : \`${LIMIT_IP === "0" ? "Unlimited" : LIMIT_IP} IP\`
-──────────────
-📡 *Ports*:
-- TLS         : ${s.port.tls}
-- Non TLS     : ${s.port.none}
-- Any Port    : ${s.port.any}
-──────────────
-📶 *Path*:
-- WS          : ${s.path.stn} | ${s.path.multi}
-- gRPC        : ${s.path.grpc}
-- Upgrade     : ${s.path.up}
-──────────────
-🔗 *VMess Links*:
-- TLS         : \`${s.link.tls}\`
-──────────────
-- Non TLS     : \`${s.link.none}\`
-──────────────
-- gRPC        : \`${s.link.grpc}\`
-──────────────
-- Up TLS      : \`${s.link.uptls}\`
-──────────────
-- Up Non-TLS  : \`${s.link.upntls}\`
-──────────────
-⚙️ *Settings*:
-- AlterId     : \`0\`
-- Security    : \`auto\`
-- Network     : \`ws, grpc, upgrade\`
+*[ VMESS DETAILS ]*
+-----------------------------
+*HOST*        : \`${s.hostname}\`
+*PORT TLS*    : \`${s.port.tls}\`
+*PORT NTLS*   : \`${s.port.none}\`
+*UUID*        : \`${s.uuid}\`
+*ALTER ID*    : \`0\`
+*NETWORK*     : \`ws, grpc, upgrade\`
+*PATH*        : \`${s.path.stn}\`
+*EXPIRED*     : \`${s.expired}\` - \`${s.time}\`
 
-*© Telegram Bots - 2025*
-✨ Terima kasih telah menggunakan layanan kami!
+*[ VMESS URL ]*
+-----------------------------
+TLS:
+\`${s.link.tls}\`
+
+Non-TLS:
+\`${s.link.none}\`
+
+gRPC:
+\`${s.link.grpc}\`
+
+*[ HOST INFORMATION ]*
+-----------------------------
+*Domain*      : \`${s.hostname}\`
+*SNI*         : \`${s.hostname}\`
+*IP Limit*    : ${LIMIT_IP === "0" ? "Unlimited" : LIMIT_IP} pengguna
+
+*[ PORTS ]*
+-----------------------------
+*WS TLS*      : \`${s.port.tls}\`
+*WS NTLS*     : \`${s.port.none}\`
+
+*[ SUGGESTED SNI / BUG ]*
+-----------------------------
+\`${s.hostname}\`
+\`www.google.com\`
+\`www.bing.com\`
+
+*[ DOWNLOAD CONFIG ]*
+-----------------------------
+http://${s.hostname}:81/vmess-config.zip
+
+-----------------------------
+*© Telegram Bots 1forcr - 2025*
+*Terima kasih telah menggunakan layanan kami.*
 `;
 
         return resolve(msg);
@@ -224,7 +233,7 @@ async function trialvless(username, exp, quota, limitip, serverId) {
 -H "Authorization: ${AUTH_TOKEN}" \
 -H "Content-Type: application/json" \
 -H "Accept: application/json" \
--d '{"timelimit":"3h"}'`;
+-d '{"timelimit":"1h"}'`;
 
       exec(curlCommand, (_, stdout) => {
         let d;
@@ -244,44 +253,64 @@ async function trialvless(username, exp, quota, limitip, serverId) {
 
         const s = d.data;
 
-        const msg = `✅ *VLESS Account Created Successfully!*
+const msg = `
+=============================
+    *TRIAL VLESS ACCOUNT*
+=============================
 
-🔐 *Akun VLESS Premium*
-──────────────
-👤 *Username*     : \`${s.username}\`
-🌍 *Host*         : \`${s.hostname}\`
-🛡 *UUID*         : \`${s.uuid}\`
-📅 *Expired*      : \`${s.expired}\` (${s.time})
-📦 *Quota*        : \`${KUOTA === "0" ? "Unlimited" : KUOTA} GB\`
-🔢 *IP Limit*     : \`${LIMIT_IP === "0" ? "Unlimited" : LIMIT_IP} IP\`
-──────────────
-📡 *Ports*:
-- TLS         : ${s.port.tls}
-- Non TLS     : ${s.port.none}
-- Any Port    : ${s.port.any}
-──────────────
-📶 *Path*:
-- WS          : ${s.path.stn} | ${s.path.multi}
-- gRPC        : ${s.path.grpc}
-- Upgrade     : ${s.path.up}
-──────────────
-🔗 *VLESS Links*:
-- TLS         : \`${s.link.tls}\`
-──────────────
-- Non TLS     : \`${s.link.none}\`
-──────────────
-- gRPC        : \`${s.link.grpc}\`
-──────────────
-- Up TLS      : \`${s.link.uptls}\`
-──────────────
-- Up Non-TLS  : \`${s.link.upntls}\`
-──────────────
-⚙️ *Settings*:
-- Security    : \`auto\`
-- Network     : \`ws, grpc, upgrade\`
+*[ VLESS DETAILS ]*
+-----------------------------
+*HOST*        : \`${s.hostname}\`
+*PORT TLS*    : \`${s.port.tls}\`
+*PORT NTLS*   : \`${s.port.none}\`
+*UUID*        : \`${s.uuid}\`
+*NETWORK*     : \`ws, grpc, upgrade\`
+*PATH*        : \`${s.path.stn}\`
+*EXPIRED*     : \`${s.expired}\` - \`${s.time}\`
+*QUOTA*       : \`${KUOTA === "0" ? "Unlimited" : KUOTA} GB\`
+*IP LIMIT*    : \`${LIMIT_IP === "0" ? "Unlimited" : LIMIT_IP} pengguna\`
 
-*© Telegram Bots - 2025*
-✨ Terima kasih telah menggunakan layanan kami!
+*[ VLESS URL ]*
+-----------------------------
+TLS:
+\`${s.link.tls}\`
+
+Non-TLS:
+\`${s.link.none}\`
+
+gRPC:
+\`${s.link.grpc}\`
+
+Up TLS:
+\`${s.link.uptls}\`
+
+Up Non-TLS:
+\`${s.link.upntls}\`
+
+*[ HOST INFORMATION ]*
+-----------------------------
+*Domain*      : \`${s.hostname}\`
+*SNI*         : \`${s.hostname}\`
+
+*[ PORTS ]*
+-----------------------------
+*WS TLS*      : \`${s.port.tls}\`
+*WS NTLS*     : \`${s.port.none}\`
+*ANY PORT*    : \`${s.port.any}\`
+
+*[ SUGGESTED SNI / BUG ]*
+-----------------------------
+\`${s.hostname}\`
+\`www.google.com\`
+\`www.bing.com\`
+
+*[ DOWNLOAD CONFIG ]*
+-----------------------------
+http://${s.hostname}:81/vless-config.zip
+
+-----------------------------
+*© Telegram Bots 1forcr - 2025*
+*Terima kasih telah menggunakan layanan kami.*
 `;
 
         return resolve(msg);
@@ -316,7 +345,7 @@ async function trialtrojan(username, exp, quota, limitip, serverId) {
 -H "Authorization: ${AUTH_TOKEN}" \
 -H "Content-Type: application/json" \
 -H "Accept: application/json" \
--d '{"timelimit":"3h"}'`;
+-d '{"timelimit":"1h"}'`;
 
       exec(curlCommand, (_, stdout) => {
         let d;
@@ -336,40 +365,58 @@ async function trialtrojan(username, exp, quota, limitip, serverId) {
 
         const s = d.data;
 
-        const msg = `✅ *Trojan Account Created Successfully!*
+const msg = `
+=============================
+    *TRIAL TROJAN ACCOUNT*
+=============================
 
-🔐 *Akun TROJAN Premium*
-──────────────
-👤 *Username*     : \`${s.username}\`
-🌍 *Host*         : \`${s.hostname}\`
-🔑 *Key*          : \`${s.uuid}\`
-📅 *Expired*      : \`${s.expired}\` (${s.time})
-📦 *Quota*        : \`${KUOTA === "0" ? "Unlimited" : KUOTA} GB\`
-🔢 *IP Limit*     : \`${LIMIT_IP === "0" ? "Unlimited" : LIMIT_IP} IP\`
-──────────────
-📡 *Ports*:
-- TLS         : ${s.port.tls}
-- Non TLS     : ${s.port.none}
-- Any Port    : ${s.port.any}
-──────────────
-📶 *Path*:
-- WS          : ${s.path.stn} | ${s.path.multi}
-- gRPC        : ${s.path.grpc}
-- Upgrade     : ${s.path.up}
-──────────────
-🔗 *Trojan Links*:
-- TLS         : \`${s.link.tls}\`
-──────────────
-- gRPC        : \`${s.link.grpc}\`
-──────────────
-- Up TLS      : \`${s.link.uptls}\`
-──────────────
-⚙️ *Settings*:
-- Security    : \`auto\`
-- Network     : \`ws, grpc, upgrade\`
+*[ TROJAN DETAILS ]*
+-----------------------------
+*HOST*        : \`${s.hostname}\`
+*PORT TLS*    : \`${s.port.tls}\`
+*PORT NTLS*   : \`${s.port.none}\`
+*KEY*         : \`${s.uuid}\`
+*NETWORK*     : \`ws, grpc, upgrade\`
+*PATH*        : \`${s.path.stn}\`
+*EXPIRED*     : \`${s.expired}\` - \`${s.time}\`
+*QUOTA*       : \`${KUOTA === "0" ? "Unlimited" : KUOTA} GB\`
+*IP LIMIT*    : \`${LIMIT_IP === "0" ? "Unlimited" : LIMIT_IP} pengguna\`
 
-*© Telegram Bots - 2025*
-✨ Terima kasih telah menggunakan layanan kami!
+*[ TROJAN LINK ]*
+-----------------------------
+TLS:
+\`${s.link.tls}\`
+
+gRPC:
+\`${s.link.grpc}\`
+
+Up TLS:
+\`${s.link.uptls}\`
+
+*[ HOST INFORMATION ]*
+-----------------------------
+*Domain*      : \`${s.hostname}\`
+*SNI*         : \`${s.hostname}\`
+
+*[ PORTS ]*
+-----------------------------
+*WS TLS*      : \`${s.port.tls}\`
+*WS NTLS*     : \`${s.port.none}\`
+*ANY PORT*    : \`${s.port.any}\`
+
+*[ SUGGESTED SNI / BUG ]*
+-----------------------------
+\`${s.hostname}\`
+\`www.google.com\`
+\`www.bing.com\`
+
+*[ DOWNLOAD CONFIG ]*
+-----------------------------
+http://${s.hostname}:81/trojan-config.zip
+
+-----------------------------
+*© Telegram Bots 1forcr - 2025*
+*Terima kasih telah menggunakan layanan kami.*
 `;
 
         return resolve(msg);
