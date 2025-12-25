@@ -15,7 +15,7 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 && sysctl -w net.ipv6.conf.default.di
 ##  Fitur Utama
 
 ### Untuk User
-- Pembelian akun VPN otomatis
+- Pembelian akun VPN otomatis SSH, VMESS, VLESS, TROJAN dan ZiVPN
 - Sistem deposit saldo
 - Pembayaran via QRIS
 - Trial akun
@@ -36,15 +36,12 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 && sysctl -w net.ipv6.conf.default.di
 ### Tampilan Menu Awal Instalasi
 <img src="./tampilaninstalasi.png" alt="Menu Instalasi" width="300"/>
 
-### Tampilan Menu Bot
-<img src="./tampilanmenu.png" alt="Menu Bot" width="300"/>
+## Update Terbaru
 
-### Tampilan Menu Admin
-<img src="./image.png" alt="Menu Admin" width="300"/>
-
-## 🚀 Update Terbaru
-
-### 🔥 Fitur Baru
+### 🔥 Update !!
+- **ZiVPN Service** Buat akun ZiVPN dan trial via sc potato
+- **Fitur Tambah Server Khusus ZiVPN** Nambahin server khusus buat ZiVPN karena berbeda service pembuatan akunnya
+- **Server Khusus** Sekarang server vpn bakal nampil sesuai role kalau role buyer nampil server buyer, kalau reseller nampil server reseller, berlaku juga untuk ZiVPN 
 - **Fitur Tambah Server Khusus Reseller** - Hanya reseller yang bisa melihat server khusus
 - **Cek Saldo User** - Bisa mengecek saldo user dengan ID Telegram
 - **Add Saldo Manual** - Admin bisa menambah saldo user manual via ID
@@ -95,6 +92,7 @@ const API_URL = 'https://orkutapi.andyyuda41.workers.dev/api/qris-history';
 
 // Ekspor agar app.js tetap bisa require dengan struktur lama
 module.exports = { buildPayload, headers, API_URL };
+
 
 
 
