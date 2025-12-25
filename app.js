@@ -33,6 +33,9 @@ if (process.env.NODE_ENV !== 'production') {
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+const { createzivpn } = require('./modules/createzivpn');
+const { trialzivpn } = require('./modules/trialzivpn');
+
 const { 
   createssh, 
   createvmess, 
@@ -83,52 +86,6 @@ const {
 
 const path = require('path');
 const trialFile = path.join(__dirname, 'trial.db');
-
-// === 💾 AUTO BACKUP DATABASE SETIAP 24 JAM ===
-try {
-  const schedule = require('node-schedule');
-  const fetch = require('node-fetch');
-  const FormData = require('form-data');
-
-  const dbPath = path.join(__dirname, 'sellvpn.db');
-  const backupDir = path.join(__dirname, 'backups');
-  if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir);
-
-  async function sendBackupToAdmin(filePath) {
-    try {
-      const form = new FormData();
-      form.append('chat_id', adminIds[0]);
-      form.append('caption', `🗄️ Backup harian database berhasil dibuat:\n${new Date().toLocaleString()}`);
-      form.append('document', fs.createReadStream(filePath));
-
-      await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendDocument`, {
-        method: 'POST',
-        body: form
-      });
-      logger.info(`📦 Backup harian terkirim ke admin: ${filePath}`);
-    } catch (err) {
-      logger.error('❌ Gagal mengirim backup ke Telegram:', err);
-    }
-  }
-
-  // Jadwal backup otomatis setiap 24 jam sekali (jam 00:00)
-  schedule.scheduleJob('0 0 * * *', async () => {
-    try {
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const backupFile = path.join(backupDir, `sellvpn_backup_${timestamp}.db`);
-      fs.copyFileSync(dbPath, backupFile);
-      logger.info(`✅ Backup harian dibuat: ${backupFile}`);
-
-      // Kirim file ke admin Telegram
-      await sendBackupToAdmin(backupFile);
-    } catch (err) {
-      logger.error('❌ Gagal membuat backup database:', err);
-    }
-  });
-} catch (err) {
-  console.error('❌ Modul backup otomatis gagal dimuat:', err);
-}
-
 
 // Mengecek apakah user sudah pakai trial hari ini
 async function checkTrialAccess(userId) {
@@ -437,6 +394,7 @@ bot.command('admin', async (ctx) => {
 
   await sendAdminMenu(ctx);
 });
+
 async function sendMainMenu(ctx) {
   // Ambil data user
   const userId = ctx.from.id;
@@ -481,12 +439,15 @@ async function sendMainMenu(ctx) {
 
   // Jumlah pengguna bot
   let jumlahPengguna = 0;
+  
+  // Cek status reseller - GUNAKAN VARIABLE YANG SUDAH ADA
   let isReseller = false;
-if (fs.existsSync(resselFilePath)) {
-  const resellerList = fs.readFileSync(resselFilePath, 'utf8').split('\n').map(x => x.trim());
-  isReseller = resellerList.includes(userId.toString());
-}
-const statusReseller = isReseller ? 'Reseller' : 'Bukan Reseller';
+  if (fs.existsSync(resselFilePath)) {
+    const resellerList = fs.readFileSync(resselFilePath, 'utf8').split('\n').map(x => x.trim());
+    isReseller = resellerList.includes(userId.toString());
+  }
+  const statusReseller = isReseller ? 'Reseller' : 'Bukan Reseller';
+  
   try {
     const row = await new Promise((resolve, reject) => {
       db.get('SELECT COUNT(*) AS count FROM users', (err, row) => { if (err) reject(err); else resolve(row); });
@@ -497,7 +458,7 @@ const statusReseller = isReseller ? 'Reseller' : 'Bukan Reseller';
   // Latency (dummy, bisa diubah sesuai kebutuhan)
   const latency = (Math.random() * 0.1 + 0.01).toFixed(2);
 
-const messageText = `
+  const messageText = `
 <code>┏━━━━━━━━━━━━━━━━━━━━┓</code>
 <b>🚀 BOT VPN ${NAMA_STORE}</b>
 <code>┗━━━━━━━━━━━━━━━━━━━━┛</code>
@@ -549,21 +510,18 @@ const messageText = `
 <code>┗━━━━━━━━━━━━━━━━━━━━┛</code>
 `;
 
-  const keyboard = [
+  // Buat keyboard dasar untuk semua user
+  let keyboard = [
     [
       { text: '➕ Buat Akun', callback_data: 'service_create' },
       { text: '♻️ Perpanjang Akun', callback_data: 'service_renew' }
     ],
     [
-      { text: '❌ Hapus Akun', callback_data: 'service_del' },
-      { text: '📶 Cek Server', callback_data: 'cek_server' }
+      { text: '📶 Cek Server', callback_data: 'cek_server' },
+      { text: '⌛ Trial Akun', callback_data: 'service_trial' }
     ],
     [
-      { text: '🗝️ Kunci Akun', callback_data: 'service_lock' },
-      { text: '🔐 Buka Kunci Akun', callback_data: 'service_unlock' }
-    ],    
-    [
-      { text: '⌛ Trial Akun', callback_data: 'service_trial' },
+      { text: '📘 Tutorial Penggunaan Bot', callback_data: 'tutorial_bot' }
     ],
     [
       { text: '🤝 Jadi Reseller harga lebih murah!!', callback_data: 'jadi_reseller' }
@@ -574,8 +532,21 @@ const messageText = `
     [
       { text: '💰 TopUp Saldo Otomatis(belum tersedia)', callback_data: 'topup_saldo' }
     ],
-
   ];
+
+  // Jika user adalah reseller, tambahkan tombol khusus
+  if (isReseller) {
+    // Sisipkan tombol reseller setelah baris "Cek Server"
+    keyboard.splice(2, 0, [
+      { text: '❌ Hapus Akun', callback_data: 'service_del' },
+      { text: '🗝️ Kunci Akun', callback_data: 'service_lock' }
+    ]);
+    keyboard.splice(3, 0, [
+      { text: '🔐 Buka Kunci Akun', callback_data: 'service_unlock' }
+    ]);
+    
+    logger.info(`🛡️ Menu reseller ditampilkan untuk user: ${userId}`);
+  }
 
   try {
     if (ctx.updateType === 'callback_query') {
@@ -983,12 +954,14 @@ async function handleServiceAction(ctx, action) {
   let keyboard;
   if (action === 'create') {
     keyboard = [
+      [{ text: 'Buat UDP ZIVPN', callback_data: 'create_zivpn' }],
       [{ text: 'Buat Ssh/Ovpn', callback_data: 'create_ssh' }],      
       [{ text: 'Buat Vmess', callback_data: 'create_vmess' }, { text: 'Buat Vless', callback_data: 'create_vless' }],
       [{ text: 'Buat Trojan', callback_data: 'create_trojan' }, /*{ text: 'Buat Shadowsocks', callback_data: 'create_shadowsocks' }*/{ text: '🔙 Kembali', callback_data: 'send_main_menu' }]
     ];
   } else if (action === 'trial') {
     keyboard = [
+      [{ text: 'Trial UDP ZIVPN', callback_data: 'trial_zivpn' }],
       [{ text: 'Trial Ssh/Ovpn', callback_data: 'trial_ssh' }],      
       [{ text: 'Trial Vmess', callback_data: 'trial_vmess' }, { text: 'Trial Vless', callback_data: 'trial_vless' }],
       [{ text: 'Trial Trojan', callback_data: 'trial_trojan' }, /*{ text: 'Trial Shadowsocks', callback_data: 'renew_shadowsocks' }*/{ text: '🔙 Kembali', callback_data: 'send_main_menu' }],
@@ -1200,6 +1173,20 @@ bot.on('photo', async (ctx) => {
   await ctx.reply('✅ Gambar QRIS berhasil diunggah!');
   logger.info('🖼️ QRIS image uploaded by admin');
   delete userState[adminId];
+});
+
+// Handler untuk info tools reseller
+bot.action('reseller_tools_info', async (ctx) => {
+    await ctx.answerCbQuery();
+    await ctx.reply(
+        '🛡️ *TOOLS RESELLER*\n\n' +
+        'Fitur khusus untuk reseller:\n' +
+        '• ❌ Hapus Akun - Hapus akun pelanggan\n' +
+        '• 🗝️ Kunci Akun - Nonaktifkan akun sementara\n' +
+        '• 🔐 Buka Kunci Akun - Aktifkan kembali akun\n\n' +
+        'Fitur ini membantu Anda mengelola akun pelanggan dengan lebih baik.',
+        { parse_mode: 'Markdown' }
+    );
 });
 
 // 📡 CEK SERVER – LIST SERVER
@@ -1588,6 +1575,15 @@ bot.action('create_ssh', async (ctx) => {
   await startSelectServer(ctx, 'create', 'ssh');
 });
 
+////
+bot.action('create_zivpn', async (ctx) => {
+  await startSelectServer(ctx, 'create', 'zivpn');
+});
+///
+bot.action('trial_zivpn', async (ctx) => {
+  await startSelectServer(ctx, 'trial', 'zivpn');
+});
+////
 //DELETE SSH
 bot.action('del_ssh', async (ctx) => {
   if (!ctx || !ctx.match) {
@@ -1757,16 +1753,24 @@ try {
     if (navButtons.length > 0) keyboard.push(navButtons);
     keyboard.push([{ text: '🔙 Kembali ke Menu Utama', callback_data: 'sendMainMenu' }]);
 
-    const serverList = currentServers.map(server => {
-      const hargaPer30Hari = server.harga * 30;
-      const isFull = server.total_create_akun >= server.batas_create_akun;
-      return `🌐 *${server.nama_server}*\n` +
-             `💰 Harga per hari: Rp${server.harga}\n` +
-             `📅 Harga per 30 hari: Rp${hargaPer30Hari}\n` +
-             `📊 Quota: ${server.quota}GB\n` +
-             `🔢 Limit IP: ${server.iplimit} IP\n` +
-             (isFull ? `⚠️ *Server Penuh*` : `👥 Total Create Akun: ${server.total_create_akun}/${server.batas_create_akun}`);
-    }).join('\n\n');
+const serverList = currentServers.map(server => {
+  const hargaPer30Hari = server.harga * 30;
+  const isFull = server.total_create_akun >= server.batas_create_akun;
+
+  return (
+`╔══════════════════════╗
+  🟦 *${server.nama_server.toUpperCase()}*
+╚══════════════════════╝
+🛜 *Domain:* \`${server.domain}\`
+💳 *Harga/Hari:* Rp${server.harga.toLocaleString()}
+📆 *Harga/Bulan:* Rp${hargaPer30Hari.toLocaleString()}
+📡 *Quota:* ${server.quota} GB
+🔐 *IP Limit:* ${server.iplimit} IP
+👥 *Akun Terpakai:* ${server.total_create_akun}/${server.batas_create_akun}
+📌 *Status:* ${isFull ? "❌ Server Penuh" : "✅ Tersedia"}
+`
+  );
+}).join('\n\n');
     if (ctx.updateType === 'callback_query') {
       ctx.editMessageText(`📋 *List Server (Halaman ${currentPage + 1} dari ${totalPages})*\n\n${serverList}`, {
         reply_markup: { inline_keyboard: keyboard },
@@ -1793,7 +1797,7 @@ bot.action(/navigate_(\w+)_(\w+)_(\d+)/, async (ctx) => {
 });
 
 
-bot.action(/(create|renew)_username_(vmess|vless|trojan|shadowsocks|ssh)_(.+)/, async (ctx) => {
+bot.action(/(create|renew)_username_(vmess|vless|trojan|shadowsocks|ssh|zivpn)_(.+)/, async (ctx) => {
   const action = ctx.match[1];
   const type = ctx.match[2];
   const serverId = ctx.match[3];
@@ -1821,7 +1825,7 @@ bot.action(/(create|renew)_username_(vmess|vless|trojan|shadowsocks|ssh)_(.+)/, 
 });
 
 // === ⚡️ KONFIRMASI TRIAL (semua tipe) ===
-bot.action(/(trial)_username_(vmess|vless|trojan|shadowsocks|ssh)_(\d+)/, async (ctx) => {
+bot.action(/(trial)_username_(vmess|vless|trojan|shadowsocks|ssh|zivpn)_(\d+)/, async (ctx) => {
   const [action, type, serverId] = [ctx.match[1], ctx.match[2], ctx.match[3]];
 
   // Ambil nama server dari database
@@ -1889,7 +1893,35 @@ bot.on('text', async (ctx) => {
 
   if (!state) return; 
     const text = ctx.message.text.trim();
+//////
+  if (state && state.step === "edit_nama_input") {
+    const serverId = state.serverId;
+    const namaBaru = ctx.message.text.trim();
 
+    db.run(
+      "UPDATE Server SET nama_server = ? WHERE id = ?",
+      [namaBaru, serverId],
+      (err) => {
+        if (err) {
+          logger.error("❌ Gagal update nama server:", err.message);
+          return ctx.reply("⚠️ Gagal mengupdate nama server.");
+        }
+
+        ctx.reply(
+          `✅ *Nama server berhasil diperbarui!*\n\n` +
+          `🆔 ID Server: ${serverId}\n` +
+          `🏷️ Nama Baru: *${namaBaru}*`,
+          { parse_mode: "Markdown" }
+        );
+
+        logger.info(`Nama server ID ${serverId} diubah menjadi ${namaBaru}`);
+
+        delete userState[ctx.chat.id];
+      }
+    );
+
+    return;
+  }
 //////
   if (state.step === 'cek_saldo_userid') {
     const targetId = ctx.message.text.trim();
@@ -1916,6 +1948,7 @@ bot.on('text', async (ctx) => {
   if (!/^[a-z0-9]{3,20}$/.test(username)) {
     return ctx.reply('❌ *Username tidak valid. Gunakan huruf kecil dan angka (3–20 karakter).*', { parse_mode: 'Markdown' });
   }
+/////////
 
  const resselDbPath = './ressel.db';
 const idUser = ctx.from.id.toString().trim();
@@ -1939,32 +1972,50 @@ fs.readFile(resselDbPath, 'utf8', async (err, data) => {
   }
 
     // Lanjut buat trial
-    const { type, serverId } = state;
-    delete userState[ctx.chat.id];
+// ===== EKSEKUSI SETELAH PILIH SERVER =====
+const { action, type, serverId } = state;
+delete userState[ctx.chat.id];
 
-    try {
-      const password = 'none', exp = 'none', iplimit = 'none';
+let msg;
 
-      const delFunctions = {
-        vmess: trialvmess,
-        vless: trialvless,
-        trojan: trialtrojan,
-        shadowsocks: trialshadowsocks,
-        ssh: trialssh
-      };
+// ===== TRIAL AKUN =====
+if (action === 'trial') {
 
-      if (delFunctions[type]) {
-        const msg = await delFunctions[type](username, password, exp, iplimit, serverId);
-        await recordAccountTransaction(ctx.from.id, type);
-        await saveTrialAccess(ctx.from.id); // Simpan tanggal trial
-        await ctx.reply(msg, { parse_mode: 'Markdown' });
-        logger.info(`✅ Trial ${type} oleh ${ctx.from.id}`);
-      }
+  // 🔹 generate data trial
+  const username = `trial${Math.floor(Math.random() * 10000)}`;
+  const exp = '1';       // 1 hari
+  const quota = '1';    // 1 GB (sesuaikan)
+  const iplimit = '1';  // 1 IP
 
-    } catch (err) {
-      logger.error('❌ Gagal hapus akun:', err.message);
-      await ctx.reply('❌ *Terjadi kesalahan saat menghapus akun.*', { parse_mode: 'Markdown' });
-    }
+  let msg;
+
+  if (type === 'ssh') {
+    const password = '1';
+    msg = await trialssh(username, password, exp, iplimit, serverId);
+    await recordAccountTransaction(ctx.from.id, 'ssh');
+
+  } else if (type === 'vmess') {
+    msg = await trialvmess(username, exp, quota, iplimit, serverId);
+    await recordAccountTransaction(ctx.from.id, 'vmess');
+
+  } else if (type === 'vless') {
+    msg = await trialvless(username, exp, quota, iplimit, serverId);
+    await recordAccountTransaction(ctx.from.id, 'vless');
+
+  } else if (type === 'trojan') {
+    msg = await trialtrojan(username, exp, quota, iplimit, serverId);
+    await recordAccountTransaction(ctx.from.id, 'trojan');
+
+  } else if (type === 'zivpn') {
+    msg = await trialzivpn(serverId);
+    await recordAccountTransaction(ctx.from.id, 'zivpn');
+  }
+
+  await saveTrialAccess(ctx.from.id);
+  await ctx.reply(msg, { parse_mode: 'Markdown' });
+  return;
+}
+
   });
   return;
 }
@@ -2252,6 +2303,11 @@ if (exp > 365) {
               msg = await createssh(username, password, exp, iplimit, serverId);
               await recordAccountTransaction(ctx.from.id, 'ssh');
             }
+else if (type === 'zivpn') {
+  msg = await createzivpn(username, password, exp, iplimit, serverId);
+  await recordAccountTransaction(ctx.from.id, 'zivpn');
+}
+
             logger.info(`Account created and transaction recorded for user ${ctx.from.id}, type: ${type}`);
           } else if (action === 'renew') {
             if (type === 'vmess') {
@@ -3250,16 +3306,30 @@ bot.action(/edit_domain_(\d+)/, async (ctx) => {
     parse_mode: 'Markdown'
   });
 });
-bot.action(/edit_nama_(\d+)/, async (ctx) => {
-  const serverId = ctx.match[1];
-  logger.info(`User ${ctx.from.id} memilih untuk mengedit nama server dengan ID: ${serverId}`);
-  userState[ctx.chat.id] = { step: 'edit_nama', serverId: serverId };
 
-  await ctx.reply('🏷️ *Silakan masukkan nama server baru:*', {
-    reply_markup: { inline_keyboard: keyboard_abc() },
-    parse_mode: 'Markdown'
-  });
+bot.action(/edit_nama_(\d+)/, async (ctx) => {
+  try {
+    await ctx.answerCbQuery();
+    const serverId = ctx.match[1];
+
+    // Simpan state agar menunggu input nama baru
+    userState[ctx.chat.id] = {
+      step: "edit_nama_input",
+      serverId: serverId
+    };
+
+    logger.info(`Admin ${ctx.chat.id} memilih server ID ${serverId} untuk edit nama`);
+
+    await ctx.reply(
+      `✏️ *Silakan ketik nama baru untuk server ID ${serverId}:*`,
+      { parse_mode: "Markdown" }
+    );
+  } catch (err) {
+    logger.error("❌ Error edit nama:", err);
+    ctx.reply("⚠️ Terjadi kesalahan saat memproses permintaan.");
+  }
 });
+
 bot.action(/confirm_delete_server_(\d+)/, async (ctx) => {
   try {
     db.run('DELETE FROM Server WHERE id = ?', [ctx.match[1]], function(err) {
@@ -4057,7 +4127,46 @@ async function recordAccountTransaction(userId, type) {
   });
 }
 
+// =============================
+// 📦 AUTO BACKUP DATABASE 24 JAM
+// =============================
 
+const schedule = require('node-schedule');
+
+const dbFile = path.join(__dirname, "sellvpn.db");
+const autoBackupDir = path.join(__dirname, "auto_backup");
+
+if (!fs.existsSync(autoBackupDir)) fs.mkdirSync(autoBackupDir);
+
+// Fungsi kirim backup otomatis ke admin
+async function sendAutoBackup(filePath) {
+    try {
+        await bot.telegram.sendDocument(
+            adminIds[0],
+            { source: filePath },
+            { caption: "🗄️ Backup otomatis database (setiap 24 jam)" }
+        );
+
+        logger.info("📤 Backup otomatis terkirim ke admin");
+    } catch (err) {
+        logger.error("❌ Gagal kirim backup otomatis:", err);
+    }
+}
+
+schedule.scheduleJob("0 0 * * *", () => {
+    try {
+        const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const backupFile = path.join(autoBackupDir, `sellvpn_${timestamp}.db`);
+
+        fs.copyFileSync(dbFile, backupFile);
+
+        logger.info("✅ Backup otomatis dibuat: " + backupFile);
+
+        sendAutoBackup(backupFile);
+    } catch (err) {
+        logger.error("❌ Gagal membuat backup otomatis:", err);
+    }
+});
 
 app.listen(port, () => {
   bot.launch()
@@ -4078,4 +4187,3 @@ app.listen(port, () => {
 
   logger.info(`🚀 Server berjalan di port ${port}`);
 });
-
