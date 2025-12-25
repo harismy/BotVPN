@@ -197,7 +197,8 @@ db.run(`CREATE TABLE IF NOT EXISTS Server (
   iplimit INTEGER,
   batas_create_akun INTEGER,
   total_create_akun INTEGER,
-  is_reseller_only INTEGER DEFAULT 0
+  is_reseller_only INTEGER DEFAULT 0,
+  service TEXT DEFAULT 'ssh'
 )`, (err) => {
   if (err) {
     logger.error('Kesalahan membuat tabel Server:', err.message);
@@ -288,6 +289,52 @@ db.run(`CREATE TABLE IF NOT EXISTS transactions (
 const userState = {};
 logger.info('User state initialized');
 
+
+bot.command('addserverzivpn_reseller', async (ctx) => {
+  if (!adminIds.includes(ctx.from.id)) {
+    return ctx.reply('⚠️ Tidak ada izin.');
+  }
+
+  const args = ctx.message.text.split(' ');
+  if (args.length !== 8) {
+    return ctx.reply(
+      '⚠️ Format:\n`/addserverzivpn_reseller <domain> <auth> <harga> <nama_server> <quota> <iplimit> <batas_create_akun>`',
+      { parse_mode: 'Markdown' }
+    );
+  }
+
+  const [, domain, auth, harga, nama_server, quota, iplimit, batas] = args;
+
+  if (![harga, quota, iplimit, batas].every(v => /^\d+$/.test(v))) {
+    return ctx.reply('⚠️ harga, quota, iplimit, batas harus angka.');
+  }
+
+  db.run(
+    `INSERT INTO Server
+     (domain, auth, harga, nama_server, quota, iplimit, batas_create_akun, total_create_akun, service, is_reseller_only)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'zivpn', 1)`,
+    [
+      domain,
+      auth,
+      parseInt(harga),
+      nama_server,
+      parseInt(quota),
+      parseInt(iplimit),
+      parseInt(batas)
+    ],
+    (err) => {
+      if (err) {
+        logger.error(err.message);
+        return ctx.reply('❌ Gagal menambahkan server ZIVPN reseller.');
+      }
+
+      ctx.reply(`✅ Server *ZIVPN Reseller* \`${nama_server}\` berhasil ditambahkan.`, {
+        parse_mode: 'Markdown'
+      });
+    }
+  );
+});
+//////
 bot.command(['start', 'menu'], async (ctx) => {
   logger.info('Start or Menu command received');
   
@@ -687,6 +734,7 @@ bot.command('broadcast', async (ctx) => {
   });
 });
 
+//command addserver biasa potato
 bot.command('addserver', async (ctx) => {
   const userId = ctx.message.from.id;
   if (!adminIds.includes(userId)) {
@@ -706,18 +754,87 @@ bot.command('addserver', async (ctx) => {
   }
 
   // ✅ QUERY YANG BENAR
-  db.run("INSERT INTO Server (domain, auth, harga, nama_server, quota, iplimit, batas_create_akun, total_create_akun) VALUES (?, ?, ?, ?, ?, ?, ?, 0)", 
-      [domain, auth, parseInt(harga), nama_server, parseInt(quota), parseInt(iplimit), parseInt(batas_create_akun)], 
-      function(err) {
-          if (err) {
-              logger.error('⚠️ Kesalahan saat menambahkan server:', err.message);
-              return ctx.reply('⚠️ Kesalahan saat menambahkan server.', { parse_mode: 'Markdown' });
-          }
-          ctx.reply(`✅ Server \`${nama_server}\` berhasil ditambahkan.`, { parse_mode: 'Markdown' });
+const service = userState[ctx.chat.id]?.service || 'ssh'; 
+db.run(
+  "INSERT INTO Server (domain, auth, harga, nama_server, quota, iplimit, batas_create_akun, total_create_akun, service) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)",
+  [
+    domain,
+    auth,
+    parseInt(harga),
+    nama_server,
+    parseInt(quota),
+    parseInt(iplimit),
+    parseInt(batas_create_akun),
+    service
+  ],
+  function(err) {
+    if (err) {
+      logger.error('⚠️ Kesalahan saat menambahkan server:', err.message);
+      return ctx.reply('⚠️ Kesalahan saat menambahkan server.', { parse_mode: 'Markdown' });
+    }
+
+    // 🧹 bersihkan state setelah sukses
+    delete userState[ctx.chat.id];
+
+    ctx.reply(`✅ Server \`${nama_server}\` berhasil ditambahkan.`, { parse_mode: 'Markdown' });
+  }
+);
+
+});
+
+//command addserver zivpn
+bot.command('addserverzivpn', async (ctx) => {
+  const userId = ctx.message.from.id;
+  if (!adminIds.includes(userId)) {
+    return ctx.reply('⚠️ Anda tidak memiliki izin untuk menggunakan perintah ini.');
+  }
+
+  const args = ctx.message.text.split(' ');
+  if (args.length !== 8) {
+    return ctx.reply(
+      '⚠️ Format salah.\nGunakan:\n`/addserverzivpn <domain> <auth> <harga> <nama_server> <quota> <iplimit> <batas_create_akun>`',
+      { parse_mode: 'Markdown' }
+    );
+  }
+
+  const [, domain, auth, harga, nama_server, quota, iplimit, batas_create_akun] = args;
+
+  const numberOnlyRegex = /^\d+$/;
+  if (
+    !numberOnlyRegex.test(harga) ||
+    !numberOnlyRegex.test(quota) ||
+    !numberOnlyRegex.test(iplimit) ||
+    !numberOnlyRegex.test(batas_create_akun)
+  ) {
+    return ctx.reply('⚠️ `harga`, `quota`, `iplimit`, dan `batas_create_akun` harus berupa angka.');
+  }
+
+  // 🔥 INI SATU-SATUNYA BEDANYA
+  db.run(
+    "INSERT INTO Server (domain, auth, harga, nama_server, quota, iplimit, batas_create_akun, total_create_akun, service) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'zivpn')",
+    [
+      domain,
+      auth,
+      parseInt(harga),
+      nama_server,
+      parseInt(quota),
+      parseInt(iplimit),
+      parseInt(batas_create_akun)
+    ],
+    function (err) {
+      if (err) {
+        logger.error('⚠️ Kesalahan saat menambahkan server ZIVPN:', err.message);
+        return ctx.reply('⚠️ Kesalahan saat menambahkan server ZIVPN.');
       }
+
+      ctx.reply(`✅ Server ZIVPN \`${nama_server}\` berhasil ditambahkan.`, {
+        parse_mode: 'Markdown'
+      });
+    }
   );
 });
 
+//////
 bot.command('editharga', async (ctx) => {
   const userId = ctx.message.from.id;
   if (!adminIds.includes(userId)) {
@@ -1013,21 +1130,26 @@ async function sendAdminMenu(ctx) {
   const adminKeyboard = [
 
 [
-  { text: ' Tambah Server Reseller', callback_data: 'addserver_reseller' }
+  { text: '➕ Tambah Server Reseller', callback_data: 'addserver_reseller' }
 ],
-[
-  { text: '🖼️ Upload Gambar QRIS |Top up manual', callback_data: 'upload_qris' }
-],
+    [
+      { text: '➕ Tambah Server Non Reseller', callback_data: 'addserver' },
+    ],
+    [{ text: '➕ Tambah Server ZIVPN Reseller', callback_data: 'add_server_zivpn_reseller_cmd' }],
 
     [
-{ text: '💳 Lihat Saldo User', callback_data: 'cek_saldo_user'}
+      { text: '➕ Tambah Server ZIVPN', callback_data: 'add_server_zivpn' }
     ],
     [
-  { text: '📦 Backup Database', callback_data: 'backup_db' }
+      { text: '🖼️ Upload Gambar QRIS |Top up manual', callback_data: 'upload_qris' }
     ],
-
     [
-      { text: '➕ Tambah Server', callback_data: 'addserver' },
+      { text: '💳 Lihat Saldo User', callback_data: 'cek_saldo_user'}
+    ],
+    [
+      { text: '📦 Backup Database', callback_data: 'backup_db' }
+    ],
+    [
       { text: '❌ Hapus Server', callback_data: 'deleteserver' }
     ],
     [
@@ -1173,6 +1295,26 @@ bot.on('photo', async (ctx) => {
   await ctx.reply('✅ Gambar QRIS berhasil diunggah!');
   logger.info('🖼️ QRIS image uploaded by admin');
   delete userState[adminId];
+});
+//////
+bot.action('add_server_zivpn_reseller_cmd', async (ctx) => {
+  await ctx.reply(
+    'Silakan gunakan command berikut untuk menambahkan server ZIVPN reseller:\n\n' +
+    '`/addserverzivpn_reseller <domain> <auth> <harga> <nama_server> <quota> <iplimit> <batas_create_akun>`\n\n' +
+    'Contoh:\n' +
+    '`/addserverzivpn_reseller sg-udp-01.example.com myauth123 500 SG-ZIVPN-RS-01 50 2 100`',
+    { parse_mode: 'Markdown' }
+  );
+});
+
+//handler addserver zivpn
+bot.action('add_server_zivpn', async (ctx) => {
+  userState[ctx.chat.id] = {
+    step: 'add_server_domain',
+    service: 'zivpn',
+    data: {}
+  };
+  await ctx.reply('🌐 Masukkan domain server ZIVPN:', { parse_mode: 'Markdown' });
 });
 
 // Handler untuk info tools reseller
@@ -1711,16 +1853,34 @@ async function startSelectServer(ctx, action, type, page = 0) {
 
 try {
   const isR = await isUserReseller(ctx.from.id);
-  const query = isR
-    ? 'SELECT * FROM Server'
-    : 'SELECT * FROM Server WHERE is_reseller_only = 0 OR is_reseller_only IS NULL';
+const service = type === 'zivpn' ? 'zivpn' : 'ssh';
 
-  db.all(query, [], (err, servers) => {
-    if (err) {
-      logger.error('⚠️ Error fetching servers:', err.message);
-      return ctx.reply('⚠️ Tidak ada server yang tersedia saat ini.', { parse_mode: 'HTML' });
-    }
+let query;
+let params = [];
 
+if (isR) {
+  // 🔥 RESELLER: HANYA server reseller
+  query = `
+    SELECT * FROM Server
+    WHERE service = ?
+      AND is_reseller_only = 1
+  `;
+  params = [service];
+} else {
+  // 🔹 USER BIASA: HANYA server non-reseller
+  query = `
+    SELECT * FROM Server
+    WHERE service = ?
+      AND (is_reseller_only = 0 OR is_reseller_only IS NULL)
+  `;
+  params = [service];
+}
+
+db.all(query, params, (err, servers) => {
+  if (err) {
+    logger.error('⚠️ Error fetching servers:', err.message);
+    return ctx.reply('⚠️ Tidak ada server yang tersedia saat ini.', { parse_mode: 'HTML' });
+  }
     // ==== mulai logika pagination di bawah ini ====
     const serversPerPage = 6;
     const totalPages = Math.ceil(servers.length / serversPerPage);
@@ -1891,6 +2051,88 @@ bot.action(/(lock)_username_(vmess|vless|trojan|shadowsocks|ssh)_(.+)/, async (c
 bot.on('text', async (ctx) => {
   const state = userState[ctx.chat.id];
 
+  if (state.step === 'add_server_domain') {
+  state.data.domain = ctx.message.text.trim();
+  state.step = 'add_server_auth';
+  return ctx.reply('🔑 Masukkan auth server:', { parse_mode: 'Markdown' });
+}
+
+if (state.step === 'add_server_auth') {
+  state.data.auth = ctx.message.text.trim();
+  state.step = 'add_server_harga';
+  return ctx.reply('💰 Masukkan harga server (angka):', { parse_mode: 'Markdown' });
+}
+
+if (state.step === 'add_server_harga') {
+  if (!/^\d+$/.test(ctx.message.text)) {
+    return ctx.reply('⚠️ Harga harus angka. Masukkan ulang:');
+  }
+  state.data.harga = parseInt(ctx.message.text);
+  state.step = 'add_server_nama';
+  return ctx.reply('📝 Masukkan nama server:', { parse_mode: 'Markdown' });
+}
+
+if (state.step === 'add_server_nama') {
+  state.data.nama_server = ctx.message.text.trim();
+  state.step = 'add_server_quota';
+  return ctx.reply('📊 Masukkan quota (GB):', { parse_mode: 'Markdown' });
+}
+
+if (state.step === 'add_server_quota') {
+  if (!/^\d+$/.test(ctx.message.text)) {
+    return ctx.reply('⚠️ Quota harus angka. Masukkan ulang:');
+  }
+  state.data.quota = parseInt(ctx.message.text);
+  state.step = 'add_server_iplimit';
+  return ctx.reply('📶 Masukkan IP limit:', { parse_mode: 'Markdown' });
+}
+
+if (state.step === 'add_server_iplimit') {
+  if (!/^\d+$/.test(ctx.message.text)) {
+    return ctx.reply('⚠️ IP limit harus angka. Masukkan ulang:');
+  }
+  state.data.iplimit = parseInt(ctx.message.text);
+  state.step = 'add_server_batas';
+  return ctx.reply('🔢 Masukkan batas create akun:', { parse_mode: 'Markdown' });
+}
+
+if (state.step === 'add_server_batas') {
+  if (!/^\d+$/.test(ctx.message.text)) {
+    return ctx.reply('⚠️ Batas create akun harus angka. Masukkan ulang:');
+  }
+  state.data.batas_create_akun = parseInt(ctx.message.text);
+
+  // 🔥 INSERT DB (SATU-SATUNYA TEMPAT SIMPAN)
+  const d = state.data;
+  const service = state.service || 'ssh';
+
+  db.run(
+    "INSERT INTO Server (domain, auth, harga, nama_server, quota, iplimit, batas_create_akun, total_create_akun, service) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)",
+    [
+      d.domain,
+      d.auth,
+      d.harga,
+      d.nama_server,
+      d.quota,
+      d.iplimit,
+      d.batas_create_akun,
+      service
+    ],
+    (err) => {
+      if (err) {
+        ctx.reply('❌ Gagal menyimpan server.');
+      } else {
+        ctx.reply(`✅ Server *${d.nama_server}* berhasil ditambahkan.`, {
+          parse_mode: 'Markdown'
+        });
+      }
+    }
+  );
+
+  delete userState[ctx.chat.id];
+  return;
+}
+
   if (!state) return; 
     const text = ctx.message.text.trim();
 //////
@@ -1984,7 +2226,7 @@ if (action === 'trial') {
   // 🔹 generate data trial
   const username = `trial${Math.floor(Math.random() * 10000)}`;
   const exp = '1';       // 1 hari
-  const quota = '1';    // 1 GB (sesuaikan)
+  const quota = '500';    // 1 GB (sesuaikan)
   const iplimit = '1';  // 1 IP
 
   let msg;
