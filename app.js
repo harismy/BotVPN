@@ -148,6 +148,43 @@ const MERCHANT_ID = vars.MERCHANT_ID;
 const API_KEY = vars.API_KEY;
 const GROUP_ID = vars.GROUP_ID;
 
+// =================== PERBAIKAN GROUP_ID ===================
+let GROUP_ID_NUM = null;
+
+try {
+  // Debug: log asli dari config
+  logger.info(`🔍 GROUP_ID dari .vars.json: "${GROUP_ID}" (type: ${typeof GROUP_ID})`);
+  
+  // Konversi ke number dengan handle berbagai format
+  if (GROUP_ID === undefined || GROUP_ID === null || GROUP_ID === "") {
+    logger.error('❌ GROUP_ID tidak ditemukan di config!');
+  } else {
+    // Handle string atau number
+    let groupIdStr = String(GROUP_ID).trim();
+    
+    // Jika ada tanda kutip di string, hapus
+    groupIdStr = groupIdStr.replace(/['"]/g, '');
+    
+    // Konversi ke number
+    const converted = Number(groupIdStr);
+    
+    if (!isNaN(converted)) {
+      GROUP_ID_NUM = converted;
+      logger.info(`✅ GROUP_ID valid: ${GROUP_ID_NUM}`);
+      
+      // Cek apakah ID negatif (semua grup Telegram punya ID negatif)
+      if (GROUP_ID_NUM > 0) {
+        logger.warn(`⚠️ GROUP_ID positif (${GROUP_ID_NUM}), biasanya grup Telegram ID-nya negatif`);
+        logger.warn(`⚠️ Jika notifikasi gagal, coba ubah ke negatif di .vars.json`);
+      }
+    } else {
+      logger.error(`❌ GROUP_ID tidak valid: "${GROUP_ID}" - harus berupa angka`);
+    }
+  }
+} catch (e) {
+  logger.error(`❌ Error processing GROUP_ID:`, e.message);
+}
+
 const bot = new Telegraf(BOT_TOKEN);
 let ADMIN_USERNAME = '';
 const adminIds = ADMIN;
@@ -289,7 +326,230 @@ db.run(`CREATE TABLE IF NOT EXISTS transactions (
 const userState = {};
 logger.info('User state initialized');
 
+///////
 
+//resellerstat
+bot.command('resellerstats', async (ctx) => {
+  try {
+    const userId = ctx.from.id;
+    
+    // Cek apakah user reseller
+    const isReseller = await isUserReseller(userId);
+    
+    if (!isReseller) {
+      return ctx.reply('❌ *Fitur ini hanya untuk reseller!*', { parse_mode: 'Markdown' });
+    }
+    
+    // Ambil saldo user
+    db.get('SELECT saldo FROM users WHERE user_id = ?', [userId], async (err, user) => {
+      if (err) {
+        logger.error('❌ Error ambil saldo:', err.message);
+        return ctx.reply('❌ Terjadi kesalahan saat mengambil data.');
+      }
+      
+      const saldo = user ? user.saldo : 0;
+      
+      // Hitung tanggal awal dan akhir bulan ini
+      const now = new Date();
+      const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+      const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      
+      const startTimestamp = firstDay.getTime();
+      const endTimestamp = lastDay.getTime();
+      
+      // Query transaksi bulan ini
+      const query = `
+        SELECT type, COUNT(*) as count, SUM(amount) as total 
+        FROM transactions 
+        WHERE user_id = ? 
+          AND timestamp >= ? 
+          AND timestamp <= ?
+          AND type IN ('ssh', 'vmess', 'vless', 'trojan', 'shadowsocks', 'zivpn')
+        GROUP BY type
+      `;
+      
+      db.all(query, [userId, startTimestamp, endTimestamp], async (err, rows) => {
+        if (err) {
+          logger.error('❌ Error ambil transaksi:', err.message);
+          return ctx.reply('❌ Terjadi kesalahan saat mengambil transaksi.');
+        }
+        
+        // Hitung total akun bulan ini
+        let totalAccounts = 0;
+        let totalRevenue = 0;
+        const typeDetails = [];
+        
+        rows.forEach(row => {
+          totalAccounts += row.count;
+          totalRevenue += row.total || 0;
+          typeDetails.push(`• ${row.type.toUpperCase()}: ${row.count} akun`);
+        });
+        
+        // Format pesan
+        const monthNames = ["Januari", "Februari", "Maret", "April", "Mei", "Juni",
+                          "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
+        const currentMonth = monthNames[now.getMonth()];
+        const currentYear = now.getFullYear();
+        
+        const message = 
+          `📊 *STATISTIK RESELLER*\n` +
+          `📅 Periode: ${currentMonth} ${currentYear}\n` +
+          `👤 ID Reseller: ${userId}\n\n` +
+          `💰 *Saldo Saat Ini:* Rp ${saldo.toLocaleString('id-ID')}\n\n` +
+          `📈 *AKTIVITAS BULAN INI:*\n` +
+          (typeDetails.length > 0 ? typeDetails.join('\n') : '• Belum ada transaksi') + `\n\n` +
+          `📊 *TOTAL BULAN INI:*\n` +
+          `• Jumlah Akun: ${totalAccounts} akun\n` +
+          `• Total Pendapatan: Rp ${totalRevenue.toLocaleString('id-ID')}\n\n` +
+          `📌 *Catatan:*\n` +
+          `• Data diambil dari 1 ${currentMonth} ${currentYear}\n` +
+          `• Hanya menampilkan transaksi pembuatan/perpanjangan akun\n` +
+          `• Update real-time setiap transaksi`;
+        
+        await ctx.reply(message, { parse_mode: 'Markdown' });
+        
+        // Log
+        logger.info(`📊 Stats reseller ditampilkan untuk ${userId}: ${totalAccounts} akun bulan ini`);
+      });
+    });
+    
+  } catch (error) {
+    logger.error('❌ Error di /resellerstats:', error);
+    await ctx.reply('❌ Terjadi kesalahan saat memproses permintaan.');
+  }
+});
+
+//allreseller stat
+bot.command('allresellerstats', async (ctx) => {
+  try {
+    const adminId = ctx.from.id;
+    
+    // Hanya admin
+    if (!adminIds.includes(adminId)) {
+      return ctx.reply('❌ Hanya admin yang bisa menggunakan command ini!');
+    }
+    
+    // Ambil semua user yang reseller
+    const resellers = listResellersSync();
+    
+    if (resellers.length === 0) {
+      return ctx.reply('📭 Belum ada reseller terdaftar.');
+    }
+    
+    const now = new Date();
+    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    const startTimestamp = firstDay.getTime();
+    const endTimestamp = lastDay.getTime();
+    
+    // Mulai buat pesan HTML
+    let message = `<b>📊 STATISTIK SEMUA RESELLER</b>\n`;
+    message += `<i>📅 Periode: ${escapeHtml(now.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' }))}</i>\n\n`;
+    
+    // Total semua
+    let totalAllAccounts = 0;
+    let totalAllRevenue = 0;
+    
+    // Loop melalui setiap reseller
+    for (const resellerId of resellers) {
+      // Ambil saldo
+      const user = await new Promise((resolve) => {
+        db.get('SELECT saldo FROM users WHERE user_id = ?', [resellerId], (err, row) => {
+          resolve(row || { saldo: 0 });
+        });
+      });
+      
+      // Ambil transaksi bulan ini
+      const transactions = await new Promise((resolve) => {
+        db.all(
+          `SELECT COUNT(*) as count, SUM(amount) as total FROM transactions 
+           WHERE user_id = ? AND timestamp >= ? AND timestamp <= ? 
+           AND type IN ('ssh', 'vmess', 'vless', 'trojan', 'shadowsocks', 'zivpn')`,
+          [resellerId, startTimestamp, endTimestamp],
+          (err, rows) => {
+            resolve(rows[0] || { count: 0, total: 0 });
+          }
+        );
+      });
+      
+      // ✅ PAKAI ID TELEGRAM SAJA, TIDAK PERLU USERNAME
+      const displayId = `<code>${resellerId}</code>`;
+      
+      // Tambah ke total
+      totalAllAccounts += transactions.count;
+      totalAllRevenue += transactions.total || 0;
+      
+      message += 
+        `<b>👤 ID:</b> ${displayId}\n` +
+        `<code>💰 Saldo:</code> Rp ${user.saldo.toLocaleString('id-ID')}\n` +
+        `<code>📊 Akun Bulan Ini:</code> ${transactions.count}\n` +
+        `<code>💵 Pendapatan:</code> Rp ${(transactions.total || 0).toLocaleString('id-ID')}\n` +
+        `────────────────────\n`;
+    }
+    
+    // Tambahkan summary
+    const totalResellers = resellers.length;
+    message += `\n<b>📈 RINGKASAN:</b>\n`;
+    message += `• <b>Total Reseller:</b> ${totalResellers} orang\n`;
+    message += `• <b>Total Akun Bulan Ini:</b> ${totalAllAccounts} akun\n`;
+    message += `• <b>Total Pendapatan:</b> Rp ${totalAllRevenue.toLocaleString('id-ID')}\n`;
+    message += `• <b>Periode:</b> ${escapeHtml(now.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' }))}\n`;
+    message += `• <b>Update:</b> ${escapeHtml(now.toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta' }))}`;
+    
+    // Split jika terlalu panjang (Telegram limit 4096 chars)
+    if (message.length > 4000) {
+      const parts = [];
+      const chunkSize = 3900; // Kasih buffer
+      
+      for (let i = 0; i < message.length; i += chunkSize) {
+        const chunk = message.substring(i, Math.min(i + chunkSize, message.length));
+        // Pastikan chunk tidak terpotong di tengah tag HTML
+        if (chunk.includes('<') && !chunk.includes('>')) {
+          // Jika tag tidak tertutup, cari posisi tag terakhir yang utuh
+          const lastCompleteTag = chunk.lastIndexOf('>');
+          if (lastCompleteTag > 0) {
+            parts.push(chunk.substring(0, lastCompleteTag + 1));
+            i = i - (chunk.length - lastCompleteTag - 1); // Adjust index
+          } else {
+            parts.push(chunk);
+          }
+        } else {
+          parts.push(chunk);
+        }
+      }
+      
+      // Kirim part pertama
+      await ctx.reply(parts[0], { parse_mode: 'HTML' });
+      
+      // Kirim part lainnya dengan delay
+      for (let i = 1; i < parts.length; i++) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+        await ctx.reply(parts[i], { parse_mode: 'HTML' });
+      }
+    } else {
+      await ctx.reply(message, { parse_mode: 'HTML' });
+    }
+    
+    logger.info(`📊 Admin ${adminId} melihat statistik semua reseller`);
+    
+  } catch (error) {
+    logger.error('❌ Error di /allresellerstats:', error);
+    await ctx.reply('❌ Terjadi kesalahan saat memproses permintaan.');
+  }
+});
+
+// ✅ FUNGSI UNTUK ESCAPE HTML (untuk aman)
+function escapeHtml(text) {
+  if (!text) return '';
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+////
 bot.command('addserverzivpn_reseller', async (ctx) => {
   if (!adminIds.includes(ctx.from.id)) {
     return ctx.reply('⚠️ Tidak ada izin.');
@@ -574,10 +834,10 @@ async function sendMainMenu(ctx) {
       { text: '🤝 Jadi Reseller harga lebih murah!!', callback_data: 'jadi_reseller' }
     ],
     [
-      { text: '💰 TopUp Saldo Manual via (QRIS)', callback_data: 'topup_manual' }
+     // { text: '💰 TopUp Saldo Manual via (QRIS)', callback_data: 'topup_manual' }
     ],
     [
-      { text: '💰 TopUp Saldo Otomatis(belum tersedia)', callback_data: 'topup_saldo' }
+      { text: '💰 TopUp Saldo Otomatis', callback_data: 'topup_saldo' }
     ],
   ];
 
@@ -590,6 +850,9 @@ async function sendMainMenu(ctx) {
     ]);
     keyboard.splice(3, 0, [
       { text: '🔐 Buka Kunci Akun', callback_data: 'service_unlock' }
+    ]);
+    keyboard.splice(4, 0, [
+    { text: '📊 Statistik Saya', callback_data: 'reseller_stats' }
     ]);
     
     logger.info(`🛡️ Menu reseller ditampilkan untuk user: ${userId}`);
@@ -665,6 +928,8 @@ bot.command('helpadmin', async (ctx) => {
 12. /editnama - Mengedit nama server.
 13. /edittotalcreate - Mengedit total pembuatan akun server.
 14. /hapuslog - Menghapus log bot.
+15. /allresellerstats - Ambil data statistik pembuatan semua reseller
+16. /resellerstats - Ambil data statistik saya
 
 Gunakan perintah ini dengan format yang benar untuk menghindari kesalahan.
 `;
@@ -1296,7 +1561,105 @@ bot.on('photo', async (ctx) => {
   logger.info('🖼️ QRIS image uploaded by admin');
   delete userState[adminId];
 });
-//////
+
+//callback handller statistik reseller
+bot.action('reseller_stats', async (ctx) => {
+  try {
+    await ctx.answerCbQuery();
+    const userId = ctx.from.id;
+    
+    // Cek reseller
+    const isReseller = await isUserReseller(userId);
+    if (!isReseller) {
+      return ctx.reply('❌ Fitur ini hanya untuk reseller!');
+    }
+    
+    // ✅ KIRIM PESAN LOADING DAN SIMPAN ID-NYA
+    const loadingMsg = await ctx.reply('⏳ Mengambil data statistik...');
+    const loadingMsgId = loadingMsg.message_id;
+    
+    // Ambil data
+    db.get('SELECT saldo FROM users WHERE user_id = ?', [userId], async (err, user) => {
+      if (err) {
+        // ❌ HAPUS PESAN LOADING JIKA ERROR
+        try {
+          await ctx.deleteMessage(loadingMsgId);
+        } catch (e) {}
+        await ctx.reply('❌ Terjadi kesalahan saat mengambil data.');
+        return;
+      }
+      
+      const saldo = user ? user.saldo : 0;
+      const now = new Date();
+      const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+      const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      
+      db.all(
+        `SELECT type, COUNT(*) as count FROM transactions 
+         WHERE user_id = ? AND timestamp >= ? AND timestamp <= ?
+         AND type IN ('ssh', 'vmess', 'vless', 'trojan', 'shadowsocks', 'zivpn')
+         GROUP BY type`,
+        [userId, firstDay.getTime(), lastDay.getTime()],
+        async (err, rows) => {
+          // ✅ HAPUS PESAN LOADING SETELAH DATA SIAP
+          try {
+            await ctx.deleteMessage(loadingMsgId);
+          } catch (e) {
+            logger.error('Gagal hapus pesan loading:', e.message);
+          }
+          
+          if (err) {
+            await ctx.reply('❌ Terjadi kesalahan saat mengambil data transaksi.');
+            return;
+          }
+          
+          let totalAccounts = 0;
+          const details = [];
+          
+          rows.forEach(row => {
+            totalAccounts += row.count;
+            details.push(`• ${row.type.toUpperCase()}: ${row.count} akun`);
+          });
+          
+          const monthNames = ["Januari", "Februari", "Maret", "April", "Mei", "Juni",
+                            "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
+          
+          const statsMessage = 
+            `📊 *STATISTIK RESELLER ANDA*\n\n` +
+            `💰 Saldo: Rp ${saldo.toLocaleString('id-ID')}\n` +
+            `📅 Periode: ${monthNames[now.getMonth()]} ${now.getFullYear()}\n\n` +
+            `📈 *Aktivitas Bulan Ini:*\n` +
+            (details.length > 0 ? details.join('\n') : '• Belum ada transaksi') + `\n\n` +
+            `📊 Total: *${totalAccounts} akun*\n\n` +
+            `🔄 Update terakhir: ${now.toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta' })}`;
+          
+          // ✅ KIRIM PESAN BARU DENGAN DATA
+          await ctx.reply(statsMessage, { 
+            parse_mode: 'Markdown',
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '🔄 Refresh', callback_data: 'reseller_stats_refresh' }],
+                [{ text: '🔙 Kembali', callback_data: 'send_main_menu' }]
+              ]
+            }
+          });
+        }
+      );
+    });
+    
+  } catch (error) {
+    logger.error('Error di reseller_stats:', error);
+    await ctx.reply('❌ Terjadi kesalahan.');
+  }
+});
+
+// Handler untuk refresh
+bot.action('reseller_stats_refresh', async (ctx) => {
+  await ctx.answerCbQuery();
+  await bot.action['reseller_stats'](ctx); // Panggil ulang handler
+});
+
+//handler untuk add server reseller
 bot.action('add_server_zivpn_reseller_cmd', async (ctx) => {
   await ctx.reply(
     'Silakan gunakan command berikut untuk menambahkan server ZIVPN reseller:\n\n' +
@@ -3444,28 +3807,34 @@ bot.action('topup_saldo', async (ctx) => {
   try {
     await ctx.answerCbQuery(); 
     const userId = ctx.from.id;
-    logger.info(`🔍 User ${userId} memulai proses top-up saldo.`);
     
-
     if (!global.depositState) {
       global.depositState = {};
     }
     global.depositState[userId] = { action: 'request_amount', amount: '' };
     
-    logger.info(`🔍 User ${userId} diminta untuk memasukkan jumlah nominal saldo.`);
-    
-
     const keyboard = keyboard_nomor();
     
-    await ctx.editMessageText('💰 *Silakan masukkan jumlah nominal saldo yang Anda ingin tambahkan ke akun Anda:*', {
-      reply_markup: {
-        inline_keyboard: keyboard
-      },
-      parse_mode: 'Markdown'
-    });
+    await ctx.editMessageText(
+      '💰 *Top Up Saldo Otomatis*\n\n' +
+      '💳 *Minimal Top-up: Rp 2.000*\n\n' +
+      '💸 *Biaya Admin:*\n' +
+      '• Rp 200 untuk nominal di bawah 5.000\n' +
+      '• Rp 150 untuk nominal 5.000 ke atas\n\n' +
+      '📊 *Contoh:*\n' +
+      '• Rp 2.000 + Rp 200 = Rp 2.200\n' +
+      '• Rp 3.000 + Rp 200 = Rp 3.200\n' +
+      '• Rp 5.000 + Rp 150 = Rp 5.150\n' +
+      '• Rp 10.000 + Rp 150 = Rp 10.150\n\n' +
+      'Silakan masukkan jumlah nominal:',
+      {
+        reply_markup: { inline_keyboard: keyboard },
+        parse_mode: 'Markdown'
+      }
+    );
   } catch (error) {
     logger.error('❌ Kesalahan saat memulai proses top-up saldo:', error);
-    await ctx.editMessageText('❌ *GAGAL! Terjadi kesalahan saat memproses permintaan Anda. Silakan coba lagi nanti.*', { parse_mode: 'Markdown' });
+    await ctx.editMessageText('❌ *GAGAL! Terjadi kesalahan. Silakan coba lagi nanti.*', { parse_mode: 'Markdown' });
   }
 });
 
@@ -3637,56 +4006,37 @@ bot.on('callback_query', async (ctx) => {
 
   if (global.depositState && global.depositState[userId] && global.depositState[userId].action === 'request_amount') {
     await handleDepositState(ctx, userId, data);
-  } else if (userStateData) {
-    switch (userStateData.step) {
-case 'addsaldo_userid':
-  state.targetId = ctx.message.text.trim();
-  state.step = 'addsaldo_jumlah';
-  return ctx.reply('💰 Masukkan jumlah saldo yang ingin ditambahkan:');
-
-case 'addsaldo_amount':
-  const amount = parseInt(ctx.message.text.trim());
-  if (isNaN(amount) || amount <= 0) {
-    return ctx.reply('⚠️ Jumlah saldo harus berupa angka dan lebih dari 0.');
-  }
-
-  const targetId = state.targetId;
-  db.get('SELECT * FROM users WHERE user_id = ?', [targetId], (err, row) => {
-    if (err) {
-      logger.error('❌ Kesalahan saat memeriksa user_id:', err.message);
-      return ctx.reply('❌ Terjadi kesalahan saat memeriksa user.');
-    }
-
-    if (!row) {
-      return ctx.reply(`⚠️ User dengan ID ${targetId} belum terdaftar di database.`);
-    }
-
-    db.run('UPDATE users SET saldo = saldo + ? WHERE user_id = ?', [amount, targetId], function (err) {
-      if (err) {
-        logger.error('❌ Gagal menambah saldo:', err.message);
-        return ctx.reply('❌ Gagal menambah saldo.');
+  } 
+  // ✅ TAMBAHKAN HANDLER UNTUK confirm_final
+  else if (data === 'confirm_final') {
+    try {
+      await ctx.answerCbQuery();
+      
+      if (global.depositState && global.depositState[userId]) {
+        const amount = global.depositState[userId].amount;
+        await processDeposit(ctx, amount);
+      } else {
+        await ctx.reply('❌ Sesi top-up sudah expired. Silakan mulai lagi.');
       }
-
-      // 🔥 Perbaikan di bawah ini
-      db.get('SELECT saldo FROM users WHERE user_id = ?', [targetId], (err2, updatedRow) => {
-        if (err2 || !updatedRow) {
-          logger.info(`Admin ${ctx.from.id} menambah saldo Rp${amount} ke user ${targetId}, namun gagal membaca saldo terbaru.`);
-          return ctx.reply(`✅ Saldo sebesar Rp${amount.toLocaleString()} berhasil ditambahkan ke user ${targetId}.`);
+    } catch (error) {
+      logger.error('Error confirm_final:', error);
+      await ctx.reply('❌ Terjadi kesalahan. Silakan coba lagi.');
+    }
+    return;
+  }
+  else if (userStateData) {
+    switch (userStateData.step) {
+      // ❌ HAPUS/MODIFIKASI bagian addsaldo_userid dan addsaldo_amount 
+      // karena itu seharusnya di text handler, tapi kalau sudah berjalan biarin saja
+      
+      // ✅ TAMBAHKAN CASE UNTUK CONFIRM FINAL DI STATE LAINNYA
+      case 'confirm_final_topup':
+        if (global.depositState && global.depositState[userId]) {
+          const amount = global.depositState[userId].amount;
+          await processDeposit(ctx, amount);
         }
-
-        ctx.reply(`✅ Saldo sebesar Rp${amount.toLocaleString()} berhasil ditambahkan ke user ${targetId}.\n💰 Saldo user sekarang: Rp${updatedRow.saldo.toLocaleString()}`);
-        logger.info(`Admin ${ctx.from.id} menambah saldo Rp${amount} ke user ${targetId}. Saldo user sekarang: Rp${updatedRow.saldo}`);
-      });
-
-      delete userState[ctx.from.id];
-    });
-  });
-  break;
-
-  default:
-    await ctx.reply('❓ Perintah tidak dikenali.');
         break;
-///////////////////////////
+        
       case 'edit_batas_create_akun':
         await handleEditBatasCreateAkun(ctx, userStateData, data);
         break;
@@ -3711,7 +4061,12 @@ case 'addsaldo_amount':
       case 'edit_total_create_akun':
         await handleEditTotalCreateAkun(ctx, userStateData, data);
         break;
+      default:
+        await ctx.answerCbQuery();
+        break;
     }
+  } else {
+    await ctx.answerCbQuery();
   }
 });
 
@@ -3725,12 +4080,44 @@ async function handleDepositState(ctx, userId, data) {
     if (currentAmount.length === 0) {
       return await ctx.answerCbQuery('⚠️ Jumlah tidak boleh kosong!', { show_alert: true });
     }
-    if (parseInt(currentAmount) < 5000) {
-      return await ctx.answerCbQuery('⚠️ Jumlah minimal adalah 5.000 !', { show_alert: true });
+    
+    const amountNum = parseInt(currentAmount);
+    
+    // ✅ UBAH MINIMAL JADI 2000
+    if (amountNum < 2000) {
+      return await ctx.answerCbQuery('⚠️ Jumlah minimal adalah 2.000!', { show_alert: true });
     }
-    global.depositState[userId].action = 'confirm_amount';
-    await processDeposit(ctx, currentAmount);
-    return;
+    
+    // Hitung admin fee
+    const adminFee = amountNum < 5000 ? 200 : 150;
+    const totalAmount = amountNum + adminFee;
+    
+    const feeType = amountNum < 5000 ? 
+      'Rp 200 (untuk nominal < 5.000)' : 
+      'Rp 150 (untuk nominal ≥ 5.000)';
+    
+    const confirmMessage = 
+      `📋 *Konfirmasi Top-up*\n\n` +
+      `💰 *Nominal Top-up:* Rp ${amountNum.toLocaleString('id-ID')}\n` +
+      `💸 *Biaya Admin:* ${feeType}\n` +
+      `💵 *Total Bayar:* Rp ${totalAmount.toLocaleString('id-ID')}\n\n` +
+      `⚠️ *Transfer harus sesuai total di atas*\n\n` +
+      `Lanjutkan pembayaran?`;
+    
+    await ctx.editMessageText(confirmMessage, {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '✅ Lanjutkan', callback_data: 'confirm_final' }],
+          [{ text: '❌ Batal', callback_data: 'send_main_menu' }]
+        ]
+      }
+    });
+    
+    global.depositState[userId].amount = currentAmount;
+    global.depositState[userId].action = 'confirm_final';
+    return await ctx.answerCbQuery();
+    
   } else {
     if (currentAmount.length < 12) {
       currentAmount += data;
@@ -3743,11 +4130,11 @@ async function handleDepositState(ctx, userId, data) {
   const newMessage = `💰 *Silakan masukkan jumlah nominal saldo yang Anda ingin tambahkan ke akun Anda:*\n\nJumlah saat ini: *Rp ${currentAmount || '0'}*`;
   
   try {
-  if (newMessage !== ctx.callbackQuery.message.text) {
-    await ctx.editMessageText(newMessage, {
-      reply_markup: { inline_keyboard: keyboard_nomor() },
-      parse_mode: 'Markdown'
-    });
+    if (newMessage !== ctx.callbackQuery.message.text) {
+      await ctx.editMessageText(newMessage, {
+        reply_markup: { inline_keyboard: keyboard_nomor() },
+        parse_mode: 'Markdown'
+      });
     } else {
       await ctx.answerCbQuery();
     }
@@ -3927,9 +4314,28 @@ async function updateServerField(serverId, value, query) {
   });
 }
 
-function generateRandomAmount(baseAmount) {
-  const random = Math.floor(Math.random() * 99) + 1;
-  return baseAmount + random;
+function calculateFinalAmount(baseAmount) {
+  // Validasi minimal (seharusnya sudah divalidasi sebelumnya)
+  if (baseAmount < 2000) {
+    logger.warn(`⚠️ Amount ${baseAmount} di bawah minimal 2000`);
+  }
+  
+  // Admin fee tetap berdasarkan nominal
+  let adminFee;
+  if (baseAmount < 5000) {
+    adminFee = 200;  // Untuk top-up di bawah 5.000
+  } else {
+    adminFee = 150;  // Untuk top-up 5.000 ke atas
+  }
+  
+  const finalAmount = baseAmount + adminFee;
+  
+  logger.info(`💰 Admin fee: ${baseAmount} + ${adminFee} = ${finalAmount}`);
+  return {
+    finalAmount: finalAmount,
+    adminFee: adminFee,
+    baseAmount: baseAmount
+  };
 }
 
 global.depositState = {};
@@ -3969,7 +4375,7 @@ function generateRandomNumber(min, max) {
 
 async function processDeposit(ctx, amount) {
   const currentTime = Date.now();
-
+  
   if (currentTime - lastRequestTime < requestInterval) {
     await ctx.editMessageText('⚠️ *Terlalu banyak permintaan. Silakan tunggu sebentar sebelum mencoba lagi.*', { parse_mode: 'Markdown' });
     return;
@@ -3979,16 +4385,38 @@ async function processDeposit(ctx, amount) {
   const userId = ctx.from.id;
   const uniqueCode = `user-${userId}-${Date.now()}`;
 
-  // Generate final amount with random suffix
-  const finalAmount = Number(amount) + generateRandomNumber(1, 300);
-  const adminFee = finalAmount - Number(amount)
+  const amountNum = Number(amount);
+  
+  // ✅ TAMBAH VALIDASI MINIMAL 2000
+  if (amountNum < 2000) {
+    await ctx.editMessageText(
+      '❌ *Nominal terlalu kecil!*\n\n' +
+      'Minimal top-up adalah **Rp 2.000**.\n\n' +
+      'Silakan mulai lagi dari menu Top Up.',
+      { 
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🔙 Kembali ke Menu Utama', callback_data: 'send_main_menu' }]
+          ]
+        }
+      }
+    );
+    delete global.depositState[userId];
+    return;
+  }
+  
+  // Hitung final amount dengan admin fee tetap
+  const { finalAmount, adminFee } = calculateFinalAmount(amountNum);
+
+  logger.info(`💳 Top-up: User ${userId}, Amount ${amountNum}, Fee ${adminFee}, Total ${finalAmount}`);
   try {
     const urlQr = DATA_QRIS; // QR destination
    // console.log('🔍 CEK DATA_QRIS:', urlQr);
     const axios = require('axios');
 //const sharp = require('sharp'); // opsional kalau mau resize
 
-const bayar = await axios.get(`https://api.serverpremium.web.id/orderkuota/createpayment?apikey=AriApiPaymetGetwayMod&amount=${finalAmount}&codeqr=${urlQr}`);
+const bayar = await axios.get(`https://api.rajaserverpremium.web.id/orderkuota/createpayment?apikey=AriApiPaymetGetwayMod&amount=${finalAmount}&codeqr=${urlQr}`);
 const get = bayar.data;
 
 if (get.status !== 'success') {
@@ -4057,14 +4485,73 @@ const qrBuffer = Buffer.from(qrResponse.data);
   }
 }
 
+let lastApiCallTime = 0;
+const API_CALL_INTERVAL = 5000; // 5 detik minimal interval
+let transactionCache = null;
+let cacheTimestamp = 0;
+const CACHE_DURATION = 10000; // 10 detik cache
+
 async function checkQRISStatus() {
+  const now = Date.now();
+  
+  // Rate limiting: jangan panggil API terlalu sering
+  if (now - lastApiCallTime < API_CALL_INTERVAL) {
+    // Skip API call jika terlalu cepat
+    return;
+  }
+  
   try {
     const pendingDeposits = Object.entries(global.pendingDeposits);
+    if (pendingDeposits.length === 0) {
+      return; // Tidak ada pending deposits, skip
+    }
 
+    // Gunakan cache untuk transaksi API
+    let transaksiList = [];
+    if (transactionCache && (now - cacheTimestamp < CACHE_DURATION)) {
+      transaksiList = transactionCache;
+      logger.debug('📦 Menggunakan cache transaksi');
+    } else {
+      // Ambil data dari API
+      const data = buildPayload();
+      const resultcek = await axios.post(API_URL, data, { headers, timeout: 5000 });
+      
+      // Parse response
+      const responseText = resultcek.data;
+      const blocks = responseText.split('------------------------').filter(Boolean);
+      
+      transaksiList = [];
+      for (const block of blocks) {
+        const kreditMatch = block.match(/Kredit\s*:\s*([\d.]+)/);
+        const tanggalMatch = block.match(/Tanggal\s*:\s*(.+)/);
+        const brandMatch = block.match(/Brand\s*:\s*(.+)/);
+        if (kreditMatch) {
+          transaksiList.push({
+            tanggal: tanggalMatch ? tanggalMatch[1].trim() : '-',
+            kredit: Number(kreditMatch[1].replace(/\./g, '')),
+            brand: brandMatch ? brandMatch[1].trim() : '-'
+          });
+        }
+      }
+      
+      // Update cache
+      transactionCache = transaksiList;
+      cacheTimestamp = now;
+      lastApiCallTime = now;
+      
+      // Log hanya jika ada transaksi baru/different
+      if (transaksiList.length > 0) {
+        logger.info(`📦 Transaksi API: ${transaksiList.length} transaksi ditemukan`);
+      }
+    }
+
+    // Proses pending deposits
     for (const [uniqueCode, deposit] of pendingDeposits) {
       if (deposit.status !== 'pending') continue;
 
-      const depositAge = Date.now() - deposit.timestamp;
+      const depositAge = now - deposit.timestamp;
+      
+      // Cek expired (5 menit)
       if (depositAge > 5 * 60 * 1000) {
         try {
           if (deposit.qrMessageId) {
@@ -4073,7 +4560,7 @@ async function checkQRISStatus() {
           await bot.telegram.sendMessage(
             deposit.userId,
             '❌ *Pembayaran Expired*\n\n' +
-              'Waktu pembayaran telah habis. Silakan klik Top Up lagi untuk mendapatkan QR baru.',
+            'Waktu pembayaran telah habis. Silakan klik Top Up lagi untuk mendapatkan QR baru.',
             { parse_mode: 'Markdown' }
           );
         } catch (error) {
@@ -4087,54 +4574,32 @@ async function checkQRISStatus() {
         continue;
       }
 
-      try {
-        const data = buildPayload(); // payload selalu fresh
-        const resultcek = await axios.post(API_URL, data, { headers, timeout: 5000 });
+      // Cek apakah transaksi sudah cocok
+      const expectedAmount = deposit.amount;
+      const matched = transaksiList.find(t => t.kredit === expectedAmount);
 
-        // API balik teks (bukan JSON)
-        const responseText = resultcek.data;
-        //console.log('📦 Raw response from API:\n', responseText);
-
-        // Parse teks jadi array transaksi
-        const transaksiList = [];
-        const blocks = responseText.split('------------------------').filter(Boolean);
-
-        for (const block of blocks) {
-          const kreditMatch = block.match(/Kredit\s*:\s*([\d.]+)/);
-          const tanggalMatch = block.match(/Tanggal\s*:\s*(.+)/);
-          const brandMatch = block.match(/Brand\s*:\s*(.+)/);
-          if (kreditMatch) {
-            transaksiList.push({
-              tanggal: tanggalMatch ? tanggalMatch[1].trim() : '-',
-              kredit: Number(kreditMatch[1].replace(/\./g, '')),
-              brand: brandMatch ? brandMatch[1].trim() : '-'
-            });
-          }
-        }
-
-        // Debug hasil parsing
-        console.log('✅ Parsed transaksi:', transaksiList);
-
-        // Cocokkan nominal
-        const expectedAmount = deposit.amount;
-        const matched = transaksiList.find(t => t.kredit === expectedAmount);
-
-        if (matched) {
+      if (matched) {
+        try {
           const success = await processMatchingPayment(deposit, matched, uniqueCode);
           if (success) {
-            logger.info(`Payment processed successfully for ${uniqueCode}`);
+            logger.info(`✅ Payment processed: ${uniqueCode}, amount: ${expectedAmount}`);
             delete global.pendingDeposits[uniqueCode];
             db.run('DELETE FROM pending_deposits WHERE unique_code = ?', [uniqueCode], (err) => {
               if (err) logger.error('Gagal hapus pending_deposits (success):', err.message);
             });
+            
+            // Clear cache karena ada perubahan
+            transactionCache = null;
           }
+        } catch (error) {
+          logger.error(`❌ Error processing payment ${uniqueCode}:`, error.message);
         }
-      } catch (error) {
-        logger.error(`Error checking payment status for ${uniqueCode}:`, error.message);
       }
     }
   } catch (error) {
-    logger.error('Error in checkQRISStatus:', error);
+    logger.error('❌ Error in checkQRISStatus:', error.message);
+    // Reset cache jika error
+    transactionCache = null;
   }
 }
 
@@ -4164,6 +4629,12 @@ function keyboard_nomor() {
     buttons.push(row);
   }
   buttons.push([{ text: '🔙 Hapus', callback_data: 'delete' }, { text: '✅ Konfirmasi', callback_data: 'confirm' }]);
+  // ✅ TAMBAHKAN TOMBOL CONTOH
+  buttons.push([
+    { text: '💰 2000', callback_data: '2000' },
+    { text: '💰 5000', callback_data: '5000' },
+    { text: '💰 10000', callback_data: '10000' }
+  ]);
   buttons.push([{ text: '🔙 Kembali ke Menu Utama', callback_data: 'send_main_menu' }]);
   return buttons;
 }
@@ -4247,7 +4718,7 @@ async function processMatchingPayment(deposit, matchingTransaction, uniqueCode) 
           }
           if (row) {
             db.run('ROLLBACK');
-    logger.info(`Transaction ${transactionKey} already processed, skipping...`);
+            logger.info(`Transaction ${transactionKey} already processed, skipping...`);
             resolve(false);
             return;
           }
@@ -4261,11 +4732,11 @@ async function processMatchingPayment(deposit, matchingTransaction, uniqueCode) 
                 reject(err);
                 return;
               }
-    // Record the transaction
-      db.run(
+              // Record the transaction
+              db.run(
                 'INSERT INTO transactions (user_id, amount, type, reference_id, timestamp) VALUES (?, ?, ?, ?, ?)',
                 [deposit.userId, deposit.originalAmount, 'deposit', matchingTransaction.reference_id || uniqueCode, Date.now()],
-        (err) => {
+                (err) => {
                   if (err) {
                     db.run('ROLLBACK');
                     logger.error('Error recording transaction:', err);
@@ -4280,12 +4751,17 @@ async function processMatchingPayment(deposit, matchingTransaction, uniqueCode) 
                       reject(err);
                       return;
                     }
+                    
+                    // Hitung admin fee
+                    const adminFee = deposit.amount - deposit.originalAmount;
+                    
                     // Send notification using sendPaymentSuccessNotification
-    const notificationSent = await sendPaymentSuccessNotification(
-      deposit.userId,
-      deposit,
+                    const notificationSent = await sendPaymentSuccessNotification(
+                      deposit.userId,
+                      deposit,
                       user.saldo
                     );
+                    
                     // Delete QR code message after payment success
                     if (deposit.qrMessageId) {
                       try {
@@ -4294,51 +4770,79 @@ async function processMatchingPayment(deposit, matchingTransaction, uniqueCode) 
                         logger.error("Gagal menghapus pesan QR code:", e.message);
                       }
                     }
-    if (notificationSent) {
-      // Notifikasi ke grup untuk top up
-      try {
-        // Pada notifikasi ke grup (top up dan pembelian/renew), ambil info user:
-        let userInfo;
-        try {
-          userInfo = await bot.telegram.getChat(deposit ? deposit.userId : (ctx ? ctx.from.id : ''));
-        } catch (e) {
-          userInfo = {};
-        }
-        const username = userInfo.username ? `@${userInfo.username}` : (userInfo.first_name || (deposit ? deposit.userId : (ctx ? ctx.from.id : '')));
-        const userDisplay = userInfo.username
-          ? `${username} (${deposit ? deposit.userId : (ctx ? ctx.from.id : '')})`
-          : `${username}`;
-        await bot.telegram.sendMessage(
-          GROUP_ID,
-          `<blockquote>
-✅ <b>Top Up Berhasil</b>
-👤 User: ${userDisplay}
-💰 Nominal: <b>Rp ${deposit.originalAmount}</b>
-🏦 Saldo Sekarang: <b>Rp ${user.saldo}</b>
-🕒 Waktu: ${new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })}
-</blockquote>`,
-          { parse_mode: 'HTML' }
-        );
-      } catch (e) { logger.error('Gagal kirim notif top up ke grup:', e.message); }
-      // Hapus semua file di receipts setelah pembayaran sukses
-      try {
-        const receiptsDir = path.join(__dirname, 'receipts');
-        if (fs.existsSync(receiptsDir)) {
-          const files = fs.readdirSync(receiptsDir);
-          for (const file of files) {
-            fs.unlinkSync(path.join(receiptsDir, file));
-          }
-        }
-      } catch (e) { logger.error('Gagal menghapus file di receipts:', e.message); }
-      db.run('COMMIT');
-      global.processedTransactions.add(transactionKey);
-      delete global.pendingDeposits[uniqueCode];
-      db.run('DELETE FROM pending_deposits WHERE unique_code = ?', [uniqueCode]);
-      resolve(true);
-    } else {
-      db.run('ROLLBACK');
-      reject(new Error('Failed to send payment notification.'));
-    }
+                    
+                    if (notificationSent) {
+                      // Notifikasi ke grup untuk top up
+                      try {
+                        // Ambil info user untuk notifikasi
+                        let userInfo;
+                        try {
+                          userInfo = await bot.telegram.getChat(deposit.userId);
+                        } catch (e) {
+                          userInfo = {};
+                        }
+                        
+                        const username = userInfo.username ? `@${userInfo.username}` : 
+                                       (userInfo.first_name || `User ${deposit.userId}`);
+                        
+                        const userDisplay = userInfo.username 
+                          ? `${username} (ID: ${deposit.userId})`
+                          : `${username}`;
+                        
+                        // Format waktu
+                        const waktu = new Date().toLocaleString('id-ID', { 
+                          timeZone: 'Asia/Jakarta',
+                          weekday: 'long',
+                          year: 'numeric',
+                          month: 'long',
+                          day: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                          second: '2-digit'
+                        });
+                        
+                        // Kirim notifikasi ke grup
+                        await bot.telegram.sendMessage(
+                          GROUP_ID,
+                          `🎉 *TOP UP BERHASIL* 🎉\n\n` +
+                          `👤 *User:* ${userDisplay}\n` +
+                          `💰 *Nominal Top-up:* Rp ${deposit.originalAmount.toLocaleString('id-ID')}\n` +
+                          `💸 *Biaya Admin:* Rp ${adminFee.toLocaleString('id-ID')}\n` +
+                          `💵 *Total Bayar:* Rp ${deposit.amount.toLocaleString('id-ID')}\n` +
+                          `🏦 *Saldo Sekarang:* Rp ${user.saldo.toLocaleString('id-ID')}\n\n` +
+                          `⏰ *Waktu:* ${waktu}\n` +
+                          `🆔 *ID Transaksi:* ${uniqueCode.substring(0, 8)}...`,
+                          { parse_mode: 'Markdown' }
+                        );
+                        
+                        logger.info(`📢 Notifikasi top-up dikirim ke grup ${GROUP_ID} untuk user ${deposit.userId}`);
+                      } catch (e) { 
+                        logger.error('❌ Gagal kirim notif top up ke grup:', e.message);
+                        // Jangan gagalkan transaksi hanya karena notifikasi gagal
+                      }
+                      
+                      // Hapus semua file di receipts setelah pembayaran sukses
+                      try {
+                        const receiptsDir = path.join(__dirname, 'receipts');
+                        if (fs.existsSync(receiptsDir)) {
+                          const files = fs.readdirSync(receiptsDir);
+                          for (const file of files) {
+                            fs.unlinkSync(path.join(receiptsDir, file));
+                          }
+                        }
+                      } catch (e) { 
+                        logger.error('Gagal menghapus file di receipts:', e.message); 
+                      }
+                      
+                      db.run('COMMIT');
+                      global.processedTransactions.add(transactionKey);
+                      delete global.pendingDeposits[uniqueCode];
+                      db.run('DELETE FROM pending_deposits WHERE unique_code = ?', [uniqueCode]);
+                      resolve(true);
+                    } else {
+                      db.run('ROLLBACK');
+                      reject(new Error('Failed to send payment notification.'));
+                    }
                   });
                 }
               );
@@ -4358,11 +4862,53 @@ async function recordAccountTransaction(userId, type) {
     db.run(
       'INSERT INTO transactions (user_id, type, reference_id, timestamp) VALUES (?, ?, ?, ?)',
       [userId, type, referenceId, Date.now()],
-      (err) => {
+      async (err) => {
         if (err) {
           logger.error('Error recording account transaction:', err.message);
           reject(err);
         } else {
+          // ✅ TAMBAH: Notifikasi ke grup admin jika user adalah reseller
+          try {
+            const isReseller = await isUserReseller(userId);
+            if (isReseller && GROUP_ID_NUM) {
+              // Cek bulan ini sudah berapa akun
+              const now = new Date();
+              const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+              
+              db.get(
+                `SELECT COUNT(*) as count FROM transactions 
+                 WHERE user_id = ? AND timestamp >= ? 
+                 AND type IN ('ssh', 'vmess', 'vless', 'trojan', 'shadowsocks', 'zivpn')`,
+                [userId, firstDay.getTime()],
+                (err, row) => {
+                  if (!err && row) {
+                    const totalThisMonth = row.count;
+                    
+                    // Ambil info user
+                    bot.telegram.getChat(userId).then(userInfo => {
+                      const username = userInfo.username ? `@${userInfo.username}` : 
+                                     (userInfo.first_name || `User ${userId}`);
+                      
+                      bot.telegram.sendMessage(
+                        GROUP_ID_NUM,
+                        `🛍️ *RESELLER TRANSAKSI*\n\n` +
+                        `👤 Reseller: ${username}\n` +
+                        `📦 Tipe: ${type.toUpperCase()}\n` +
+                        `📊 Total Bulan Ini: ${totalThisMonth} akun\n` +
+                        `⏰ ${now.toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta' })}`,
+                        { parse_mode: 'Markdown' }
+                      ).catch(e => logger.error('Gagal kirim notif reseller:', e.message));
+                    }).catch(() => {
+                      // Skip jika tidak bisa dapatkan info user
+                    });
+                  }
+                }
+              );
+            }
+          } catch (e) {
+            // Skip error notifikasi
+          }
+          
           resolve();
         }
       }
@@ -4411,22 +4957,59 @@ schedule.scheduleJob("0 0 * * *", () => {
     }
 });
 
-app.listen(port, () => {
-  bot.launch()
-    .then(async () => {
-      logger.info('✅ Bot telah dimulai');
+// Tambahkan error handler untuk bot
+bot.catch((err, ctx) => {
+  logger.error(`❌ Bot error: ${err.message}`);
+  // Jika ini callback query error, coba handle gracefully
+  if (ctx && ctx.updateType === 'callback_query') {
+    try {
+      ctx.answerCbQuery('⚠️ Terjadi kesalahan, coba lagi').catch(() => {});
+    } catch (e) {
+      // Ignore jika sudah expired
+    }
+  }
+});
 
-      // === 🧭 DAFTAR MENU COMMAND TELEGRAM ===
-      await bot.telegram.setMyCommands([
-        { command: 'start', description: 'Mulai bot dan tampilkan menu utama' },
-        { command: 'admin', description: 'Menu admin (khusus admin)' }
-      ]);
-
-      logger.info('✅ Command menu berhasil diset.');
-    })
-    .catch((error) => {
-      logger.error('❌ Error saat memulai bot:', error);
-    });
-
+app.listen(port, async () => {
   logger.info(`🚀 Server berjalan di port ${port}`);
+  
+  try {
+    // Gunakan polling mode dengan config
+    const botConfig = {
+      dropPendingUpdates: true,  // Bersihkan semua update yang pending saat start
+      allowedUpdates: ['message', 'callback_query', 'inline_query'],
+      handlerTimeout: 60000,     // Timeout 60 detik untuk handler
+    };
+    
+    // Gunakan polling mode
+    await bot.launch(botConfig);
+    
+    logger.info('✅ Bot telah dimulai (Polling Mode)');
+
+    // === 🧭 DAFTAR MENU COMMAND TELEGRAM ===
+    await bot.telegram.setMyCommands([
+      { command: 'start', description: 'Mulai bot dan tampilkan menu utama' },
+      { command: 'admin', description: 'Menu admin (khusus admin)' }
+    ]);
+
+    logger.info('✅ Command menu berhasil diset.');
+    
+    // Enable graceful stop untuk PM2
+    process.once('SIGINT', () => {
+      logger.info('🛑 Received SIGINT, stopping bot...');
+      bot.stop('SIGINT');
+    });
+    process.once('SIGTERM', () => {
+      logger.info('🛑 Received SIGTERM, stopping bot...');
+      bot.stop('SIGTERM');
+    });
+    
+  } catch (error) {
+    logger.error('❌ Error saat memulai bot:', error);
+    // Tunggu 5 detik lalu exit (PM2 akan restart)
+    setTimeout(() => {
+      logger.error('🔄 Restarting bot due to startup error...');
+      process.exit(1);
+    }, 5000);
+  }
 });
