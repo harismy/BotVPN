@@ -27,7 +27,6 @@ loading_spinner() {
         sleep 0.1
     done
 
-    # Clear baris spinner setelah selesai
     printf "\r\033[K"
 }
 
@@ -62,21 +61,17 @@ input_field() {
         read value
     done
 
-    # Spinner start
     echo 0 >/tmp/spinner_stop
     loading_spinner "Memproses" &
     SPIN_PID=$!
 
     sleep 1
 
-    # Stop spinner
     echo 1 >/tmp/spinner_stop
     wait $SPIN_PID 2>/dev/null
 
-    # Setelah spinner hilang, lanjut input berikutnya
     eval "$varname='$value'"
 }
-
 
 show_header() {
     clear
@@ -92,6 +87,7 @@ show_header() {
     echo -e "${cyan}•${neutral} addsaldo user"
     echo -e "${cyan}•${neutral} ceksaldo user"
     echo -e "${cyan}•${neutral} tambah server khusus reseller"
+    echo -e "${cyan}•${neutral} auto-backup database harian"
     echo ""
     echo -e "${cyan}Menyiapkan panel input...${neutral}"
     echo ""
@@ -110,8 +106,133 @@ setup_bot() {
     rm -rf /root/BotVPN
     git clone https://github.com/harismy/BotVPN.git /root/BotVPN
     npm install -g npm@latest pm2
-    npm install --prefix /root/BotVPN sqlite3 express crypto telegraf axios dotenv
+    npm install --prefix /root/BotVPN sqlite3 express crypto telegraf axios dotenv node-schedule
     chmod +x /root/BotVPN/*
+}
+
+setup_crontab_backup() {
+    echo ""
+    echo -e "${cyan}🔧 Configuring auto-backup system...${neutral}"
+    
+    # Buat backup shell script wrapper
+    cat >/root/backup_vpn.sh <<'EOF'
+#!/bin/bash
+# BotVPN Auto Backup Wrapper
+# Backup akan dikirim ke Telegram admin
+
+LOG_FILE="/tmp/backup_$(date +%Y%m%d_%H%M%S).log"
+
+echo "========================================" > "$LOG_FILE"
+echo "Backup started at: $(date)" >> "$LOG_FILE"
+echo "========================================" >> "$LOG_FILE"
+
+cd /root/BotVPN || {
+    echo "ERROR: Cannot cd to /root/BotVPN" >> "$LOG_FILE"
+    exit 1
+}
+
+# Cek apakah backup.js ada
+if [ ! -f "backup.js" ]; then
+    echo "ERROR: backup.js not found" >> "$LOG_FILE"
+    echo "Current directory: $(pwd)" >> "$LOG_FILE"
+    echo "Files in directory:" >> "$LOG_FILE"
+    ls -la >> "$LOG_FILE"
+    exit 1
+fi
+
+# Cek apakah database ada
+if [ ! -f "sellvpn.db" ]; then
+    echo "ERROR: Database sellvpn.db not found" >> "$LOG_FILE"
+    exit 1
+fi
+
+# Jalankan backup
+echo "Running node backup.js..." >> "$LOG_FILE"
+node backup.js 2>&1 >> "$LOG_FILE"
+
+EXIT_CODE=$?
+echo "Backup finished with exit code: $EXIT_CODE" >> "$LOG_FILE"
+echo "========================================" >> "$LOG_FILE"
+
+# Hapus log file jika berhasil
+if [ $EXIT_CODE -eq 0 ]; then
+    rm -f "$LOG_FILE"
+fi
+
+exit $EXIT_CODE
+EOF
+
+    # Beri permission
+    chmod +x /root/backup_vpn.sh
+    
+    echo -e "${green}✅ Backup script created: /root/backup_vpn.sh${neutral}"
+    
+    # Setup crontab
+    echo -e "${cyan}📅 Setting up crontab schedule...${neutral}"
+    
+    # Backup existing crontab
+    if crontab -l > /tmp/old_crontab 2>/dev/null; then
+        cp /tmp/old_crontab /tmp/crontab_backup_$(date +%Y%m%d_%H%M%S)
+        echo -e "${yellow}📁 Existing crontab backed up${neutral}"
+    fi
+    
+    # Remove any existing bot backup entries
+    TEMP_CRON=$(mktemp)
+    if crontab -l 2>/dev/null | grep -v "backup_vpn.sh" | grep -v "BotVPN" > "$TEMP_CRON"; then
+        # Add new entries
+        echo "" >> "$TEMP_CRON"
+        echo "# =========================================" >> "$TEMP_CRON"
+        echo "# BOT VPN AUTO BACKUP SYSTEM" >> "$TEMP_CRON"
+        echo "# =========================================" >> "$TEMP_CRON"
+        echo "# Daily backup at 02:00 AM (server time)" >> "$TEMP_CRON"
+        echo "0 2 * * * /root/backup_vpn.sh > /dev/null 2>&1" >> "$TEMP_CRON"
+        echo "" >> "$TEMP_CRON"
+        echo "# Weekly test backup every Sunday at 03:00 AM" >> "$TEMP_CRON"
+        echo "0 3 * * 0 /root/backup_vpn.sh > /dev/null 2>&1" >> "$TEMP_CRON"
+        echo "" >> "$TEMP_CRON"
+        echo "# Monthly cleanup of old backups (1st of month at 04:00 AM)" >> "$TEMP_CRON"
+        echo "0 4 1 * * find /root/BotVPN/backups -name 'sellvpn_*.db' -mtime +30 -delete 2>/dev/null" >> "$TEMP_CRON"
+        
+        # Install new crontab
+        crontab "$TEMP_CRON"
+        rm -f "$TEMP_CRON"
+        
+        echo -e "${green}✅ Crontab configured successfully!${neutral}"
+    else
+        # If no existing crontab, create new one
+        cat > /tmp/new_crontab <<'EOC'
+# =========================================
+# BOT VPN AUTO BACKUP SYSTEM
+# =========================================
+# Daily backup at 02:00 AM (server time)
+0 2 * * * /root/backup_vpn.sh > /dev/null 2>&1
+
+# Weekly test backup every Sunday at 03:00 AM
+0 3 * * 0 /root/backup_vpn.sh > /dev/null 2>&1
+
+# Monthly cleanup of old backups
+0 4 1 * * find /root/BotVPN/backups -name 'sellvpn_*.db' -mtime +30 -delete 2>/dev/null
+EOC
+        
+        crontab /tmp/new_crontab
+        rm -f /tmp/new_crontab
+        
+        echo -e "${green}✅ New crontab created!${neutral}"
+    fi
+    
+    # Test backup system
+    echo -e "${cyan}🧪 Testing backup system...${neutral}"
+    
+    # Install node-schedule untuk backup dalam app
+    cd /root/BotVPN && npm install node-schedule --save --no-audit
+    
+    # Buat folder backups jika belum ada
+    mkdir -p /root/BotVPN/backups
+    
+    echo -e "${green}✅ Backup system ready!${neutral}"
+    echo -e "${yellow}⏰ Backup will run daily at 02:00 AM${neutral}"
+    echo -e "${yellow}📁 Backups stored in: /root/BotVPN/backups/${neutral}"
+    echo -e "${yellow}📧 Backups will be sent to admin Telegram${neutral}"
 }
 
 server_app() {
@@ -139,6 +260,11 @@ cat >/root/BotVPN/.vars.json <<EOF
 EOF
 
     cd /root/BotVPN
+    
+    # Setup auto-backup system
+    setup_crontab_backup
+    
+    echo -e "${cyan}🚀 Starting bot...${neutral}"
     pm2 start ecosystem.config.js
     pm2 startup
     pm2 save
@@ -148,8 +274,18 @@ EOF
     print_rainbow_center "🎉 BOT BERHASIL DIINSTAL 🎉"
     echo -e "${purple}====================================================================${neutral}"
     echo ""
-    echo -e " Status Server : ${green}$(cek_status)${neutral}"
-    echo -e " Jalankan di Telegram: ${bold_white}/start${neutral}"
+    echo -e " Status Bot      : ${green}$(cek_status)${neutral}"
+    echo -e " Backup Schedule : ${green}Daily at 02:00 AM${neutral}"
+    echo -e " Test Backup     : ${green}Every Sunday at 03:00 AM${neutral}"
+    echo -e " Backup Folder   : ${green}/root/BotVPN/backups/${neutral}"
+    echo ""
+    echo -e " 📱 Jalankan di Telegram: ${bold_white}/start${neutral}"
+    echo ""
+    echo -e "${yellow}🔧 Backup System Commands:${neutral}"
+    echo -e " ${cyan}•${neutral} Manual backup: ${bold_white}node /root/BotVPN/backup.js${neutral}"
+    echo -e " ${cyan}•${neutral} Test backup: ${bold_white}/root/backup_vpn.sh${neutral}"
+    echo -e " ${cyan}•${neutral} View crontab: ${bold_white}crontab -l${neutral}"
+    echo -e " ${cyan}•${neutral} Check backups: ${bold_white}ls -la /root/BotVPN/backups/${neutral}"
     echo ""
 }
 
