@@ -34,7 +34,7 @@ async function trialzivpn(serverId) {
 
 • *udp password* : \`${s.username}\`
 • *Hostname* : \`${s.hostname}\`
-• *Expired*  : \`${s.exp}\`
+• *Expired*  : 1 Jam/Hour
 • *IP Limit* : 1 device
 `;
         resolve(msg);
