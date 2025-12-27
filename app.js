@@ -4822,16 +4822,6 @@ const caption =
 
     delete global.depositState[userId];
 
-    // INFO TAMBAHAN
-    setTimeout(async () => {
-      try {
-        await ctx.reply(
-          `💡 *INFORMASI PENTING*\n\nSimpan kode: \`${referenceId}\`\n\n🎯 *Transfer:* **Rp ${finalAmount.toLocaleString('id-ID')}**\n⏰ *Batas:* 5 menit`,
-          { parse_mode: 'Markdown' }
-        );
-      } catch (e) { /* ignore */ }
-    }, 1500);
-
     logger.info(`✅ QR sent to ${userId}, amount: ${finalAmount}, ref: ${referenceId}`);
 
   } catch (error) {
@@ -4881,103 +4871,40 @@ setInterval(cleanupStuckDeposits, 60000); // Setiap 1 menit
 function parseDate(dateString) {
   try {
     if (!dateString || dateString === '-' || dateString.trim() === '') {
-      return Date.now() - 60000; // 1 menit yang lalu sebagai fallback
+      return Date.now() - 60000;
     }
     
     dateString = dateString.trim();
     
-    // 🎯 LOG UNTUK DEBUG
-    console.log(`🕒 [DEBUG PARSE] Input: "${dateString}"`);
+    // 🎯 FIXED: Tangani format "27/12/2025 13:53" (TANPA DETIK)
+    const match = dateString.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})[ T](\d{1,2})[\.:](\d{1,2})(?:[\.:](\d{1,2}))?/);
     
-    // ========== TRY ALL POSSIBLE FORMATS ==========
-    
-    // 1. Format API RajaServer: "27/12/2025 10.40.00" atau "27/12/2025 10:40:00"
-    let match = dateString.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})[ T](\d{1,2})[\.:](\d{1,2})(?:[\.:](\d{1,2}))?/);
     if (match) {
       const day = parseInt(match[1], 10);
       const month = parseInt(match[2], 10) - 1;
       const year = parseInt(match[3], 10);
       const hour = parseInt(match[4], 10);
       const minute = parseInt(match[5], 10);
-      const second = match[6] ? parseInt(match[6], 10) : 0;
+      const second = match[6] ? parseInt(match[6], 10) : 30; // 🔥 FIX: Default 30 detik!
       
       const dateObj = new Date(year, month, day, hour, minute, second);
-      if (!isNaN(dateObj.getTime())) {
-        console.log(`✅ Format 1: ${day}/${month+1}/${year} ${hour}:${minute}:${second}`);
-        return dateObj.getTime();
-      }
-    }
-    
-    // 2. Format dengan titik: "27.12.2025 10.40.00"
-    match = dateString.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})[ T](\d{1,2})\.(\d{1,2})\.(\d{1,2})/);
-    if (match) {
-      const day = parseInt(match[1], 10);
-      const month = parseInt(match[2], 10) - 1;
-      const year = parseInt(match[3], 10);
-      const hour = parseInt(match[4], 10);
-      const minute = parseInt(match[5], 10);
-      const second = parseInt(match[6], 10);
       
-      const dateObj = new Date(year, month, day, hour, minute, second);
-      if (!isNaN(dateObj.getTime())) {
-        console.log(`✅ Format 2: ${day}.${month+1}.${year} ${hour}.${minute}.${second}`);
-        return dateObj.getTime();
-      }
+      return dateObj.getTime();
     }
     
-    // 3. Format ISO: "2025-12-27 10:40:00"
-    match = dateString.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})[ T](\d{1,2})[\.:](\d{1,2})(?:[\.:](\d{1,2}))?/);
-    if (match) {
-      const year = parseInt(match[1], 10);
-      const month = parseInt(match[2], 10) - 1;
-      const day = parseInt(match[3], 10);
-      const hour = parseInt(match[4], 10);
-      const minute = parseInt(match[5], 10);
-      const second = match[6] ? parseInt(match[6], 10) : 0;
-      
-      const dateObj = new Date(year, month, day, hour, minute, second);
-      if (!isNaN(dateObj.getTime())) {
-        console.log(`✅ Format 3: ${year}-${month+1}-${day} ${hour}:${minute}:${second}`);
-        return dateObj.getTime();
-      }
-    }
-    
-    // 4. Coba Date.parse langsung (untuk format standar)
+    // Fallback untuk format lain
     const parsed = Date.parse(dateString);
     if (!isNaN(parsed)) {
-      console.log(`✅ Format 4: Date.parse -> ${new Date(parsed).toLocaleString('id-ID')}`);
+      console.log(`🕒 PARSED via Date.parse: "${dateString}" → ${new Date(parsed).toLocaleString('id-ID')}`);
       return parsed;
     }
     
-    // 5. FORMAT KHUSUS UNTUK LOG YANG KAMU KIRIM:
-    // "27/12/2025, 10.39.58" atau "27/12/2025, 10.40.00"
-    match = dateString.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4}),?\s+(\d{1,2})[\.:](\d{1,2})(?:[\.:](\d{1,2}))?/);
-    if (match) {
-      const day = parseInt(match[1], 10);
-      const month = parseInt(match[2], 10) - 1;
-      const year = parseInt(match[3], 10);
-      const hour = parseInt(match[4], 10);
-      const minute = parseInt(match[5], 10);
-      const second = match[6] ? parseInt(match[6], 10) : 0;
-      
-      const dateObj = new Date(year, month, day, hour, minute, second);
-      if (!isNaN(dateObj.getTime())) {
-        console.log(`✅ Format 5 (khusus): ${day}/${month+1}/${year}, ${hour}.${minute}.${second}`);
-        return dateObj.getTime();
-      }
-    }
-    
-    // 🚨 JIKA SEMUA GAGAL, GUNAKAN WAKTU SEKARANG - 2 MENIT
-    // (Asumsi transaksi terjadi 1-2 menit yang lalu)
-    const estimatedTime = Date.now() - 120000;
-    console.log(`⚠️ GAGAL parse: "${dateString}", pakai estimasi: ${new Date(estimatedTime).toLocaleString('id-ID')}`);
-    
-    return estimatedTime;
+    console.log(`⚠️ GAGAL parse: "${dateString}", pakai waktu sekarang`);
+    return Date.now();
     
   } catch (error) {
     console.error(`❌ parseDate ERROR:`, error.message);
-    // Return waktu sekarang minus 2 menit
-    return Date.now() - 120000;
+    return Date.now();
   }
 }
 
@@ -5144,8 +5071,9 @@ async function checkQRISStatus() {
       
       // ✅ VALIDASI 2: Transaksi harus dibuat SETELAH deposit dimulai + validasi ketat
       const validMatches = potentialMatches.filter(t => {
-  // Cukup cek apakah transaksi terjadi setelah QR dibuat
-  return t.timestamp > deposit.createdAt;
+  // Waktu SUPER LONGGAR untuk testing
+  const timeDiff = t.timestamp - deposit.createdAt;
+  return timeDiff >= -300000 && timeDiff <= 900000; // -5 menit sampai +15 menit
 });
       
       if (validMatches.length === 0) {
@@ -6153,18 +6081,16 @@ app.listen(port, () => {
           startBot(retryCount + 1);
         }, delay);
       } else {
-        logger.error('❌ Gagal memulai bot setelah 3 kali percobaan. Bot dimatikan.');
+        logger.error(' Gagal memulai bot setelah 3 kali percobaan. Bot dimatikan.');
         process.exit(1);
       }
     }
   };
   
-  // Mulai bot
   startBot();
   
-  // Jalankan cleanup awal
   setTimeout(() => {
-    logger.info('🚀 Running initial cleanup...');
+    logger.info(' Running initial cleanup...');
     cleanupOldDeposits();
   }, 10000);
 });
