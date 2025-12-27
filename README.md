@@ -36,8 +36,6 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 && sysctl -w net.ipv6.conf.default.di
 ### Tampilan Menu Awal Instalasi
 <img src="./tampilaninstalasi.png" alt="Menu Instalasi" width="300"/>
 
-## Update Terbaru
-
 ### 🔥 Update !!
 - **ZiVPN Service** Buat akun ZiVPN dan trial via sc potato
 - **Fitur Tambah Server Khusus ZiVPN** Nambahin server khusus buat ZiVPN karena berbeda service pembuatan akunnya
@@ -49,6 +47,15 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 && sysctl -w net.ipv6.conf.default.di
 - **Top Up saldo manual** - Fitur baru top up saldo manual via Qris
 - **Upload Foto Qris** - Fitur upload foto qris untuk menambahkan foto qris ke menu Top Up saldo manual
 - **Lihat saldo User** -Lihat saldo user menggunakan id telegram user, bisa lihat sisa saldo user tinggal berapa
+
+### 🔥 Update v2.5.0
+- **Sistem Top-up Revolusi Baru** - Nominal unik dengan random fee 100-200 untuk mencegah duplikasi pembayaran
+- **Fitur Hapus Saldo User** - Admin bisa menghapus saldo user via command `/hapussaldo` atau menu admin
+- **Statistik Reseller Lengkap** - Command `/resellerstats` & `/allresellerstats` untuk monitoring penjualan
+- **Auto Backup Database** - Backup otomatis setiap 24 jam dan dikirim ke admin via Telegram
+- **Cleanup System** - Auto cleanup pending deposits & processed transactions
+- **Graceful Shutdown** - Penanganan graceful shutdown untuk PM2
+- **Enhanced Security** - Validasi keamanan pembayaran dengan timing check & duplicate prevention
 
 ###  Peningkatan Performa
 - Optimasi response time
@@ -92,6 +99,7 @@ const API_URL = 'https://orkutapi.andyyuda41.workers.dev/api/qris-history';
 
 // Ekspor agar app.js tetap bisa require dengan struktur lama
 module.exports = { buildPayload, headers, API_URL };
+
 
 
 
