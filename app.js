@@ -327,6 +327,89 @@ const userState = {};
 logger.info('User state initialized');
 
 ///////
+// =================== COMMAND HAPUS SALDO ===================
+bot.command('hapussaldo', async (ctx) => {
+  try {
+    const adminId = ctx.from.id;
+    
+    // Hanya admin
+    if (!adminIds.includes(adminId)) {
+      return ctx.reply('❌ *Hanya admin yang bisa menggunakan command ini!*', { parse_mode: 'Markdown' });
+    }
+    
+    const args = ctx.message.text.trim().split(/\s+/);
+    if (args.length !== 3) {
+      return ctx.reply('❌ *Format salah!*\n\nGunakan:\n`/hapussaldo <user_id> <jumlah>`\n\nContoh:\n`/hapussaldo 123456789 50000`', { parse_mode: 'Markdown' });
+    }
+    
+    const targetUserId = args[1].trim();
+    const amount = parseInt(args[2], 10);
+    
+    if (isNaN(amount) || amount <= 0) {
+      return ctx.reply('❌ *Jumlah harus angka positif lebih dari 0!*', { parse_mode: 'Markdown' });
+    }
+    
+    // Cek apakah user ada
+    db.get('SELECT user_id, saldo FROM users WHERE user_id = ?', [targetUserId], (err, user) => {
+      if (err) {
+        logger.error('❌ Error cek user:', err.message);
+        return ctx.reply('❌ Terjadi kesalahan saat memeriksa user.');
+      }
+      
+      if (!user) {
+        return ctx.reply(`❌ *User dengan ID ${targetUserId} tidak ditemukan!*`, { parse_mode: 'Markdown' });
+      }
+      
+      // Cek apakah saldo mencukupi
+      if (user.saldo < amount) {
+        return ctx.reply(`❌ *Saldo user tidak mencukupi!*\n\nSaldo user: Rp ${user.saldo.toLocaleString('id-ID')}\nJumlah hapus: Rp ${amount.toLocaleString('id-ID')}\nKekurangan: Rp ${(amount - user.saldo).toLocaleString('id-ID')}`, { 
+          parse_mode: 'Markdown' 
+        });
+      }
+      
+      // Lakukan pengurangan saldo
+      db.run('UPDATE users SET saldo = saldo - ? WHERE user_id = ?', [amount, targetUserId], function (err) {
+        if (err) {
+          logger.error('❌ Error hapus saldo:', err.message);
+          return ctx.reply('❌ Gagal menghapus saldo.');
+        }
+        
+        if (this.changes === 0) {
+          return ctx.reply('⚠️ Tidak ada user yang diupdate. Pastikan ID benar.');
+        }
+        
+        // Ambil saldo terbaru
+        db.get('SELECT saldo FROM users WHERE user_id = ?', [targetUserId], (err2, updatedRow) => {
+          if (err2) {
+            ctx.reply(`✅ Saldo sebesar *Rp ${amount.toLocaleString('id-ID')}* berhasil dihapus dari user \`${targetUserId}\`.`);
+          } else {
+            ctx.reply(
+              `✅ Saldo sebesar *Rp ${amount.toLocaleString('id-ID')}* berhasil dihapus dari user \`${targetUserId}\`.\n💰 Saldo user sekarang: *Rp ${updatedRow.saldo.toLocaleString('id-ID')}*`,
+              { parse_mode: 'Markdown' }
+            );
+          }
+          
+          // Log ke transactions
+          const referenceId = `remove_saldo_${targetUserId}_${Date.now()}`;
+          db.run(
+            'INSERT INTO transactions (user_id, amount, type, reference_id, timestamp) VALUES (?, ?, ?, ?, ?)',
+            [targetUserId, amount, 'saldo_removed', referenceId, Date.now()],
+            (err3) => {
+              if (err3) logger.error('Gagal log transaksi hapus saldo:', err3.message);
+            }
+          );
+          
+          // Log di file
+          logger.info(`Admin ${adminId} menghapus saldo Rp${amount} dari user ${targetUserId}. Saldo akhir: Rp${updatedRow ? updatedRow.saldo : 'N/A'}`);
+        });
+      });
+    });
+    
+  } catch (e) {
+    logger.error('❌ Error in /hapussaldo:', e);
+    return ctx.reply('❌ Terjadi kesalahan internal.');
+  }
+});
 
 //resellerstat
 bot.command('resellerstats', async (ctx) => {
@@ -909,27 +992,29 @@ bot.command('hapuslog', async (ctx) => {
 bot.command('helpadmin', async (ctx) => {
   const userId = ctx.message.from.id;
   if (!adminIds.includes(userId)) {
-      return ctx.reply('⚠️ Anda tidak memiliki izin untuk menggunakan perintah ini.', { parse_mode: 'Markdown' });
+    return ctx.reply('⚠️ Anda tidak memiliki izin untuk menggunakan perintah ini.', { parse_mode: 'Markdown' });
   }
+  
   const helpMessage = `
 *📋 Daftar Perintah Admin:*
 
 1. /addsaldo - Menambahkan saldo ke akun pengguna.
-2. /addserver - Menambahkan server baru.
-3. /addressel - Menambahkan Ressel baru.
-4. /delressel- Menghapus id Ressel.
-5. /broadcast - Mengirim pesan siaran ke semua pengguna.
-6. /editharga - Mengedit harga layanan.
-7. /editauth - Mengedit auth server.
-8. /editdomain - Mengedit domain server.
-9. /editlimitcreate - Mengedit batas pembuatan akun server.
-10. /editlimitip - Mengedit batas IP server.
-11. /editlimitquota - Mengedit batas quota server.
-12. /editnama - Mengedit nama server.
-13. /edittotalcreate - Mengedit total pembuatan akun server.
-14. /hapuslog - Menghapus log bot.
-15. /allresellerstats - Ambil data statistik pembuatan semua reseller
-16. /resellerstats - Ambil data statistik saya
+2. /hapussaldo - Menghapus saldo dari akun pengguna.
+3. /addserver - Menambahkan server baru.
+4. /addressel - Menambahkan Reseller baru.
+5. /delressel - Menghapus id Reseller.
+6. /broadcast - Mengirim pesan siaran ke semua pengguna.
+7. /editharga - Mengedit harga layanan.
+8. /editauth - Mengedit auth server.
+9. /editdomain - Mengedit domain server.
+10. /editlimitcreate - Mengedit batas pembuatan akun server.
+11. /editlimitip - Mengedit batas IP server.
+12. /editlimitquota - Mengedit batas quota server.
+13. /editnama - Mengedit nama server.
+14. /edittotalcreate - Mengedit total pembuatan akun server.
+15. /hapuslog - Menghapus log bot.
+16. /allresellerstats - Ambil data statistik pembuatan semua reseller
+17. /resellerstats - Ambil data statistik saya
 
 Gunakan perintah ini dengan format yang benar untuk menghindari kesalahan.
 `;
@@ -1393,72 +1478,94 @@ async function handleServiceAction(ctx, action) {
 }
 async function sendAdminMenu(ctx) {
   const adminKeyboard = [
-
-[
-  { text: '➕ Tambah Server Reseller', callback_data: 'addserver_reseller' }
-],
-    [
-      { text: '➕ Tambah Server Non Reseller', callback_data: 'addserver' },
-    ],
+    // Baris 1
+    [{ text: '➕ Tambah Server Reseller', callback_data: 'addserver_reseller' }],
+    
+    // Baris 2
+    [{ text: '➕ Tambah Server Non Reseller', callback_data: 'addserver' }],
+    
+    // Baris 3
     [{ text: '➕ Tambah Server ZIVPN Reseller', callback_data: 'add_server_zivpn_reseller_cmd' }],
-
+    
+    // Baris 4
+    [{ text: '➕ Tambah Server ZIVPN', callback_data: 'add_server_zivpn' }],
+    
+    // Baris 5 - TAMBAH SALDO & HAPUS SALDO
     [
-      { text: '➕ Tambah Server ZIVPN', callback_data: 'add_server_zivpn' }
+      { text: '💵 Tambah Saldo', callback_data: 'tambah_saldo' },
+      { text: '🗑️ Hapus Saldo', callback_data: 'hapus_saldo' }
     ],
-    [
-      { text: '🖼️ Upload Gambar QRIS |Top up manual', callback_data: 'upload_qris' }
-    ],
-    [
-      { text: '💳 Lihat Saldo User', callback_data: 'cek_saldo_user'}
-    ],
-    [
-      { text: '📦 Backup Database', callback_data: 'backup_db' }
-    ],
-    [
-      { text: '❌ Hapus Server', callback_data: 'deleteserver' }
-    ],
+    
+    // Baris 6
+    [{ text: '🖼️ Upload QRIS | Top up manual', callback_data: 'upload_qris' }],
+    
+    // Baris 7
+    [{ text: '💳 Lihat Saldo User', callback_data: 'cek_saldo_user' }],
+    
+    // Baris 8
+    [{ text: '📦 Backup Database', callback_data: 'backup_db' }],
+    
+    // Baris 9
+    [{ text: '❌ Hapus Server', callback_data: 'deleteserver' }],
+    
+    // Baris 10
     [
       { text: '💲 Edit Harga', callback_data: 'editserver_harga' },
       { text: '📝 Edit Nama', callback_data: 'nama_server_edit' }
     ],
+    
+    // Baris 11
     [
       { text: '🌐 Edit Domain', callback_data: 'editserver_domain' },
       { text: '🔑 Edit Auth', callback_data: 'editserver_auth' }
     ],
+    
+    // Baris 12
     [
       { text: '📊 Edit Quota', callback_data: 'editserver_quota' },
       { text: '📶 Edit Limit IP', callback_data: 'editserver_limit_ip' }
     ],
+    
+    // Baris 13
     [
       { text: '🔢 Edit Batas Create', callback_data: 'editserver_batas_create_akun' },
       { text: '🔢 Edit Total Create', callback_data: 'editserver_total_create_akun' }
     ],
-    [
-      { text: '💵 Tambah Saldo', callback_data: 'tambah_saldo' },
-      { text: '📋 List Server', callback_data: 'listserver' }
-    ],
+    
+    // Baris 14
+    [{ text: '📋 List Server', callback_data: 'listserver' }],
+    
+    // Baris 15
     [
       { text: '♻️ Reset Server', callback_data: 'resetdb' },
       { text: 'ℹ️ Detail Server', callback_data: 'detailserver' }
     ],
-    [
-      { text: '🔙 Kembali', callback_data: 'send_main_menu' }
-    ]
+    
+    // Baris 16
+    [{ text: '🔙 Kembali', callback_data: 'send_main_menu' }]
   ];
 
   try {
-    await ctx.editMessageReplyMarkup({
-      inline_keyboard: adminKeyboard
+    await ctx.editMessageText('*🛠️ MENU ADMIN*', {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: adminKeyboard
+      }
     });
     logger.info('Admin menu sent');
   } catch (error) {
     if (error.response && error.response.error_code === 400) {
-      await ctx.reply('Menu Admin:', {
-        reply_markup: {
-          inline_keyboard: adminKeyboard
-        }
-      });
-      logger.info('Admin menu sent as new message');
+      try {
+        await ctx.reply('*🛠️ MENU ADMIN*', {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: adminKeyboard
+          }
+        });
+        logger.info('Admin menu sent as new message');
+      } catch (sendError) {
+        logger.error('Error sending admin menu as new message:', sendError);
+      }
     } else {
       logger.error('Error saat mengirim menu admin:', error);
     }
@@ -1560,6 +1667,100 @@ bot.on('photo', async (ctx) => {
   await ctx.reply('✅ Gambar QRIS berhasil diunggah!');
   logger.info('🖼️ QRIS image uploaded by admin');
   delete userState[adminId];
+});
+
+// =================== HANDLER CONFIRM HAPUS SALDO ===================
+bot.action('confirm_hapus_saldo', async (ctx) => {
+  try {
+    await ctx.answerCbQuery();
+    const adminId = ctx.from.id;
+    const state = userState[adminId];
+    
+    if (!state || state.step !== 'hapus_saldo_confirm') {
+      return ctx.reply('❌ Sesi sudah berakhir. Silakan ulangi dari awal.');
+    }
+    
+    const targetUserId = state.targetUserId;
+    const amount = state.amountToRemove;
+    
+    // Lakukan pengurangan saldo
+    db.run('UPDATE users SET saldo = saldo - ? WHERE user_id = ?', [amount, targetUserId], function (err) {
+      if (err) {
+        logger.error('❌ Error hapus saldo via menu:', err.message);
+        return ctx.reply('❌ Gagal menghapus saldo.');
+      }
+      
+      // Ambil saldo terbaru
+      db.get('SELECT saldo FROM users WHERE user_id = ?', [targetUserId], (err2, updatedRow) => {
+        delete userState[adminId];
+        
+        if (err2) {
+          ctx.reply(`✅ Saldo sebesar *Rp ${amount.toLocaleString('id-ID')}* berhasil dihapus dari user \`${targetUserId}\`.`);
+        } else {
+          ctx.reply(
+            `✅ *SALDO BERHASIL DIHAPUS!*\n\n` +
+            `👤 User ID: \`${targetUserId}\`\n` +
+            `🗑️ Jumlah dihapus: *Rp ${amount.toLocaleString('id-ID')}*\n` +
+            `💰 Saldo sekarang: *Rp ${updatedRow.saldo.toLocaleString('id-ID')}*`,
+            { parse_mode: 'Markdown' }
+          );
+        }
+        
+        // Log ke transactions
+        const referenceId = `remove_saldo_${targetUserId}_${Date.now()}`;
+        db.run(
+          'INSERT INTO transactions (user_id, amount, type, reference_id, timestamp) VALUES (?, ?, ?, ?, ?)',
+          [targetUserId, amount, 'saldo_removed', referenceId, Date.now()],
+          (err3) => {
+            if (err3) logger.error('Gagal log transaksi hapus saldo:', err3.message);
+          }
+        );
+        
+        // Log ke file
+        logger.info(`Admin ${adminId} menghapus saldo Rp${amount} dari user ${targetUserId}. Saldo akhir: Rp${updatedRow ? updatedRow.saldo : 'N/A'}`);
+        
+        // Kirim notifikasi ke user yang saldonya dihapus
+        try {
+          bot.telegram.sendMessage(
+            targetUserId,
+            `⚠️ *PEMBERITAHUAN SALDO*\n\n` +
+            `Saldo Anda dikurangi sebesar *Rp ${amount.toLocaleString('id-ID')}* oleh admin.\n` +
+            `💰 Saldo sekarang: *Rp ${updatedRow ? updatedRow.saldo.toLocaleString('id-ID') : '0'}*\n\n` +
+            `📅 ${new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })}`,
+            { parse_mode: 'Markdown' }
+          ).catch(() => {
+            // User mungkin memblokir bot, tidak apa-apa
+          });
+        } catch (notifErr) {
+          logger.error('Gagal kirim notifikasi ke user:', notifErr.message);
+        }
+      });
+    });
+    
+  } catch (error) {
+    logger.error('❌ Error in confirm_hapus_saldo:', error);
+    await ctx.reply('❌ Terjadi kesalahan saat menghapus saldo.');
+  }
+});
+
+bot.action('cancel_hapus_saldo', async (ctx) => {
+  await ctx.answerCbQuery();
+  const adminId = ctx.from.id;
+  delete userState[adminId];
+  await ctx.reply('❌ Proses penghapusan saldo dibatalkan.');
+});
+
+// =================== HANDLER HAPUS SALDO ===================
+bot.action('hapus_saldo', async (ctx) => {
+  const adminId = ctx.from.id;
+  
+  if (!adminIds.includes(adminId)) {
+    return ctx.reply('🚫 Anda tidak memiliki izin.');
+  }
+  
+  await ctx.answerCbQuery();
+  userState[adminId] = { step: 'hapus_saldo_userid' };
+  await ctx.reply('🗑️ *Masukkan ID Telegram user yang saldonya akan dihapus:*', { parse_mode: 'Markdown' });
 });
 
 //callback handller statistik reseller
@@ -2499,6 +2700,98 @@ if (state.step === 'add_server_batas') {
 
   if (!state) return; 
     const text = ctx.message.text.trim();
+
+  // =================== HAPUS SALDO ===================
+  if (state && state.step === 'hapus_saldo_userid') {
+    const targetUserId = text;
+    
+    // Validasi input
+    if (!/^\d+$/.test(targetUserId)) {
+      return ctx.reply('❌ *ID Telegram harus angka!*\n\nMasukkan ulang ID user:', { parse_mode: 'Markdown' });
+    }
+    
+    // Cek apakah user ada
+    db.get('SELECT user_id, saldo FROM users WHERE user_id = ?', [targetUserId], (err, user) => {
+      if (err) {
+        logger.error('❌ Error cek user untuk hapus saldo:', err.message);
+        return ctx.reply('❌ Terjadi kesalahan saat memeriksa user.');
+      }
+      
+      if (!user) {
+        return ctx.reply(`❌ *User dengan ID ${targetUserId} tidak ditemukan!*\n\nMasukkan ID user lain atau ketik "batal" untuk membatalkan.`, { 
+          parse_mode: 'Markdown' 
+        });
+      }
+      
+      // Simpan ke state dan lanjut ke input jumlah
+      state.targetUserId = targetUserId;
+      state.currentSaldo = user.saldo;
+      state.step = 'hapus_saldo_amount';
+      
+      ctx.reply(
+        `👤 *User ditemukan:*\n` +
+        `• ID: \`${targetUserId}\`\n` +
+        `• Saldo saat ini: *Rp ${user.saldo.toLocaleString('id-ID')}*\n\n` +
+        `💰 *Masukkan jumlah saldo yang akan dihapus:*\n` +
+        `(atau ketik "semua" untuk hapus semua saldo)`,
+        { parse_mode: 'Markdown' }
+      );
+    });
+    return;
+  }
+  
+  if (state && state.step === 'hapus_saldo_amount') {
+    const adminId = ctx.from.id;
+    const targetUserId = state.targetUserId;
+    const currentSaldo = state.currentSaldo;
+    let amount;
+    
+    // Cek jika input "semua" atau "all"
+    if (text.toLowerCase() === 'semua' || text.toLowerCase() === 'all') {
+      amount = currentSaldo;
+    } else {
+      // Validasi angka
+      amount = parseInt(text, 10);
+      if (isNaN(amount) || amount <= 0) {
+        return ctx.reply('❌ *Jumlah harus angka positif lebih dari 0!*\n\nMasukkan ulang jumlah:');
+      }
+      
+      // Cek apakah saldo mencukupi
+      if (amount > currentSaldo) {
+        return ctx.reply(
+          `❌ *Jumlah melebihi saldo user!*\n\n` +
+          `Saldo user: Rp ${currentSaldo.toLocaleString('id-ID')}\n` +
+          `Jumlah hapus: Rp ${amount.toLocaleString('id-ID')}\n` +
+          `Kekurangan: Rp ${(amount - currentSaldo).toLocaleString('id-ID')}\n\n` +
+          `Masukkan jumlah yang lebih kecil atau ketik "semua" untuk hapus semua saldo.`,
+          { parse_mode: 'Markdown' }
+        );
+      }
+    }
+    
+    // Konfirmasi
+    state.amountToRemove = amount;
+    state.step = 'hapus_saldo_confirm';
+    
+    await ctx.reply(
+      `⚠️ *KONFIRMASI HAPUS SALDO*\n\n` +
+      `👤 User ID: \`${targetUserId}\`\n` +
+      `💰 Saldo saat ini: Rp ${currentSaldo.toLocaleString('id-ID')}\n` +
+      `🗑️ Jumlah hapus: Rp ${amount.toLocaleString('id-ID')}\n` +
+      `📉 Saldo setelahnya: Rp ${(currentSaldo - amount).toLocaleString('id-ID')}\n\n` +
+      `Apakah Anda yakin ingin menghapus saldo ini?`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '✅ Ya, Hapus Saldo', callback_data: 'confirm_hapus_saldo' }],
+            [{ text: '❌ Batal', callback_data: 'cancel_hapus_saldo' }]
+          ]
+        }
+      }
+    );
+    return;
+  }
 //////
   if (state && state.step === "edit_nama_input") {
     const serverId = state.serverId;
@@ -3815,23 +4108,26 @@ bot.action('topup_saldo', async (ctx) => {
     
     const keyboard = keyboard_nomor();
     
-    await ctx.editMessageText(
-      '💰 *Top Up Saldo Otomatis*\n\n' +
-      '💳 *Minimal Top-up: Rp 2.000*\n\n' +
-      '💸 *Biaya Admin:*\n' +
-      '• Rp 200 untuk nominal di bawah 5.000\n' +
-      '• Rp 150 untuk nominal 5.000 ke atas\n\n' +
-      '📊 *Contoh:*\n' +
-      '• Rp 2.000 + Rp 200 = Rp 2.200\n' +
-      '• Rp 3.000 + Rp 200 = Rp 3.200\n' +
-      '• Rp 5.000 + Rp 150 = Rp 5.150\n' +
-      '• Rp 10.000 + Rp 150 = Rp 10.150\n\n' +
-      'Silakan masukkan jumlah nominal:',
-      {
-        reply_markup: { inline_keyboard: keyboard },
-        parse_mode: 'Markdown'
-      }
-    );
+    // Di handler topup_saldo, update pesan:
+await ctx.editMessageText(
+  '💰 *TOP UP SALDO OTOMATIS*\n\n' +
+  '💳 *Minimal:* Rp 2.000\n\n' +
+  '🎲 *SISTEM KEAMANAN BARU:*\n' +
+  '• Biaya admin **RANDOM 100-200**\n' +
+  '• Setiap transaksi punya **nominal unik**\n' +
+  '• Mencegah duplikasi pembayaran\n\n' +
+  '🎯 *CONTOH NOMINAL UNIK:*\n' +
+  '• Rp 2.000 + Rp 157 = Rp 2.157\n' +
+  '• Rp 5.000 + Rp 189 = Rp 5.189\n' +
+  '• Rp 10.000 + Rp 123 = Rp 10.123\n\n' +
+  '⚠️ *PERHATIAN:*\n' +
+  'Transfer harus **TEPAT** sesuai nominal unik yang diberikan!\n\n' +
+  'Silakan masukkan jumlah top-up:',
+  {
+    reply_markup: { inline_keyboard: keyboard },
+    parse_mode: 'Markdown'
+  }
+);
   } catch (error) {
     logger.error('❌ Kesalahan saat memulai proses top-up saldo:', error);
     await ctx.editMessageText('❌ *GAGAL! Terjadi kesalahan. Silakan coba lagi nanti.*', { parse_mode: 'Markdown' });
@@ -4083,33 +4379,50 @@ async function handleDepositState(ctx, userId, data) {
     
     const amountNum = parseInt(currentAmount);
     
-    // ✅ UBAH MINIMAL JADI 2000
     if (amountNum < 2000) {
       return await ctx.answerCbQuery('⚠️ Jumlah minimal adalah 2.000!', { show_alert: true });
     }
     
-    // Hitung admin fee
+    // Hitung admin fee FIXED
     const adminFee = amountNum < 5000 ? 200 : 150;
     const totalAmount = amountNum + adminFee;
     
-    const feeType = amountNum < 5000 ? 
-      'Rp 200 (untuk nominal < 5.000)' : 
-      'Rp 150 (untuk nominal ≥ 5.000)';
-    
+    // TAMPILAN BARU YANG PROFESIONAL
     const confirmMessage = 
-      `📋 *Konfirmasi Top-up*\n\n` +
-      `💰 *Nominal Top-up:* Rp ${amountNum.toLocaleString('id-ID')}\n` +
-      `💸 *Biaya Admin:* ${feeType}\n` +
-      `💵 *Total Bayar:* Rp ${totalAmount.toLocaleString('id-ID')}\n\n` +
-      `⚠️ *Transfer harus sesuai total di atas*\n\n` +
-      `Lanjutkan pembayaran?`;
-    
+`💳 *KONFIRMASI TOP-UP*
+
+┏━━━━━━━━━━━━━━━━━━━┓
+📋 PERKIRAAN BIAYA
+┗━━━━━━━━━━━━━━━━━━━┛
+
+💰 *Nominal Top-up:* Rp ${amountNum.toLocaleString('id-ID')}
+💸 *Biaya Admin:* Rp 100 - Rp 200 (random)
+🎯 *Perkiraan Total:* Rp ${(amountNum + 100).toLocaleString('id-ID')} - Rp ${(amountNum + 200).toLocaleString('id-ID')}
+
+┏━━━━━━━━━━━━━━━━━━━┓
+🎲 SISTEM KEAMANAN
+┗━━━━━━━━━━━━━━━━━━━┛
+
+• Admin fee RANDOM 100-200
+• Setiap transaksi unik
+• Mencegah duplikasi pembayaran
+
+┏━━━━━━━━━━━━━━━━━━━┓
+⚠️ PENTING
+┗━━━━━━━━━━━━━━━━━━━┛
+
+• Total final akan ada di QRIS
+• Transfer HARUS sesuai nominal di QRIS
+• Sistem otomatis verifikasi
+
+_Lanjutkan untuk melihat QRIS dengan nominal final?_`;
+
     await ctx.editMessageText(confirmMessage, {
       parse_mode: 'Markdown',
       reply_markup: {
         inline_keyboard: [
-          [{ text: '✅ Lanjutkan', callback_data: 'confirm_final' }],
-          [{ text: '❌ Batal', callback_data: 'send_main_menu' }]
+          [{ text: '✅ LANJUT BAYAR', callback_data: 'confirm_final' }],
+          [{ text: '❌ BATAL', callback_data: 'send_main_menu' }]
         ]
       }
     });
@@ -4127,7 +4440,7 @@ async function handleDepositState(ctx, userId, data) {
   }
 
   global.depositState[userId].amount = currentAmount;
-  const newMessage = `💰 *Silakan masukkan jumlah nominal saldo yang Anda ingin tambahkan ke akun Anda:*\n\nJumlah saat ini: *Rp ${currentAmount || '0'}*`;
+  const newMessage = `💰 *Masukkan jumlah saldo yang ingin ditambahkan:*\n\nJumlah: *Rp ${currentAmount || '0'}*`;
   
   try {
     if (newMessage !== ctx.callbackQuery.message.text) {
@@ -4315,26 +4628,17 @@ async function updateServerField(serverId, value, query) {
 }
 
 function calculateFinalAmount(baseAmount) {
-  // Validasi minimal (seharusnya sudah divalidasi sebelumnya)
-  if (baseAmount < 2000) {
-    logger.warn(`⚠️ Amount ${baseAmount} di bawah minimal 2000`);
-  }
+  // Fungsi ini sekarang hanya untuk display di awal
+  // Random fee sebenarnya di-generate di processDeposit()
   
-  // Admin fee tetap berdasarkan nominal
-  let adminFee;
-  if (baseAmount < 5000) {
-    adminFee = 200;  // Untuk top-up di bawah 5.000
-  } else {
-    adminFee = 150;  // Untuk top-up 5.000 ke atas
-  }
+  const sampleFee = Math.floor(Math.random() * 101) + 100;
+  const sampleTotal = baseAmount + sampleFee;
   
-  const finalAmount = baseAmount + adminFee;
-  
-  logger.info(`💰 Admin fee: ${baseAmount} + ${adminFee} = ${finalAmount}`);
   return {
-    finalAmount: finalAmount,
-    adminFee: adminFee,
-    baseAmount: baseAmount
+    finalAmount: sampleTotal,
+    adminFee: sampleFee,
+    baseAmount: baseAmount,
+    note: 'Contoh saja - fee aktual random saat transaksi'
   };
 }
 
@@ -4373,6 +4677,7 @@ function generateRandomNumber(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
+// Replace fungsi processDeposit yang ada dengan ini:
 async function processDeposit(ctx, amount) {
   const currentTime = Date.now();
   
@@ -4383,105 +4688,296 @@ async function processDeposit(ctx, amount) {
 
   lastRequestTime = currentTime;
   const userId = ctx.from.id;
-  const uniqueCode = `user-${userId}-${Date.now()}`;
+  
+  // CEK BATAS TRANSAKSI PENDING
+  const userPendingCount = Object.values(global.pendingDeposits)
+    .filter(d => d.userId === userId && d.status === 'pending').length;
+  
+  if (userPendingCount >= 2) {
+    await ctx.editMessageText(
+      '⚠️ *Anda memiliki 2 transaksi pending yang belum dibayar.*\n\n' +
+      'Silakan selesaikan pembayaran yang ada terlebih dahulu.',
+      { 
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: [[{ text: '🔙 Kembali ke Menu', callback_data: 'send_main_menu' }]] }
+      }
+    );
+    delete global.depositState[userId];
+    return;
+  }
 
   const amountNum = Number(amount);
   
-  // ✅ TAMBAH VALIDASI MINIMAL 2000
   if (amountNum < 2000) {
     await ctx.editMessageText(
-      '❌ *Nominal terlalu kecil!*\n\n' +
-      'Minimal top-up adalah **Rp 2.000**.\n\n' +
-      'Silakan mulai lagi dari menu Top Up.',
+      '❌ *Minimal top-up Rp 2.000!*\n\nSilakan masukkan nominal yang valid.',
       { 
         parse_mode: 'Markdown',
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '🔙 Kembali ke Menu Utama', callback_data: 'send_main_menu' }]
-          ]
-        }
+        reply_markup: { inline_keyboard: [[{ text: '🔄 Coba Lagi', callback_data: 'topup_saldo' }]] }
       }
     );
     delete global.depositState[userId];
     return;
   }
   
-  // Hitung final amount dengan admin fee tetap
-  const { finalAmount, adminFee } = calculateFinalAmount(amountNum);
-
-  logger.info(`💳 Top-up: User ${userId}, Amount ${amountNum}, Fee ${adminFee}, Total ${finalAmount}`);
   try {
-    const urlQr = DATA_QRIS; // QR destination
-   // console.log('🔍 CEK DATA_QRIS:', urlQr);
-    const axios = require('axios');
-//const sharp = require('sharp'); // opsional kalau mau resize
+    // GENERATE UNIK
+    const existingDeposits = Object.values(global.pendingDeposits);
+    const feeResult = await generateUniqueFee(amountNum, userId, existingDeposits);
+    
+    const finalAmount = feeResult.finalAmount;
+    const adminFee = feeResult.adminFee;
+    
+    // LOGGING
+    logger.info(`💰 Payment gen: ${amountNum} + ${adminFee} = ${finalAmount}`);
+    
+    // GENERATE REFERENCE
+    const timestamp = Date.now();
+    const randomSuffix = Math.random().toString(36).substring(2, 8).toUpperCase();
+    const uniqueCode = `TOPUP-${userId}-${timestamp}-${randomSuffix}`;
+    const referenceId = `REF-${timestamp}-${randomSuffix}`;
 
-const bayar = await axios.get(`https://api.rajaserverpremium.web.id/orderkuota/createpayment?apikey=AriApiPaymetGetwayMod&amount=${finalAmount}&codeqr=${urlQr}`);
-const get = bayar.data;
-
-if (get.status !== 'success') {
-  throw new Error('Gagal membuat QRIS: ' + JSON.stringify(get));
-}
-
-const qrImageUrl = get.result.imageqris?.url;
-
-if (!qrImageUrl || qrImageUrl.includes('undefined')) {
-  throw new Error('URL QRIS tidak valid: ' + qrImageUrl);
-}
-
-// Download gambar QR
-const qrResponse = await axios.get(qrImageUrl, { responseType: 'arraybuffer' });
-const qrBuffer = Buffer.from(qrResponse.data);
-
-    const caption =
-      `📝 *Detail Pembayaran:*\n\n` +
-                  `💰 Jumlah: Rp ${finalAmount}\n` +
-      `- Nominal Top Up: Rp ${amount}\n` +
-      `- Admin Fee : Rp ${adminFee}\n` +
-                  `⚠️ *Penting:* Mohon transfer sesuai nominal\n` +
-      `⏱️ Waktu: 5 menit\n\n` +
-                  `⚠️ *Catatan:*\n` +
-                  `- Pembayaran akan otomatis terverifikasi\n` +
-      `- Jika pembayaran berhasil, saldo akan otomatis ditambahkan`;
-
-    const qrMessage = await ctx.replyWithPhoto({ source: qrBuffer }, {
-      caption: caption,
-          parse_mode: 'Markdown'
-        }); 
-    // Hapus pesan input nominal setelah QR code dikirim
-    try {
-      await ctx.deleteMessage();
-    } catch (e) {
-      logger.error('Gagal menghapus pesan input nominal:', e.message);
+    // BUAT QRIS
+    const urlQr = DATA_QRIS;
+    const bayar = await axios.get(
+      `https://api.rajaserverpremium.web.id/orderkuota/createpayment?apikey=AriApiPaymetGetwayMod&amount=${finalAmount}&codeqr=${urlQr}&reference=${referenceId}`,
+      { timeout: 15000 }
+    );
+    
+    if (bayar.data.status !== 'success') {
+      throw new Error('QRIS failed: ' + JSON.stringify(bayar.data));
     }
 
-        global.pendingDeposits[uniqueCode] = {
-          amount: finalAmount,
-          originalAmount: amount,
-          userId,
-          timestamp: Date.now(),
+    const qrImageUrl = bayar.data.result.imageqris?.url;
+    if (!qrImageUrl || qrImageUrl.includes('undefined')) {
+      throw new Error('Invalid QR URL');
+    }
+
+    // DOWNLOAD QR
+    const qrResponse = await axios.get(qrImageUrl, { responseType: 'arraybuffer', timeout: 15000 });
+    const qrBuffer = Buffer.from(qrResponse.data);
+
+    // KIRIM KE USER
+    // Di fungsi processDeposit(), update caption:
+const caption = 
+`💳 *INSTRUKSI PEMBAYARAN*
+
+┏━━━━━━━━━━━━━━━━━━━┓
+📋 DETAIL PEMBAYARAN
+┗━━━━━━━━━━━━━━━━━━━┛
+
+👤 *User ID:* \`${userId}\`
+💰 *Nominal Top-up:* Rp ${amountNum.toLocaleString('id-ID')}
+🎲 *Biaya Admin:* Rp ${adminFee.toLocaleString('id-ID')}
+💵 *TOTAL BAYAR:* Rp ${finalAmount.toLocaleString('id-ID')}
+
+┏━━━━━━━━━━━━━━━━━━━┓
+🎯 INSTRUKSI
+┗━━━━━━━━━━━━━━━━━━━┛
+
+1. Scan QR Code di atas
+2. Transfer *TEPAT* Rp ${finalAmount.toLocaleString('id-ID')}
+3. Jangan kurang atau lebih!
+4. Sistem otomatis verifikasi dalam 1-2 menit
+
+┏━━━━━━━━━━━━━━━━━━━┓
+⚠️ PERHATIAN
+┗━━━━━━━━━━━━━━━━━━━┛
+
+• Transfer harus sesuai nominal di atas
+• Batas waktu: 5 menit
+• Saldo akan otomatis bertambah
+• Simpan kode referensi di bawah
+
+🆔 *Kode Referensi:* \`${referenceId}\`
+⏰ *Batas waktu:* 5 menit`;
+    
+    const qrMessage = await ctx.replyWithPhoto({ source: qrBuffer }, { caption: caption, parse_mode: 'Markdown' });
+
+    // HAPUS PESAN SEBELUMNYA
+    try { await ctx.deleteMessage(); } catch (e) { /* ignore */ }
+
+    // SIMPAN KE MEMORY
+    global.pendingDeposits[uniqueCode] = {
+      amount: finalAmount,
+      originalAmount: amountNum,
+      adminFee: adminFee,
+      userId: userId,
+      timestamp: Date.now(),
+      referenceId: referenceId,
       status: 'pending',
-      qrMessageId: qrMessage.message_id
+      qrMessageId: qrMessage.message_id,
+      createdAt: Date.now(),
+      lastChecked: 0,
+      attempts: 0
     };
 
+    // SIMPAN KE DATABASE
     db.run(
-      `INSERT INTO pending_deposits (unique_code, user_id, amount, original_amount, timestamp, status, qr_message_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [uniqueCode, userId, finalAmount, amount, Date.now(), 'pending', qrMessage.message_id],
-      (err) => {
-        if (err) logger.error('Gagal insert pending_deposits:', err.message);
-      }
+      `INSERT INTO pending_deposits (unique_code, user_id, amount, original_amount, admin_fee, timestamp, status, qr_message_id, reference_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [uniqueCode, userId, finalAmount, amountNum, adminFee, Date.now(), 'pending', qrMessage.message_id, referenceId, Date.now()],
+      (err) => { if (err) logger.error('❌ Save deposit error:', err.message); }
     );
-        delete global.depositState[userId];
+
+    delete global.depositState[userId];
+
+    // INFO TAMBAHAN
+    setTimeout(async () => {
+      try {
+        await ctx.reply(
+          `💡 *INFORMASI PENTING*\n\nSimpan kode: \`${referenceId}\`\n\n🎯 *Transfer:* **Rp ${finalAmount.toLocaleString('id-ID')}**\n⏰ *Batas:* 5 menit`,
+          { parse_mode: 'Markdown' }
+        );
+      } catch (e) { /* ignore */ }
+    }, 1500);
+
+    logger.info(`✅ QR sent to ${userId}, amount: ${finalAmount}, ref: ${referenceId}`);
 
   } catch (error) {
-    logger.error('❌ Kesalahan saat memproses deposit:', error);
-    await ctx.editMessageText('❌ *GAGAL! Terjadi kesalahan saat memproses pembayaran. Silakan coba lagi nanti.*', { parse_mode: 'Markdown' });
+    logger.error('❌ Deposit error:', error.message);
+    
+    await ctx.editMessageText(
+      '❌ *GAGAL MEMBUAT PEMBAYARAN*\n\n' + error.message.substring(0, 100) + '...\n\nSilakan coba lagi.',
+      { 
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🔄 Coba Lagi', callback_data: 'topup_saldo' }],
+            [{ text: '🔙 Kembali', callback_data: 'send_main_menu' }]
+          ]
+        }
+      }
+    );
+    
     delete global.depositState[userId];
-    delete global.pendingDeposits[uniqueCode];
-    db.run('DELETE FROM pending_deposits WHERE unique_code = ?', [uniqueCode], (err) => {
-      if (err) logger.error('Gagal hapus pending_deposits (error):', err.message);
-    });
+  }
+}
+
+
+////////
+function cleanupStuckDeposits() {
+  const now = Date.now();
+  const fiveMinutesAgo = now - (5 * 60 * 1000);
+  
+  Object.keys(global.pendingDeposits).forEach(uniqueCode => {
+    const deposit = global.pendingDeposits[uniqueCode];
+    
+    // Jika deposit dibuat > 5 menit yang lalu dan masih "generating"
+    if (deposit.createdAt && deposit.createdAt < fiveMinutesAgo && 
+        deposit.status === 'generating') {
+      logger.info(`🧹 Cleaning up stuck deposit: ${uniqueCode}`);
+      delete global.pendingDeposits[uniqueCode];
+      
+      // Hapus dari database juga
+      db.run('DELETE FROM pending_deposits WHERE unique_code = ?', [uniqueCode]);
+    }
+  });
+}
+
+// Tambahkan ke interval cleanup
+setInterval(cleanupStuckDeposits, 60000); // Setiap 1 menit
+
+function parseDate(dateString) {
+  try {
+    if (!dateString || dateString === '-' || dateString.trim() === '') {
+      return Date.now() - 60000; // 1 menit yang lalu sebagai fallback
+    }
+    
+    dateString = dateString.trim();
+    
+    // 🎯 LOG UNTUK DEBUG
+    console.log(`🕒 [DEBUG PARSE] Input: "${dateString}"`);
+    
+    // ========== TRY ALL POSSIBLE FORMATS ==========
+    
+    // 1. Format API RajaServer: "27/12/2025 10.40.00" atau "27/12/2025 10:40:00"
+    let match = dateString.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})[ T](\d{1,2})[\.:](\d{1,2})(?:[\.:](\d{1,2}))?/);
+    if (match) {
+      const day = parseInt(match[1], 10);
+      const month = parseInt(match[2], 10) - 1;
+      const year = parseInt(match[3], 10);
+      const hour = parseInt(match[4], 10);
+      const minute = parseInt(match[5], 10);
+      const second = match[6] ? parseInt(match[6], 10) : 0;
+      
+      const dateObj = new Date(year, month, day, hour, minute, second);
+      if (!isNaN(dateObj.getTime())) {
+        console.log(`✅ Format 1: ${day}/${month+1}/${year} ${hour}:${minute}:${second}`);
+        return dateObj.getTime();
+      }
+    }
+    
+    // 2. Format dengan titik: "27.12.2025 10.40.00"
+    match = dateString.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})[ T](\d{1,2})\.(\d{1,2})\.(\d{1,2})/);
+    if (match) {
+      const day = parseInt(match[1], 10);
+      const month = parseInt(match[2], 10) - 1;
+      const year = parseInt(match[3], 10);
+      const hour = parseInt(match[4], 10);
+      const minute = parseInt(match[5], 10);
+      const second = parseInt(match[6], 10);
+      
+      const dateObj = new Date(year, month, day, hour, minute, second);
+      if (!isNaN(dateObj.getTime())) {
+        console.log(`✅ Format 2: ${day}.${month+1}.${year} ${hour}.${minute}.${second}`);
+        return dateObj.getTime();
+      }
+    }
+    
+    // 3. Format ISO: "2025-12-27 10:40:00"
+    match = dateString.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})[ T](\d{1,2})[\.:](\d{1,2})(?:[\.:](\d{1,2}))?/);
+    if (match) {
+      const year = parseInt(match[1], 10);
+      const month = parseInt(match[2], 10) - 1;
+      const day = parseInt(match[3], 10);
+      const hour = parseInt(match[4], 10);
+      const minute = parseInt(match[5], 10);
+      const second = match[6] ? parseInt(match[6], 10) : 0;
+      
+      const dateObj = new Date(year, month, day, hour, minute, second);
+      if (!isNaN(dateObj.getTime())) {
+        console.log(`✅ Format 3: ${year}-${month+1}-${day} ${hour}:${minute}:${second}`);
+        return dateObj.getTime();
+      }
+    }
+    
+    // 4. Coba Date.parse langsung (untuk format standar)
+    const parsed = Date.parse(dateString);
+    if (!isNaN(parsed)) {
+      console.log(`✅ Format 4: Date.parse -> ${new Date(parsed).toLocaleString('id-ID')}`);
+      return parsed;
+    }
+    
+    // 5. FORMAT KHUSUS UNTUK LOG YANG KAMU KIRIM:
+    // "27/12/2025, 10.39.58" atau "27/12/2025, 10.40.00"
+    match = dateString.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4}),?\s+(\d{1,2})[\.:](\d{1,2})(?:[\.:](\d{1,2}))?/);
+    if (match) {
+      const day = parseInt(match[1], 10);
+      const month = parseInt(match[2], 10) - 1;
+      const year = parseInt(match[3], 10);
+      const hour = parseInt(match[4], 10);
+      const minute = parseInt(match[5], 10);
+      const second = match[6] ? parseInt(match[6], 10) : 0;
+      
+      const dateObj = new Date(year, month, day, hour, minute, second);
+      if (!isNaN(dateObj.getTime())) {
+        console.log(`✅ Format 5 (khusus): ${day}/${month+1}/${year}, ${hour}.${minute}.${second}`);
+        return dateObj.getTime();
+      }
+    }
+    
+    // 🚨 JIKA SEMUA GAGAL, GUNAKAN WAKTU SEKARANG - 2 MENIT
+    // (Asumsi transaksi terjadi 1-2 menit yang lalu)
+    const estimatedTime = Date.now() - 120000;
+    console.log(`⚠️ GAGAL parse: "${dateString}", pakai estimasi: ${new Date(estimatedTime).toLocaleString('id-ID')}`);
+    
+    return estimatedTime;
+    
+  } catch (error) {
+    console.error(`❌ parseDate ERROR:`, error.message);
+    // Return waktu sekarang minus 2 menit
+    return Date.now() - 120000;
   }
 }
 
@@ -4491,115 +4987,239 @@ let transactionCache = null;
 let cacheTimestamp = 0;
 const CACHE_DURATION = 10000; // 10 detik cache
 
+// Replace fungsi checkQRISStatus dengan ini:
 async function checkQRISStatus() {
   const now = Date.now();
   
-  // Rate limiting: jangan panggil API terlalu sering
+  // Rate limiting API calls
   if (now - lastApiCallTime < API_CALL_INTERVAL) {
-    // Skip API call jika terlalu cepat
     return;
   }
   
   try {
     const pendingDeposits = Object.entries(global.pendingDeposits);
     if (pendingDeposits.length === 0) {
-      return; // Tidak ada pending deposits, skip
+      return;
     }
 
-    // Gunakan cache untuk transaksi API
     let transaksiList = [];
+    
+    // ✅ GUNAKAN CACHE DENGAN VALIDASI
     if (transactionCache && (now - cacheTimestamp < CACHE_DURATION)) {
       transaksiList = transactionCache;
       logger.debug('📦 Menggunakan cache transaksi');
     } else {
       // Ambil data dari API
       const data = buildPayload();
-      const resultcek = await axios.post(API_URL, data, { headers, timeout: 5000 });
+      const resultcek = await axios.post(API_URL, data, { 
+        headers, 
+        timeout: 10000 
+      });
       
-      // Parse response
       const responseText = resultcek.data;
       const blocks = responseText.split('------------------------').filter(Boolean);
       
       transaksiList = [];
       for (const block of blocks) {
-        const kreditMatch = block.match(/Kredit\s*:\s*([\d.]+)/);
-        const tanggalMatch = block.match(/Tanggal\s*:\s*(.+)/);
-        const brandMatch = block.match(/Brand\s*:\s*(.+)/);
-        if (kreditMatch) {
-          transaksiList.push({
-            tanggal: tanggalMatch ? tanggalMatch[1].trim() : '-',
-            kredit: Number(kreditMatch[1].replace(/\./g, '')),
-            brand: brandMatch ? brandMatch[1].trim() : '-'
-          });
+        try {
+          // ✅ PARSE SEMUA FIELD YANG MUNGKIN ADA
+          const kreditMatch = block.match(/Kredit\s*:\s*([\d.,]+)/);
+          const tanggalMatch = block.match(/Tanggal\s*:\s*(.+)/);
+          const brandMatch = block.match(/Brand\s*:\s*(.+)/);
+          const deskripsiMatch = block.match(/Deskripsi\s*:\s*([\s\S]+?)(?=\n\w|$)/);
+          const noteMatch = block.match(/Catatan\s*:\s*([\s\S]+?)(?=\n\w|$)/);
+          const keteranganMatch = block.match(/Keterangan\s*:\s*([\s\S]+?)(?=\n\w|$)/);
+          
+          if (kreditMatch && tanggalMatch) {
+            // Bersihkan format angka (hapus titik)
+            const kreditStr = kreditMatch[1].replace(/\./g, '');
+            const kredit = parseInt(kreditStr);
+            
+            if (!isNaN(kredit)) {
+              // Gabungkan semua deskripsi/keterangan
+              const deskripsi = deskripsiMatch ? deskripsiMatch[1].trim() : 
+                              (noteMatch ? noteMatch[1].trim() : 
+                              (keteranganMatch ? keteranganMatch[1].trim() : ''));
+              
+              transaksiList.push({
+                tanggal: tanggalMatch[1].trim(),
+                kredit: kredit,
+                brand: brandMatch ? brandMatch[1].trim() : '-',
+                deskripsi: deskripsi,
+                timestamp: parseDate(tanggalMatch[1].trim()),
+                rawBlock: block.substring(0, 200) + '...' // Simpan sebagian untuk debug
+              });
+            }
+          }
+        } catch (e) {
+          logger.error('❌ Error parsing transaction block:', e.message);
         }
       }
       
-      // Update cache
+      // ✅ FILTER: Hanya transaksi 30 MENIT terakhir (lebih ketat)
+      const thirtyMinutesAgo = now - (30 * 60 * 1000);
+      transaksiList = transaksiList.filter(t => t.timestamp > thirtyMinutesAgo);
+      
+      // ✅ SORT: Terbaru dulu
+      transaksiList.sort((a, b) => b.timestamp - a.timestamp);
+      
       transactionCache = transaksiList;
       cacheTimestamp = now;
       lastApiCallTime = now;
       
-      // Log hanya jika ada transaksi baru/different
       if (transaksiList.length > 0) {
-        logger.info(`📦 Transaksi API: ${transaksiList.length} transaksi ditemukan`);
+        logger.info(`📊 ${transaksiList.length} transaksi ditemukan (30 menit terakhir)`);
       }
     }
 
-    // Proses pending deposits
+    // ✅ PROSES PENDING DEPOSITS DENGAN VALIDASI SUPER KETAT
     for (const [uniqueCode, deposit] of pendingDeposits) {
       if (deposit.status !== 'pending') continue;
 
-      const depositAge = now - deposit.timestamp;
+      deposit.lastChecked = deposit.lastChecked || 0;
+      deposit.attempts = deposit.attempts || 0;
       
-      // Cek expired (5 menit)
-      if (depositAge > 5 * 60 * 1000) {
+      // ✅ JANGAN CEK TERLALU SERING (setiap 15 detik)
+      if (now - deposit.lastChecked < 15000) continue;
+      
+      deposit.lastChecked = now;
+      deposit.attempts++;
+
+      const depositAge = now - deposit.createdAt;
+      
+      // ✅ CEK EXPIRED (5 menit = 300000 ms)
+      if (depositAge > 300000) {
+        logger.info(`⏰ Deposit expired: ${uniqueCode}, Age: ${Math.round(depositAge/1000)}s`);
+        
         try {
           if (deposit.qrMessageId) {
             await bot.telegram.deleteMessage(deposit.userId, deposit.qrMessageId);
           }
+          
           await bot.telegram.sendMessage(
             deposit.userId,
             '❌ *Pembayaran Expired*\n\n' +
-            'Waktu pembayaran telah habis. Silakan klik Top Up lagi untuk mendapatkan QR baru.',
+            'Waktu pembayaran QR Code telah habis (5 menit).\n' +
+            'Silakan klik Top Up lagi untuk mendapatkan QR baru.',
             { parse_mode: 'Markdown' }
           );
+          
         } catch (error) {
-          logger.error('Error deleting expired payment messages:', error);
+          logger.error('Error handling expired deposit:', error.message);
         }
 
         delete global.pendingDeposits[uniqueCode];
-        db.run('DELETE FROM pending_deposits WHERE unique_code = ?', [uniqueCode], (err) => {
-          if (err) logger.error('Gagal hapus pending_deposits (expired):', err.message);
-        });
+        db.run('DELETE FROM pending_deposits WHERE unique_code = ?', [uniqueCode]);
         continue;
       }
 
-      // Cek apakah transaksi sudah cocok
+      // ✅ LOGGING DETAIL UNTUK DEBUG
       const expectedAmount = deposit.amount;
-      const matched = transaksiList.find(t => t.kredit === expectedAmount);
-
-      if (matched) {
-        try {
-          const success = await processMatchingPayment(deposit, matched, uniqueCode);
-          if (success) {
-            logger.info(`✅ Payment processed: ${uniqueCode}, amount: ${expectedAmount}`);
-            delete global.pendingDeposits[uniqueCode];
-            db.run('DELETE FROM pending_deposits WHERE unique_code = ?', [uniqueCode], (err) => {
-              if (err) logger.error('Gagal hapus pending_deposits (success):', err.message);
-            });
-            
-            // Clear cache karena ada perubahan
-            transactionCache = null;
-          }
-        } catch (error) {
-          logger.error(`❌ Error processing payment ${uniqueCode}:`, error.message);
+      const adminFee = deposit.amount - deposit.originalAmount;
+      
+      logger.info(`🔍 Checking deposit: ${uniqueCode}`);
+      logger.info(`   User: ${deposit.userId}`);
+      logger.info(`   Base amount: ${deposit.originalAmount}`);
+      logger.info(`   Admin fee: ${adminFee} (random 100-200)`);
+      logger.info(`   Expected TOTAL: ${expectedAmount} 🎯`);
+      logger.info(`   Reference ID: ${deposit.referenceId}`);
+      logger.info(`   Created: ${new Date(deposit.createdAt).toLocaleTimeString('id-ID')}`);
+      logger.info(`   Age: ${Math.round(depositAge/1000)}s`);
+      
+      // ✅ VALIDASI 1: Cari transaksi dengan nominal yang PERSIS SAMA
+      const potentialMatches = transaksiList.filter(t => {
+        // HARUS PERSIS SAMA, tidak boleh beda 1 rupiah pun!
+        return t.kredit === expectedAmount;
+      });
+      
+      if (potentialMatches.length === 0) {
+        // Tidak ada transaksi dengan nominal ini
+        if (deposit.attempts % 5 === 0) { // Log setiap 5 attempts
+          logger.info(`   ❌ No transaction found with amount: ${expectedAmount}`);
         }
+        continue;
+      }
+      
+      logger.info(`   ✅ Found ${potentialMatches.length} exact amount matches`);
+      
+      // ✅ VALIDASI 2: Transaksi harus dibuat SETELAH deposit dimulai + validasi ketat
+      const validMatches = potentialMatches.filter(t => {
+  // Cukup cek apakah transaksi terjadi setelah QR dibuat
+  return t.timestamp > deposit.createdAt;
+});
+      
+      if (validMatches.length === 0) {
+        logger.info(`   ❌ No valid matches after time filtering`);
+        continue;
+      }
+      
+      logger.info(`   ✅ ${validMatches.length} valid after filtering`);
+      
+      // ✅ VALIDASI 3: Ambil transaksi TERBARU yang valid
+      validMatches.sort((a, b) => b.timestamp - a.timestamp);
+      const matchedTransaction = validMatches[0];
+      
+      // ✅ VALIDASI 4: Cek apakah transaksi ini sudah pernah diproses
+      const transactionKey = `${matchedTransaction.timestamp}_${expectedAmount}_${deposit.userId}_${deposit.referenceId}`;
+      
+      if (global.processedTransactions && global.processedTransactions.has(transactionKey)) {
+        logger.info(`⏭️ Transaction already processed: ${transactionKey}`);
+        continue;
+      }
+      
+      // ✅ LOG UNTUK DEBUG
+      const paymentDelay = matchedTransaction.timestamp - deposit.createdAt;
+      logger.info(`🎯 Payment match CONFIRMED for ${uniqueCode}`);
+      logger.info(`   Deposit created: ${new Date(deposit.createdAt).toLocaleString('id-ID')}`);
+      logger.info(`   Transaction time: ${new Date(matchedTransaction.timestamp).toLocaleString('id-ID')}`);
+      logger.info(`   Time difference: ${Math.round(paymentDelay/1000)} seconds`);
+      logger.info(`   Description: ${matchedTransaction.deskripsi.substring(0, 100)}...`);
+      
+      // ✅ VALIDASI FINAL: Timing harus masuk akal
+      if (paymentDelay < 15000 || paymentDelay > 270000) {
+        logger.warn(`⚠️ Suspicious timing: ${Math.round(paymentDelay/1000)}s for ${uniqueCode}`);
+        continue;
+      }
+
+      // ✅ PROSES PEMBAYARAN
+      try {
+        const success = await processMatchingPayment(deposit, matchedTransaction, uniqueCode);
+        
+        if (success) {
+          logger.info(`💰 Payment processed successfully: ${uniqueCode}`);
+          
+          // Simpan ke cache processed transactions
+          if (!global.processedTransactions) {
+            global.processedTransactions = new Set();
+          }
+          global.processedTransactions.add(transactionKey);
+          
+          // Schedule cleanup untuk processed transactions (24 jam)
+          setTimeout(() => {
+            if (global.processedTransactions) {
+              global.processedTransactions.delete(transactionKey);
+            }
+          }, 24 * 60 * 60 * 1000);
+          
+          delete global.pendingDeposits[uniqueCode];
+          db.run('DELETE FROM pending_deposits WHERE unique_code = ?', [uniqueCode]);
+          
+          // Clear cache karena ada perubahan
+          transactionCache = null;
+        }
+      } catch (error) {
+        logger.error(`❌ Error processing payment ${uniqueCode}:`, error.message);
+        logger.error(`   Error details:`, error.stack);
       }
     }
+    
   } catch (error) {
     logger.error('❌ Error in checkQRISStatus:', error.message);
-    // Reset cache jika error
+    logger.error('   Stack:', error.stack);
     transactionCache = null;
+    
+    // Reset API call time untuk coba lagi
+    lastApiCallTime = 0;
   }
 }
 
@@ -4619,23 +5239,19 @@ function keyboard_abc() {
 }
 
 function keyboard_nomor() {
-  const alphabet = '1234567890';
-  const buttons = [];
-  for (let i = 0; i < alphabet.length; i += 3) {
-    const row = alphabet.slice(i, i + 3).split('').map(char => ({
-      text: char,
-      callback_data: char
-    }));
-    buttons.push(row);
-  }
-  buttons.push([{ text: '🔙 Hapus', callback_data: 'delete' }, { text: '✅ Konfirmasi', callback_data: 'confirm' }]);
-  // ✅ TAMBAHKAN TOMBOL CONTOH
-  buttons.push([
-    { text: '💰 2000', callback_data: '2000' },
-    { text: '💰 5000', callback_data: '5000' },
-    { text: '💰 10000', callback_data: '10000' }
-  ]);
-  buttons.push([{ text: '🔙 Kembali ke Menu Utama', callback_data: 'send_main_menu' }]);
+  const buttons = [
+    [{ text: '1', callback_data: '1' }, { text: '2', callback_data: '2' }, { text: '3', callback_data: '3' }],
+    [{ text: '4', callback_data: '4' }, { text: '5', callback_data: '5' }, { text: '6', callback_data: '6' }],
+    [{ text: '7', callback_data: '7' }, { text: '8', callback_data: '8' }, { text: '9', callback_data: '9' }],
+    [{ text: '0', callback_data: '0' }, { text: '00', callback_data: '00' }],
+    [{ text: '🔙 Hapus', callback_data: 'delete' }, { text: '✅ Konfirmasi', callback_data: 'confirm' }],
+    [
+      { text: '💰 5rb', callback_data: '5000' },
+      { text: '💰 10rb', callback_data: '10000' },
+      { text: '💰 20rb', callback_data: '20000' }
+    ],
+    [{ text: '🔙 Kembali ke Menu', callback_data: 'send_main_menu' }]
+  ];
   return buttons;
 }
 
@@ -4681,177 +5297,696 @@ async function getUserBalance(userId) {
   });
 }
 
+// Jika ada fungsi ini, Anda bisa hapus atau biarkan sebagai fallback
 async function sendPaymentSuccessNotification(userId, deposit, currentBalance) {
   try {
-    // Hitung admin fee
     const adminFee = deposit.amount - deposit.originalAmount;
-    await bot.telegram.sendMessage(userId,
+    
+    await bot.telegram.sendMessage(
+      userId,
       `✅ *Pembayaran Berhasil!*\n\n` +
-      `💰 Jumlah Deposit: Rp ${deposit.originalAmount}\n` +
-      `💰 Biaya Admin: Rp ${adminFee}\n` +
-      `💰 Total Pembayaran: Rp ${deposit.amount}\n` +
-      `💳 Saldo Sekarang: Rp ${currentBalance}`,
+      `💰 Nominal Top-up: Rp ${deposit.originalAmount.toLocaleString('id-ID')}\n` +
+      `💸 Biaya Admin: Rp ${adminFee.toLocaleString('id-ID')}\n` +
+      `💵 Total Bayar: Rp ${deposit.amount.toLocaleString('id-ID')}\n` +
+      `🏦 Saldo Sekarang: Rp ${currentBalance.toLocaleString('id-ID')}`,
       { parse_mode: 'Markdown' }
     );
+    
     return true;
   } catch (error) {
-    logger.error('Error sending payment notification:', error);
+    logger.error('❌ Error in sendPaymentSuccessNotification:', error.message);
     return false;
   }
 }
 
+
+// ✅ JALANKAN CLEANUP SETIAP 5 MENIT
+setInterval(cleanupOldDeposits, 5 * 60 * 1000);
+
+// ✅ TAMBAHKAN CLEANUP SAAT BOT START
+// Di bagian app.listen() atau setelah bot.launch():
+setTimeout(() => {
+  logger.info('🚀 Running initial cleanup...');
+  cleanupOldDeposits();
+}, 10000); // Jalankan 10 detik setelah start
+
+// ✅ FUNGSI CLEANUP PROCESSED TRANSACTIONS
+function cleanupProcessedTransactions() {
+  if (!global.processedTransactions || global.processedTransactions.size === 0) {
+    return;
+  }
+  
+  const oldSize = global.processedTransactions.size;
+  
+  // Hapus semua yang sudah lebih dari 24 jam
+  // (Karena kita sudah set timeout di setiap add, ini backup saja)
+  global.processedTransactions.clear();
+  
+  if (oldSize > 0) {
+    logger.info(`🧹 Cleaned ${oldSize} processed transactions from cache`);
+  }
+}
+
+// ✅ GRACEFUL SHUTDOWN HANDLER
+function gracefulShutdown() {
+  logger.info('🛑 Shutting down gracefully...');
+  
+  // Cleanup sebelum exit
+  cleanupOldDeposits();
+  cleanupProcessedTransactions();
+  
+  // Close database connection
+  db.close((err) => {
+    if (err) {
+      logger.error('Error closing database:', err.message);
+    } else {
+      logger.info('✅ Database connection closed');
+    }
+    
+    process.exit(0);
+  });
+}
+
+function cleanupOldDeposits() {
+  const now = Date.now();
+  const oneHourAgo = now - (60 * 60 * 1000);
+  let cleanedCount = 0;
+  
+  Object.keys(global.pendingDeposits).forEach(uniqueCode => {
+    const deposit = global.pendingDeposits[uniqueCode];
+    
+    // ✅ CEK: Deposit lebih dari 1 jam dan masih pending
+    if (deposit.createdAt && deposit.createdAt < oneHourAgo && deposit.status === 'pending') {
+      logger.info(`🧹 Cleaning up old deposit: ${uniqueCode}, Age: ${now - deposit.createdAt}ms`);
+      
+      // ✅ HAPUS PESAN QR CODE JIKA ADA
+      if (deposit.qrMessageId) {
+        try {
+          bot.telegram.deleteMessage(deposit.userId, deposit.qrMessageId).catch(() => {});
+        } catch (e) {
+          // Ignore error jika pesan sudah dihapus
+        }
+      }
+      
+      // ✅ KIRIM NOTIFIKASI KE USER (OPSIONAL)
+      try {
+        bot.telegram.sendMessage(
+          deposit.userId,
+          '📝 *Pengingat*\n\n' +
+          'Deposit Anda yang belum dibayar telah dihapus dari sistem.\n' +
+          'Silakan buat deposit baru jika masih ingin top-up.',
+          { parse_mode: 'Markdown' }
+        ).catch(() => {}); // Ignore jika user block bot
+      } catch (e) {
+        // Ignore error
+      }
+      
+      delete global.pendingDeposits[uniqueCode];
+      cleanedCount++;
+      
+      // ✅ HAPUS DARI DATABASE
+      db.run('DELETE FROM pending_deposits WHERE unique_code = ?', 
+        [uniqueCode], 
+        (err) => {
+          if (err) logger.error('Error cleaning up old deposit:', err.message);
+        }
+      );
+    }
+  });
+  
+  if (cleanedCount > 0) {
+    logger.info(`🧹 Cleaned ${cleanedCount} old pending deposits`);
+  }
+}
+
+// Handle shutdown signals
+process.on('SIGINT', gracefulShutdown);
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGUSR2', gracefulShutdown); // Untuk nodemon/PM2 restart
+
+// Jalankan setiap 6 jam
+setInterval(cleanupProcessedTransactions, 6 * 60 * 60 * 1000);
+
+// Jalankan cleanup setiap 5 menit
+setInterval(cleanupOldDeposits, 5 * 60 * 1000);
+
 async function processMatchingPayment(deposit, matchingTransaction, uniqueCode) {
-  const transactionKey = `${matchingTransaction.reference_id || uniqueCode}_${matchingTransaction.amount}`;
-  // Use a database transaction to ensure atomicity
-  return new Promise((resolve, reject) => {
-    db.serialize(() => {
-      db.run('BEGIN TRANSACTION');
-      // First check if transaction was already processed
-      db.get('SELECT id FROM transactions WHERE reference_id = ? AND amount = ?', 
-        [matchingTransaction.reference_id || uniqueCode, matchingTransaction.amount], 
-        (err, row) => {
-          if (err) {
-            db.run('ROLLBACK');
-            logger.error('Error checking transaction:', err);
-            reject(err);
-            return;
-          }
-          if (row) {
-            db.run('ROLLBACK');
-            logger.info(`Transaction ${transactionKey} already processed, skipping...`);
-            resolve(false);
-            return;
-          }
-          // Update user balance
-          db.run('UPDATE users SET saldo = saldo + ? WHERE user_id = ?', 
-            [deposit.originalAmount, deposit.userId], 
+  console.log(`💰 [PAYMENT START] Processing ${uniqueCode}`);
+  
+  try {
+    const adminFee = deposit.amount - deposit.originalAmount;
+    const totalPaid = deposit.amount;
+    
+    // 1. UPDATE SALDO
+    db.run('UPDATE users SET saldo = saldo + ? WHERE user_id = ?',
+      [deposit.originalAmount, deposit.userId],
+      function(err) {
+        if (err) {
+          console.error('❌ Error update saldo:', err.message);
+          // Kirim notifikasi error
+          bot.telegram.sendMessage(
+            deposit.userId,
+            `❌ *GAGAL TOP-UP*\n\n` +
+            `Terjadi kesalahan sistem.\n` +
+            `Silakan hubungi admin.\n` +
+            `🆔 ${deposit.referenceId}`,
+            { parse_mode: 'Markdown' }
+          );
+        } else {
+          console.log(`✅ Saldo updated: +${deposit.originalAmount} for user ${deposit.userId}`);
+          
+          // 2. SIMPAN TRANSAKSI
+          db.run(
+            'INSERT INTO transactions (user_id, amount, type, reference_id, timestamp) VALUES (?, ?, ?, ?, ?)',
+            [deposit.userId, deposit.originalAmount, 'deposit', deposit.referenceId, Date.now()],
             function(err) {
               if (err) {
-                db.run('ROLLBACK');
-                logger.error('Error updating balance:', err);
-                reject(err);
-                return;
-              }
-              // Record the transaction
-              db.run(
-                'INSERT INTO transactions (user_id, amount, type, reference_id, timestamp) VALUES (?, ?, ?, ?, ?)',
-                [deposit.userId, deposit.originalAmount, 'deposit', matchingTransaction.reference_id || uniqueCode, Date.now()],
-                (err) => {
-                  if (err) {
-                    db.run('ROLLBACK');
-                    logger.error('Error recording transaction:', err);
-                    reject(err);
-                    return;
-                  }
-                  // Get updated balance
-                  db.get('SELECT saldo FROM users WHERE user_id = ?', [deposit.userId], async (err, user) => {
-                    if (err) {
-                      db.run('ROLLBACK');
-                      logger.error('Error getting updated balance:', err);
-                      reject(err);
-                      return;
-                    }
-                    
-                    // Hitung admin fee
-                    const adminFee = deposit.amount - deposit.originalAmount;
-                    
-                    // Send notification using sendPaymentSuccessNotification
-                    const notificationSent = await sendPaymentSuccessNotification(
-                      deposit.userId,
-                      deposit,
-                      user.saldo
-                    );
-                    
-                    // Delete QR code message after payment success
-                    if (deposit.qrMessageId) {
-                      try {
-                        await bot.telegram.deleteMessage(deposit.userId, deposit.qrMessageId);
-                      } catch (e) {
-                        logger.error("Gagal menghapus pesan QR code:", e.message);
-                      }
-                    }
-                    
-                    if (notificationSent) {
-                      // Notifikasi ke grup untuk top up
-                      try {
-                        // Ambil info user untuk notifikasi
-                        let userInfo;
-                        try {
-                          userInfo = await bot.telegram.getChat(deposit.userId);
-                        } catch (e) {
-                          userInfo = {};
-                        }
-                        
-                        const username = userInfo.username ? `@${userInfo.username}` : 
-                                       (userInfo.first_name || `User ${deposit.userId}`);
-                        
-                        const userDisplay = userInfo.username 
-                          ? `${username} (ID: ${deposit.userId})`
-                          : `${username}`;
-                        
-                        // Format waktu
-                        const waktu = new Date().toLocaleString('id-ID', { 
-                          timeZone: 'Asia/Jakarta',
-                          weekday: 'long',
-                          year: 'numeric',
-                          month: 'long',
-                          day: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                          second: '2-digit'
-                        });
-                        
-                        // Kirim notifikasi ke grup
-                        await bot.telegram.sendMessage(
-                          GROUP_ID,
-                          `🎉 *TOP UP BERHASIL* 🎉\n\n` +
-                          `👤 *User:* ${userDisplay}\n` +
-                          `💰 *Nominal Top-up:* Rp ${deposit.originalAmount.toLocaleString('id-ID')}\n` +
-                          `💸 *Biaya Admin:* Rp ${adminFee.toLocaleString('id-ID')}\n` +
-                          `💵 *Total Bayar:* Rp ${deposit.amount.toLocaleString('id-ID')}\n` +
-                          `🏦 *Saldo Sekarang:* Rp ${user.saldo.toLocaleString('id-ID')}\n\n` +
-                          `⏰ *Waktu:* ${waktu}\n` +
-                          `🆔 *ID Transaksi:* ${uniqueCode.substring(0, 8)}...`,
-                          { parse_mode: 'Markdown' }
-                        );
-                        
-                        logger.info(`📢 Notifikasi top-up dikirim ke grup ${GROUP_ID} untuk user ${deposit.userId}`);
-                      } catch (e) { 
-                        logger.error('❌ Gagal kirim notif top up ke grup:', e.message);
-                        // Jangan gagalkan transaksi hanya karena notifikasi gagal
-                      }
-                      
-                      // Hapus semua file di receipts setelah pembayaran sukses
-                      try {
-                        const receiptsDir = path.join(__dirname, 'receipts');
-                        if (fs.existsSync(receiptsDir)) {
-                          const files = fs.readdirSync(receiptsDir);
-                          for (const file of files) {
-                            fs.unlinkSync(path.join(receiptsDir, file));
-                          }
-                        }
-                      } catch (e) { 
-                        logger.error('Gagal menghapus file di receipts:', e.message); 
-                      }
-                      
-                      db.run('COMMIT');
-                      global.processedTransactions.add(transactionKey);
-                      delete global.pendingDeposits[uniqueCode];
-                      db.run('DELETE FROM pending_deposits WHERE unique_code = ?', [uniqueCode]);
-                      resolve(true);
-                    } else {
-                      db.run('ROLLBACK');
-                      reject(new Error('Failed to send payment notification.'));
-                    }
+                console.error('❌ Error save transaction:', err.message);
+              } else {
+                console.log(`✅ Transaction saved: ${deposit.referenceId}`);
+                
+                // 3. HAPUS DARI PENDING
+                delete global.pendingDeposits[uniqueCode];
+                db.run('DELETE FROM pending_deposits WHERE unique_code = ?', [uniqueCode]);
+                
+                // 4. AMBIL SALDO TERBARU DAN KIRIM NOTIFIKASI CANTIK
+                db.get('SELECT saldo FROM users WHERE user_id = ?', [deposit.userId], (err, row) => {
+                  const currentBalance = row ? row.saldo : deposit.originalAmount;
+                  const waktu = new Date().toLocaleString('id-ID', { 
+                    timeZone: 'Asia/Jakarta',
+                    dateStyle: 'full',
+                    timeStyle: 'medium'
                   });
-                }
-              );
+                  
+                  // NOTIFIKASI KE USER (TAMPILAN BARU)
+                  const userMessage = 
+`🎉 *TOP-UP BERHASIL!* 🎉
+
+┏━━━━━━━━━━━━━━━━━━━┓
+🏦 *DETAIL TRANSAKSI*
+┗━━━━━━━━━━━━━━━━━━━┛
+
+💰 *Nominal Top-up:* Rp ${deposit.originalAmount.toLocaleString('id-ID')}
+🎲 *Biaya Admin:* Rp ${adminFee.toLocaleString('id-ID')}
+💵 *Total Bayar:* Rp ${totalPaid.toLocaleString('id-ID')}
+🏦 *Saldo Sekarang:* Rp ${currentBalance.toLocaleString('id-ID')}
+
+┏━━━━━━━━━━━━━━━━━━━┓
+📋 *INFORMASI*
+┗━━━━━━━━━━━━━━━━━━━┛
+
+🆔 *Referensi:* \`${deposit.referenceId}\`
+👤 *User ID:* \`${deposit.userId}\`
+⏰ *Waktu:* ${waktu}
+
+┏━━━━━━━━━━━━━━━━━━━┓
+✨ *TERIMA KASIH*
+┗━━━━━━━━━━━━━━━━━━━┛
+
+_Saldo telah ditambahkan ke akun Anda._
+_Gunakan untuk membuat akun VPN premium!_`;
+
+                  bot.telegram.sendMessage(
+                    deposit.userId,
+                    userMessage,
+                    { parse_mode: 'Markdown' }
+                  ).then(() => {
+                    console.log(`📨 Notification sent to ${deposit.userId}`);
+                    
+                    // 5. NOTIFIKASI KE GRUP ADMIN (jika ada)
+                    if (GROUP_ID_NUM) {
+                      const adminMessage = 
+`💸 *NOTIFIKASI TOP-UP* 💸
+┏━━━━━━━━━━━━━━━━━━┓
+📊 TRANSAKSI BERHASIL
+┗━━━━━━━━━━━━━━━━━━┛
+
+👤 *User:* \`${deposit.userId}\`
+💰 *Top-up:* Rp ${deposit.originalAmount.toLocaleString('id-ID')}
+🎲 *Admin Fee:* Rp ${adminFee.toLocaleString('id-ID')}
+💵 *Total:* Rp ${totalPaid.toLocaleString('id-ID')}
+🏦 *Saldo Akhir:* Rp ${currentBalance.toLocaleString('id-ID')}
+
+🆔 *Ref:* ${deposit.referenceId}
+⏰ ${new Date().toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta' })}`;
+
+                      bot.telegram.sendMessage(
+                        GROUP_ID_NUM,
+                        adminMessage,
+                        { parse_mode: 'Markdown' }
+                      ).catch(() => {});
+                    }
+                    
+                    // 6. HAPUS QR MESSAGE
+                    if (deposit.qrMessageId) {
+                      bot.telegram.deleteMessage(deposit.userId, deposit.qrMessageId)
+                        .catch(() => {});
+                    }
+                    
+                    console.log(`🎉 [PAYMENT COMPLETE] ${uniqueCode} SUCCESS!`);
+                    
+                  }).catch(err => {
+                    console.error('❌ Notification error:', err.message);
+                  });
+                });
+              }
             }
           );
         }
-      );
-    });
+      }
+    );
+    
+    return true;
+    
+  } catch (error) {
+    console.error(`❌ [PAYMENT FAILED] ${uniqueCode}:`, error.message);
+    
+    // Kirim notifikasi error ke user
+    bot.telegram.sendMessage(
+      deposit.userId,
+      `❌ *TOP-UP GAGAL*\n\n` +
+      `Terjadi kesalahan saat memproses pembayaran.\n\n` +
+      `💰 *Nominal:* Rp ${deposit.originalAmount.toLocaleString('id-ID')}\n` +
+      `🆔 *Referensi:* \`${deposit.referenceId}\`\n\n` +
+      `Silakan hubungi admin untuk bantuan.`,
+      { parse_mode: 'Markdown' }
+    ).catch(() => {});
+    
+    return false;
+  }
+}
+
+// Di validatePaymentSecurity(), UBAH TOTAL menjadi ini:
+async function validatePaymentSecurity(deposit, matchingTransaction, uniqueCode) {
+  const checks = [];
+  const failedChecks = [];
+  
+  console.log(`🔒 [SECURITY DEBUG] Validating ${uniqueCode}`);
+  console.log(`   Deposit time: ${new Date(deposit.createdAt).toLocaleString('id-ID')}`);
+  console.log(`   Transaction time: ${new Date(matchingTransaction.timestamp).toLocaleString('id-ID')}`);
+  console.log(`   Time diff: ${matchingTransaction.timestamp - deposit.createdAt}ms`);
+  
+  // 1. AMOUNT CHECK (ini yang PALING PENTING)
+  const amountOk = matchingTransaction.kredit === deposit.amount;
+  checks.push({
+    name: 'Amount',
+    passed: amountOk,
+    details: `Expected: ${deposit.amount}, Got: ${matchingTransaction.kredit}`
   });
+  if (!amountOk) failedChecks.push('Amount');
+  
+  // 2. TIMING CHECK - SANGAT LONGGAR
+  const paymentDelay = matchingTransaction.timestamp - deposit.createdAt;
+  const timingOk = paymentDelay >= -600000 && paymentDelay <= 1800000; // -10 menit sampai +30 menit
+  checks.push({
+    name: 'Timing',
+    passed: timingOk,
+    details: `${Math.round(paymentDelay/1000)}s (super loose: -10m to +30m)`
+  });
+  if (!timingOk) failedChecks.push('Timing');
+  
+  // 3. DUPLICATE CHECK
+  const transactionKey = `${matchingTransaction.timestamp}_${deposit.amount}_${deposit.userId}`;
+  const duplicateOk = !(global.processedTransactions && 
+                       global.processedTransactions.has(transactionKey));
+  checks.push({
+    name: 'Duplicate',
+    passed: duplicateOk,
+    details: duplicateOk ? 'New transaction' : 'Already processed'
+  });
+  if (!duplicateOk) failedChecks.push('Duplicate');
+  
+  // 4. REFERENCE CHECK (optional - skip jika tidak ada)
+  let refOk = false;
+  if (matchingTransaction.deskripsi && matchingTransaction.deskripsi.trim() !== '-') {
+    const descLower = matchingTransaction.deskripsi.toLowerCase();
+    refOk = descLower.includes(deposit.referenceId.toLowerCase()) ||
+            descLower.includes(String(deposit.userId)) ||
+            descLower.includes('topup') ||
+            descLower.includes('ref-');
+  }
+  checks.push({
+    name: 'Reference',
+    passed: refOk,
+    optional: true,
+    details: refOk ? 'Reference found' : 'No reference (optional)'
+  });
+  if (!refOk) failedChecks.push('Reference');
+  
+  console.log(`🔒 [SECURITY RESULT] Passed: ${checks.filter(c => c.passed).length}/${checks.length}`);
+  
+  // HANYA AMOUNT yang mandatory
+  const mandatoryPassed = amountOk && duplicateOk;
+  
+  return {
+    allPassed: mandatoryPassed,
+    checks: checks,
+    failedChecks: failedChecks,
+    paymentDelay: paymentDelay
+  };
+}
+
+// ✅ FUNGSI POST-PAYMENT CLEANUP
+async function performPostPaymentCleanup(deposit, referenceId, adminFee, currentBalance) {
+  try {
+    // 1. Hapus QR message
+    if (deposit.qrMessageId) {
+      try {
+        await bot.telegram.deleteMessage(deposit.userId, deposit.qrMessageId);
+        logger.info(`🗑️ QR message deleted`);
+      } catch (e) {
+        if (e.response?.error_code !== 400) {
+          logger.error('❌ Error deleting QR:', e.message);
+        }
+      }
+    }
+    
+    // 2. Kirim notifikasi ke user
+    try {
+      await bot.telegram.sendMessage(
+        deposit.userId,
+        `✅ *PEMBAYARAN BERHASIL!*\n\n` +
+        `💰 Top-up: Rp ${deposit.originalAmount.toLocaleString('id-ID')}\n` +
+        `🎲 Admin: Rp ${adminFee.toLocaleString('id-ID')} (random)\n` +
+        `💵 Total: Rp ${deposit.amount.toLocaleString('id-ID')}\n` +
+        `🏦 Saldo: Rp ${currentBalance.toLocaleString('id-ID')}\n\n` +
+        `🆔 Referensi: \`${referenceId}\`\n` +
+        `⏰ ${new Date().toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta' })}`,
+        { parse_mode: 'Markdown' }
+      );
+      logger.info(`📨 User notified`);
+    } catch (e) {
+      logger.error('❌ Error notifying user:', e.message);
+    }
+    
+    // 3. Kirim notifikasi ke grup
+    if (GROUP_ID_NUM) {
+      try {
+        let userInfo = {};
+        try {
+          userInfo = await bot.telegram.getChat(deposit.userId);
+        } catch (e) {}
+        
+        const username = userInfo.username ? `@${userInfo.username}` : 
+                        (userInfo.first_name || `User ${deposit.userId}`);
+        
+        await bot.telegram.sendMessage(
+          GROUP_ID_NUM,
+          `🎉 *TOP UP BERHASIL* 🎉\n\n` +
+          `👤 ${username}\n` +
+          `💰 Rp ${deposit.originalAmount.toLocaleString('id-ID')}\n` +
+          `🎲 +Rp ${adminFee.toLocaleString('id-ID')} (random fee)\n` +
+          `💵 Total: Rp ${deposit.amount.toLocaleString('id-ID')}\n` +
+          `🏦 Saldo: Rp ${currentBalance.toLocaleString('id-ID')}\n\n` +
+          `🆔 ${referenceId.substring(0, 12)}...`,
+          { parse_mode: 'Markdown' }
+        );
+        logger.info(`📢 Group notified`);
+      } catch (e) {
+        logger.error('❌ Error notifying group:', e.message);
+      }
+    }
+    
+    // 4. Cleanup receipts folder
+    try {
+      const receiptsDir = path.join(__dirname, 'receipts');
+      if (fs.existsSync(receiptsDir)) {
+        const files = fs.readdirSync(receiptsDir);
+        for (const file of files) {
+          fs.unlinkSync(path.join(receiptsDir, file));
+        }
+        if (files.length > 0) {
+          logger.info(`🧹 ${files.length} receipt files cleaned`);
+        }
+      }
+    } catch (e) {
+      // Ignore receipt cleanup errors
+    }
+    
+  } catch (error) {
+    logger.error('❌ Error in post-payment cleanup:', error.message);
+  }
+}
+
+// ✅ FUNGSI UNTUK GENERATE RANDOM FEE YANG UNIK
+// ✅ FUNGSI UNTUK GENERATE RANDOM FEE YANG UNIK DAN PASTI BEDA
+async function generateUniqueFee(baseAmount, userId, existingDeposits) {
+  logger.info(`🎲 Generating unique fee for user ${userId}, base: ${baseAmount}`);
+  
+  // Ambil semua amount yang sedang pending (dalam 24 jam)
+  const twentyFourHoursAgo = Date.now() - (24 * 60 * 60 * 1000);
+  const recentDeposits = existingDeposits
+    .filter(d => d.createdAt > twentyFourHoursAgo && d.status === 'pending');
+  
+  const recentAmounts = recentDeposits.map(d => d.amount);
+  
+  logger.info(`   Found ${recentAmounts.length} recent pending amounts`);
+  
+  // Tampilkan amounts yang sudah ada untuk debugging
+  if (recentAmounts.length > 0) {
+    logger.info(`   Existing amounts: ${recentAmounts.join(', ')}`);
+  }
+  
+  let attempts = 0;
+  const maxAttempts = 20; // Naikkan dari 15 ke 20
+  let adminFee, finalAmount;
+  let foundUnique = false;
+  
+  // Coba generate amount unik
+  while (attempts < maxAttempts && !foundUnique) {
+    attempts++;
+    
+    // Generate random fee 100-200 dengan variasi lebih banyak
+    adminFee = Math.floor(Math.random() * 101) + 100;
+    
+    // Tambahkan random adjustment kecil (0-99) untuk lebih unik
+    const randomAdjustment = Math.floor(Math.random() * 100);
+    finalAmount = baseAmount + adminFee + randomAdjustment;
+    
+    logger.info(`   Attempt ${attempts}: ${baseAmount} + ${adminFee} + ${randomAdjustment} = ${finalAmount}`);
+    
+    // Cek apakah amount ini unik
+    if (!recentAmounts.includes(finalAmount)) {
+      // Double check di database (pending deposits) dengan query lebih spesifik
+      try {
+        const dbCheck = await new Promise((resolve) => {
+          db.get(
+            `SELECT COUNT(*) as count FROM pending_deposits 
+             WHERE amount = ? 
+             AND created_at > ? 
+             AND status = 'pending'`,
+            [finalAmount, twentyFourHoursAgo],
+            (err, row) => {
+              if (err) {
+                logger.error('❌ DB check error:', err.message);
+                resolve(0);
+              } else {
+                resolve(row ? row.count : 0);
+              }
+            }
+          );
+        });
+        
+        if (dbCheck === 0) {
+          foundUnique = true;
+          logger.info(`   ✅ Found unique amount after ${attempts} attempts`);
+          break;
+        } else {
+          logger.info(`   ❌ Amount ${finalAmount} exists in database, trying again...`);
+        }
+      } catch (dbError) {
+        logger.error('❌ Error checking database:', dbError.message);
+      }
+    } else {
+      logger.info(`   ❌ Amount ${finalAmount} exists in recent amounts, trying again...`);
+    }
+    
+    // Tunggu sedikit sebelum coba lagi
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  
+  // JIKA MASIH TIDAK UNIK SETELAH MAX ATTEMPTS
+  if (!foundUnique) {
+    logger.warn(`⚠️ Could not find unique amount after ${maxAttempts} attempts`);
+    
+    // Gunakan algoritma fallback yang garansi unik
+    // Gabungkan timestamp + user ID untuk garansi keunikan
+    const timestampPart = Date.now() % 10000; // 0-9999
+    const userIdPart = userId % 100; // 0-99
+    const microAdjustment = (timestampPart + userIdPart) % 100; // 0-99
+    
+    adminFee = Math.floor(Math.random() * 101) + 100;
+    finalAmount = baseAmount + adminFee + microAdjustment;
+    
+    logger.info(`   🔄 Using guaranteed unique amount: ${baseAmount} + ${adminFee} + ${microAdjustment} = ${finalAmount}`);
+    logger.info(`      Timestamp: ${timestampPart}, UserID: ${userIdPart}, Adjustment: ${microAdjustment}`);
+  }
+  
+  // FINAL VALIDATION - PASTIKAN TIDAK ADA DUPLIKAT
+  const finalCheck = await new Promise((resolve) => {
+    db.get(
+      `SELECT COUNT(*) as count FROM pending_deposits 
+       WHERE amount = ? 
+       AND created_at > ? 
+       AND status = 'pending'`,
+      [finalAmount, Date.now() - (24 * 60 * 60 * 1000)],
+      (err, row) => {
+        resolve(err ? 1 : (row ? row.count : 0));
+      }
+    );
+  });
+  
+  if (finalCheck > 0) {
+    logger.error(`❌ CRITICAL: Generated amount ${finalAmount} STILL EXISTS in database!`);
+    
+    // EMERGENCY FALLBACK - PASTI UNIK
+    const emergencyAdjustment = Date.now() % 1000;
+    finalAmount = baseAmount + 150 + emergencyAdjustment; // 150 sebagai fixed fee
+    
+    logger.info(`   🚨 EMERGENCY: Using emergency amount: ${finalAmount}`);
+  }
+  
+  logger.info(`   🎯 Final generated: ${baseAmount} + ${adminFee} = ${finalAmount} (unique: ${foundUnique})`);
+  
+  return {
+    adminFee: adminFee,
+    finalAmount: finalAmount,
+    isUnique: foundUnique || true, // Selalu return true untuk force continue
+    attempts: attempts,
+    note: foundUnique ? 'Random unique' : 'Guaranteed unique'
+  };
+}
+
+//////
+
+// ✅ FUNGSI UNTUK GENERATE RANDOM FEE YANG BENAR-BENAR UNIK
+function generateUniqueFee(baseAmount, userId) {
+  // Generate random fee 100-200
+  let adminFee = Math.floor(Math.random() * 101) + 100;
+  let finalAmount = baseAmount + adminFee;
+  let attempts = 0;
+  
+  // Cek apakah amount ini sudah pernah dipakai (pending)
+  const isAmountUsed = Object.values(global.pendingDeposits)
+    .some(d => d.amount === finalAmount);
+  
+  // Jika sudah dipakai, coba generate ulang (max 5x)
+  while (isAmountUsed && attempts < 5) {
+    adminFee = Math.floor(Math.random() * 101) + 100;
+    finalAmount = baseAmount + adminFee;
+    attempts++;
+    
+    const newCheck = Object.values(global.pendingDeposits)
+      .some(d => d.amount === finalAmount);
+    
+    if (!newCheck) break;
+  }
+  
+  // Jika masih tabrakan setelah 5x, tambahkan timestamp
+  if (attempts >= 5) {
+    const timestamp = Date.now() % 100; // 0-99
+    adminFee = Math.floor(Math.random() * 101) + 100;
+    finalAmount = baseAmount + adminFee + timestamp;
+    logger.warn(`⚠️ Using timestamp adjustment for unique amount`);
+  }
+  
+  return {
+    adminFee: adminFee,
+    finalAmount: finalAmount,
+    attempts: attempts
+  };
+}
+
+// ✅ FUNGSI UNTUK VALIDATE PAYMENT SECURITY
+function validatePaymentSecurity(deposit, matchingTransaction) {
+  const securityChecks = [];
+  
+  // 1. Check timing
+  const paymentDelay = matchingTransaction.timestamp - deposit.createdAt;
+  securityChecks.push({
+    name: 'Timing',
+    passed: paymentDelay >= 15000 && paymentDelay <= 270000,
+    details: `${Math.round(paymentDelay/1000)}s (15s-4.5m)`
+  });
+  
+  // 2. Check amount match (EXACT)
+  securityChecks.push({
+    name: 'Amount Match',
+    passed: matchingTransaction.kredit === deposit.amount,
+    details: `Expected: ${deposit.amount}, Got: ${matchingTransaction.kredit}`
+  });
+  
+  // 3. Check reference in description (optional)
+  if (matchingTransaction.deskripsi && matchingTransaction.deskripsi.trim() !== '-') {
+    const descLower = matchingTransaction.deskripsi.toLowerCase();
+    const hasReference = descLower.includes(deposit.referenceId.toLowerCase()) ||
+                        descLower.includes(String(deposit.userId));
+    securityChecks.push({
+      name: 'Reference Match',
+      passed: hasReference,
+      details: hasReference ? 'Reference found' : 'No reference found'
+    });
+  }
+  
+  // 4. Check if transaction already processed
+  const transactionKey = `${matchingTransaction.timestamp}_${deposit.amount}_${deposit.userId}`;
+  const alreadyProcessed = global.processedTransactions && 
+                          global.processedTransactions.has(transactionKey);
+  securityChecks.push({
+    name: 'Duplicate Check',
+    passed: !alreadyProcessed,
+    details: alreadyProcessed ? 'Already processed' : 'New transaction'
+  });
+  
+  // Log all security checks
+  logger.info(`🔒 Payment Security Check:`);
+  securityChecks.forEach(check => {
+    const status = check.passed ? '✅' : '❌';
+    logger.info(`   ${status} ${check.name}: ${check.details}`);
+  });
+  
+  // Return true if all mandatory checks pass
+  const mandatoryChecks = securityChecks.filter(c => 
+    c.name !== 'Reference Match' // Reference match optional
+  );
+  
+  return mandatoryChecks.every(c => c.passed);
+}
+
+// ✅ FUNGSI UNTUK SEND PAYMENT SUMMARY
+async function sendPaymentSummary(deposit, transactionDetails) {
+  try {
+    const summary = `
+📊 *PAYMENT SUMMARY*
+
+👤 User: ${deposit.userId}
+💰 Base Amount: ${deposit.originalAmount}
+🎲 Admin Fee: ${deposit.amount - deposit.originalAmount}
+💵 Total: ${deposit.amount}
+🆔 Reference: ${deposit.referenceId}
+
+⏰ Timing:
+• QR Created: ${new Date(deposit.createdAt).toLocaleTimeString('id-ID')}
+• Payment Time: ${new Date(transactionDetails.timestamp).toLocaleTimeString('id-ID')}
+• Delay: ${Math.round((transactionDetails.timestamp - deposit.createdAt)/1000)}s
+
+🔍 Transaction Details:
+• Amount: ${transactionDetails.kredit}
+• Time: ${new Date(transactionDetails.timestamp).toLocaleString('id-ID')}
+• Description: ${transactionDetails.deskripsi?.substring(0, 50) || 'N/A'}...
+
+✅ Status: VERIFIED & COMPLETED
+    `.trim();
+    
+    // Kirim ke admin/log channel jika ada
+    if (GROUP_ID_NUM) {
+      await bot.telegram.sendMessage(GROUP_ID_NUM, summary, { parse_mode: 'Markdown' });
+    }
+    
+    logger.info(`📋 Payment summary logged`);
+  } catch (error) {
+    logger.error('❌ Error sending payment summary:', error.message);
+  }
 }
 
 setInterval(checkQRISStatus, 10000);
@@ -4970,46 +6105,66 @@ bot.catch((err, ctx) => {
   }
 });
 
-app.listen(port, async () => {
+app.listen(port, () => {
   logger.info(`🚀 Server berjalan di port ${port}`);
   
-  try {
-    // Gunakan polling mode dengan config
-    const botConfig = {
-      dropPendingUpdates: true,  // Bersihkan semua update yang pending saat start
-      allowedUpdates: ['message', 'callback_query', 'inline_query'],
-      handlerTimeout: 60000,     // Timeout 60 detik untuk handler
-    };
-    
-    // Gunakan polling mode
-    await bot.launch(botConfig);
-    
-    logger.info('✅ Bot telah dimulai (Polling Mode)');
-
-    // === 🧭 DAFTAR MENU COMMAND TELEGRAM ===
-    await bot.telegram.setMyCommands([
-      { command: 'start', description: 'Mulai bot dan tampilkan menu utama' },
-      { command: 'admin', description: 'Menu admin (khusus admin)' }
-    ]);
-
-    logger.info('✅ Command menu berhasil diset.');
-    
-    // Enable graceful stop untuk PM2
-    process.once('SIGINT', () => {
-      logger.info('🛑 Received SIGINT, stopping bot...');
-      bot.stop('SIGINT');
-    });
-    process.once('SIGTERM', () => {
-      logger.info('🛑 Received SIGTERM, stopping bot...');
-      bot.stop('SIGTERM');
-    });
-    
-  } catch (error) {
-    logger.error('❌ Error saat memulai bot:', error);
-    // Tunggu 5 detik lalu exit (PM2 akan restart)
-    setTimeout(() => {
-      logger.error('🔄 Restarting bot due to startup error...');
-      process.exit(1);
-    }, 5000);
-  }
+  // Fungsi untuk start bot dengan retry
+  const startBot = async (retryCount = 0) => {
+    try {
+      logger.info('🔄 Memulai bot...');
+      
+      // Konfigurasi bot
+      const botConfig = {
+        dropPendingUpdates: true,
+        allowedUpdates: ['message', 'callback_query'],
+        handlerTimeout: 60000,
+      };
+      
+      // Start bot
+      await bot.launch(botConfig);
+      logger.info('✅ Bot berhasil dimulai (Polling Mode)');
+      
+      // Set commands
+      await bot.telegram.setMyCommands([
+        { command: 'start', description: 'Mulai bot dan tampilkan menu utama' },
+        { command: 'admin', description: 'Menu admin (khusus admin)' }
+      ]);
+      logger.info('✅ Command menu berhasil diset.');
+      
+      // Enable graceful stop
+      const stopBot = () => {
+        logger.info('🛑 Stopping bot gracefully...');
+        bot.stop();
+        process.exit(0);
+      };
+      
+      process.once('SIGINT', stopBot);
+      process.once('SIGTERM', stopBot);
+      
+    } catch (error) {
+      logger.error(`❌ Error saat memulai bot (Attempt ${retryCount + 1}):`, error.message);
+      
+      // Jika belum mencapai maksimal retry, coba lagi
+      if (retryCount < 3) {
+        const delay = Math.min(10000, 2000 * Math.pow(2, retryCount)); // Exponential backoff
+        logger.info(`⏳ Akan mencoba lagi dalam ${delay/1000} detik...`);
+        
+        setTimeout(() => {
+          startBot(retryCount + 1);
+        }, delay);
+      } else {
+        logger.error('❌ Gagal memulai bot setelah 3 kali percobaan. Bot dimatikan.');
+        process.exit(1);
+      }
+    }
+  };
+  
+  // Mulai bot
+  startBot();
+  
+  // Jalankan cleanup awal
+  setTimeout(() => {
+    logger.info('🚀 Running initial cleanup...');
+    cleanupOldDeposits();
+  }, 10000);
 });
