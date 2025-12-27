@@ -6,6 +6,8 @@ const app = express();
 const axios = require('axios');
 const fs = require('fs');
 const fsPromises = require('fs/promises');
+const path = require('path');
+const resselFilePath = path.join(__dirname, 'ressel.db');
 
 const { buildPayload, headers, API_URL } = require('./api-cekpayment-orkut');
 const { isUserReseller, addReseller, removeReseller, listResellersSync } = require('./modules/reseller');
@@ -84,7 +86,6 @@ const {
   unlockshadowsocks 
 } = require('./modules/unlock');
 
-const path = require('path');
 const trialFile = path.join(__dirname, 'trial.db');
 
 // Mengecek apakah user sudah pakai trial hari ini
@@ -326,7 +327,75 @@ db.run(`CREATE TABLE IF NOT EXISTS transactions (
 const userState = {};
 logger.info('User state initialized');
 
-///////
+// Tambah di section command, setelah command 'admin'
+bot.command('checkpaymentconfig', async (ctx) => {
+  const userId = ctx.message.from.id;
+  
+  // Hanya admin
+  if (!adminIds.includes(userId)) {
+    return ctx.reply('🚫 Anda tidak memiliki izin untuk menggunakan perintah ini.');
+  }
+  
+  await ctx.reply('🔍 Memeriksa konfigurasi pembayaran...');
+  
+  try {
+    const { buildPayload, API_URL } = require('./api-cekpayment-orkut');
+    const qs = require('qs');
+    const payload = buildPayload();
+    const decoded = qs.parse(payload);
+    
+    let message = `🔧 *KONFIGURASI PEMBAYARAN*\n\n`;
+    message += `📡 API URL: \`${API_URL}\`\n`;
+    message += `👤 Username: \`${decoded.username}\`\n`;
+    message += `🔑 Token: \`${decoded.token ? '••••••' + decoded.token.substring(decoded.token.length - 10) : 'empty'}\`\n\n`;
+    
+    const isDefault = decoded.username === 'yantoxxx' || 
+                     (decoded.token && decoded.token.includes('xxxxx'));
+    
+    if (isDefault) {
+      message += `❌ *STATUS: DEFAULT CREDENTIAL!*\n\n`;
+      message += `⚠️ Sistem pembayaran TIDAK AKAN BEKERJA!\n\n`;
+      message += `📺 *Tutorial Ambil Username & Token:*\n`;
+      message += `[🎬 Klik di sini untuk lihat video tutorial](https://drive.google.com/file/d/1ugR_N5gEtcLx8TDsf7ecTFqYY3zrlHn-/view)\n\n`;
+      message += `📝 *Langkah Perbaikan:*\n`;
+      message += `1. Tonton video tutorial di atas\n`;
+      message += `2. Login ke orderkuota.com\n`;
+      message += `3. Ambil username & token API\n`;
+      message += `4. Edit file: \`api-cekpayment-orkut.js\`\n`;
+      message += `5. Restart bot: \`pm2 restart app\`\n\n`;
+      message += `🔄 Setelah selesai, cek lagi dengan: /checkpaymentconfig`;
+    } else {
+      message += `✅ *STATUS: TERKONFIGURASI*\n`;
+      message += `Sistem pembayaran siap digunakan.\n\n`;
+      message += `📊 *Test API Connection...*\n`;
+      
+      try {
+        const { headers } = require('./api-cekpayment-orkut');
+        const response = await axios.post(API_URL, payload, { 
+          headers, 
+          timeout: 8000 
+        });
+        
+        const blocks = response.data.split('------------------------').filter(Boolean);
+        message += `✅ Berhasil: ${blocks.length} transaksi ditemukan\n`;
+        message += `🎉 Sistem pembayaran AKTIF dan bekerja!`;
+        
+      } catch (apiError) {
+        message += `❌ *Test GAGAL:* ${apiError.message}\n`;
+        message += `Periksa koneksi atau credential.`;
+      }
+    }
+    
+    await ctx.reply(message, { parse_mode: 'Markdown', disable_web_page_preview: false });
+    
+  } catch (error) {
+    await ctx.reply(
+      `❌ *Gagal memeriksa:*\n\`${error.message}\``,
+      { parse_mode: 'Markdown' }
+    );
+  }
+});
+
 // =================== COMMAND HAPUS SALDO ===================
 bot.command('hapussaldo', async (ctx) => {
   try {
@@ -399,7 +468,7 @@ bot.command('hapussaldo', async (ctx) => {
             }
           );
           
-          // Log di file
+          // Log di filestat
           logger.info(`Admin ${adminId} menghapus saldo Rp${amount} dari user ${targetUserId}. Saldo akhir: Rp${updatedRow ? updatedRow.saldo : 'N/A'}`);
         });
       });
@@ -677,6 +746,44 @@ bot.command('addserverzivpn_reseller', async (ctx) => {
     }
   );
 });
+
+// =================== VALIDASI PAYMENT CONFIG ===================
+async function validatePaymentConfig() {
+  try {
+    logger.info('🔧 Checking payment configuration...');
+    
+    const { buildPayload } = require('./api-cekpayment-orkut');
+    const payload = buildPayload();
+    const qs = require('qs');
+    const decoded = qs.parse(payload);
+    
+    // Cek apakah masih pakai credential default/dummy
+    const isDefaultCredential = 
+      decoded.username === 'yantoxxx' || 
+      (decoded.token && decoded.token.includes('xxxxx')) ||
+      decoded.username === 'AKUN_DEFAULT' ||
+      decoded.token === 'TOKEN_DEFAULT' ||
+      decoded.username.includes('contoh') ||
+      decoded.username.includes('example');
+    
+    if (isDefaultCredential) {
+      logger.error('❌ ❌ ❌ PERINGATAN KRITIS! ❌ ❌ ❌');
+      logger.error('Credential OrderKuota masih DEFAULT!');
+      logger.error('Edit file: api-cekpayment-orkut.js');
+      logger.error(`Username: "${decoded.username}" → ganti dengan username OrderKuota Anda`);
+      logger.error(`Token: "${decoded.token ? decoded.token.substring(0, 30) + '...' : 'empty'}"`);
+      
+      return false;
+    }
+    
+    logger.info(`✅ Credential OrderKuota valid (username: ${decoded.username.substring(0, 3)}***)`);
+    return true;
+  } catch (error) {
+    logger.error('❌ Gagal validasi payment config:', error.message);
+    return false;
+  }
+}
+// =================== END VALIDASI ===================
 //////
 bot.command(['start', 'menu'], async (ctx) => {
   logger.info('Start or Menu command received');
@@ -1015,6 +1122,7 @@ bot.command('helpadmin', async (ctx) => {
 15. /hapuslog - Menghapus log bot.
 16. /allresellerstats - Ambil data statistik pembuatan semua reseller
 17. /resellerstats - Ambil data statistik saya
+18. /checkpaymentconfig - Ngecek konfigurasi file api-payment-outkut.js
 
 Gunakan perintah ini dengan format yang benar untuk menghindari kesalahan.
 `;
@@ -1572,8 +1680,6 @@ async function sendAdminMenu(ctx) {
   }
 }
 
-const resselFilePath = path.join(__dirname, 'ressel.db');
-
 bot.command('addressel', async (ctx) => {
   try {
     const requesterId = ctx.from.id;
@@ -1667,6 +1773,86 @@ bot.on('photo', async (ctx) => {
   await ctx.reply('✅ Gambar QRIS berhasil diunggah!');
   logger.info('🖼️ QRIS image uploaded by admin');
   delete userState[adminId];
+});
+
+// ✅ BUAT INI SATU SAJA (tempat yang sama dengan action lainnya)
+bot.action('topup_saldo', async (ctx) => {
+  try {
+    await ctx.answerCbQuery();
+    
+    // Cek credential OrderKuota REAL-TIME
+    const { buildPayload } = require('./api-cekpayment-orkut');
+    const qs = require('qs');
+    const payload = buildPayload();
+    const decoded = qs.parse(payload);
+    
+    // Cek apakah masih pakai credential default
+    const isDefaultCredential = 
+      decoded.username === 'yantoxxx' || 
+      (decoded.token && (
+        decoded.token.includes('xxxxx') ||
+        decoded.token.includes('TOKEN_DEFAULT') ||
+        decoded.token.includes('contoh')
+      ));
+    
+// Di dalam topup_saldo handler - bagian if (isDefaultCredential):
+if (isDefaultCredential) {
+  // ❌ MODE DISABLED - Credential masih default
+  await ctx.reply(
+    '❌ *TOP-UP OTOMATIS SEMENTARA TIDAK TERSEDIA*\n\n' +
+    'Admin belum mengkonfigurasi sistem pembayaran.\n' +
+    'Sistem tidak dapat memverifikasi pembayaran Anda.\n\n' +
+    `📞 Hubungi admin: ${ADMIN_USERNAME}\n\n` +
+    '🔧 *Admin bisa cek konfigurasi dengan:*\n' +
+    '`/checkpaymentconfig`\n\n' +
+    '_Admin sudah mendapatkan notifikasi untuk segera memperbaiki sistem._',
+    { parse_mode: 'Markdown' }
+  );
+  
+  // Log warning
+  logger.warn(`User ${ctx.from.id} mencoba topup tapi credential masih default`);
+  return;
+}      
+    
+    // ✅ MODE ENABLED - Credential sudah benar
+    const userId = ctx.from.id;
+    
+    if (!global.depositState) {
+      global.depositState = {};
+    }
+    global.depositState[userId] = { action: 'request_amount', amount: '' };
+    
+    const keyboard = keyboard_nomor();
+    
+    await ctx.editMessageText(
+      '💰 *TOP UP SALDO OTOMATIS*\n\n' +
+      '💳 *Minimal:* Rp 2.000\n\n' +
+      '🎲 *SISTEM KEAMANAN BARU:*\n' +
+      '• Biaya admin **RANDOM 100-200**\n' +
+      '• Setiap transaksi punya **nominal unik**\n' +
+      '• Mencegah duplikasi pembayaran\n\n' +
+      '🎯 *CONTOH NOMINAL UNIK:*\n' +
+      '• Rp 2.000 + Rp 157 = Rp 2.157\n' +
+      '• Rp 5.000 + Rp 189 = Rp 5.189\n' +
+      '• Rp 10.000 + Rp 123 = Rp 10.123\n\n' +
+      '⚠️ *PERHATIAN:*\n' +
+      'Transfer harus **TEPAT** sesuai nominal unik yang diberikan!\n\n' +
+      'Silakan masukkan jumlah top-up:',
+      {
+        reply_markup: { inline_keyboard: keyboard },
+        parse_mode: 'Markdown'
+      }
+    );
+    
+    logger.info(`User ${userId} memulai topup (credential valid)`);
+    
+  } catch (error) {
+    logger.error('❌ Error in topup_saldo handler:', error);
+    await ctx.reply(
+      '❌ Terjadi kesalahan sistem.\nSilakan coba lagi atau hubungi admin.',
+      { parse_mode: 'Markdown' }
+    );
+  }
 });
 
 // =================== HANDLER CONFIRM HAPUS SALDO ===================
@@ -4096,44 +4282,6 @@ bot.action('nama_server_edit', async (ctx) => {
   }
 });
 
-bot.action('topup_saldo', async (ctx) => {
-  try {
-    await ctx.answerCbQuery(); 
-    const userId = ctx.from.id;
-    
-    if (!global.depositState) {
-      global.depositState = {};
-    }
-    global.depositState[userId] = { action: 'request_amount', amount: '' };
-    
-    const keyboard = keyboard_nomor();
-    
-    // Di handler topup_saldo, update pesan:
-await ctx.editMessageText(
-  '💰 *TOP UP SALDO OTOMATIS*\n\n' +
-  '💳 *Minimal:* Rp 2.000\n\n' +
-  '🎲 *SISTEM KEAMANAN BARU:*\n' +
-  '• Biaya admin **RANDOM 100-200**\n' +
-  '• Setiap transaksi punya **nominal unik**\n' +
-  '• Mencegah duplikasi pembayaran\n\n' +
-  '🎯 *CONTOH NOMINAL UNIK:*\n' +
-  '• Rp 2.000 + Rp 157 = Rp 2.157\n' +
-  '• Rp 5.000 + Rp 189 = Rp 5.189\n' +
-  '• Rp 10.000 + Rp 123 = Rp 10.123\n\n' +
-  '⚠️ *PERHATIAN:*\n' +
-  'Transfer harus **TEPAT** sesuai nominal unik yang diberikan!\n\n' +
-  'Silakan masukkan jumlah top-up:',
-  {
-    reply_markup: { inline_keyboard: keyboard },
-    parse_mode: 'Markdown'
-  }
-);
-  } catch (error) {
-    logger.error('❌ Kesalahan saat memulai proses top-up saldo:', error);
-    await ctx.editMessageText('❌ *GAGAL! Terjadi kesalahan. Silakan coba lagi nanti.*', { parse_mode: 'Markdown' });
-  }
-});
-
 bot.action(/edit_harga_(\d+)/, async (ctx) => {
   const serverId = ctx.match[1];
   logger.info(`User ${ctx.from.id} memilih untuk mengedit harga server dengan ID: ${serverId}`);
@@ -4379,7 +4527,7 @@ async function handleDepositState(ctx, userId, data) {
     
     const amountNum = parseInt(currentAmount);
     
-    if (amountNum < 2000) {
+    if (amountNum < 20) {
       return await ctx.answerCbQuery('⚠️ Jumlah minimal adalah 2.000!', { show_alert: true });
     }
     
@@ -4708,7 +4856,7 @@ async function processDeposit(ctx, amount) {
 
   const amountNum = Number(amount);
   
-  if (amountNum < 2000) {
+  if (amountNum < 20) {
     await ctx.editMessageText(
       '❌ *Minimal top-up Rp 2.000!*\n\nSilakan masukkan nominal yang valid.',
       { 
@@ -5250,13 +5398,6 @@ async function sendPaymentSuccessNotification(userId, deposit, currentBalance) {
 
 // ✅ JALANKAN CLEANUP SETIAP 5 MENIT
 setInterval(cleanupOldDeposits, 5 * 60 * 1000);
-
-// ✅ TAMBAHKAN CLEANUP SAAT BOT START
-// Di bagian app.listen() atau setelah bot.launch():
-setTimeout(() => {
-  logger.info('🚀 Running initial cleanup...');
-  cleanupOldDeposits();
-}, 10000); // Jalankan 10 detik setelah start
 
 // ✅ FUNGSI CLEANUP PROCESSED TRANSACTIONS
 function cleanupProcessedTransactions() {
@@ -6033,8 +6174,76 @@ bot.catch((err, ctx) => {
   }
 });
 
-app.listen(port, () => {
+app.listen(port, async () => {
   logger.info(`🚀 Server berjalan di port ${port}`);
+  
+  // =================== VALIDASI AWAL ===================
+  try {
+    logger.info('🔧 Memeriksa konfigurasi pembayaran...');
+    
+    const { buildPayload } = require('./api-cekpayment-orkut');
+    const qs = require('qs');
+    const payload = buildPayload();
+    const decoded = qs.parse(payload);
+    
+    // Cek credential default
+    const isDefaultCredential = 
+      decoded.username === 'yantoxxx' || 
+      (decoded.token && decoded.token.includes('xxxxx')) ||
+      decoded.username === 'AKUN_DEFAULT';
+    
+    if (isDefaultCredential) {
+      logger.error('❌ ❌ ❌ PERINGATAN KRITIS! ❌ ❌ ❌');
+      logger.error('Credential OrderKuota masih DEFAULT!');
+      logger.error('User TIDAK BISA top-up otomatis!');
+      logger.error(`Username: "${decoded.username}"`);
+      logger.error(`Token: "${decoded.token ? decoded.token.substring(0, 30) + '...' : 'empty'}"`);
+      
+      // Nonaktifkan fitur topup otomatis
+      bot.action('topup_saldo', async (ctx) => {
+        await ctx.answerCbQuery();
+        await ctx.reply(
+          '❌ *TOP-UP OTOMATIS SEMENTARA TIDAK TERSEDIA*\n\n' +
+          'Admin belum mengkonfigurasi sistem pembayaran.\n' +
+          'Silakan hubungi admin untuk top-up manual via QRIS.\n\n' +
+          '📞 Hubungi: @MYCAN20\n\n' +
+          '_Admin sudah mendapatkan notifikasi untuk memperbaiki sistem._',
+          { parse_mode: 'Markdown' }
+        );
+      });
+      
+      // Kirim notifikasi ke admin
+// Di app.listen() - bagian yang kirim notifikasi ke admin:
+const adminMessage = 
+  `🚨 *PERINGATAN SISTEM PEMBAYARAN* 🚨\n\n` +
+  `Credential OrderKuota masih DEFAULT!\n` +
+  `User TIDAK BISA top-up otomatis.\n\n` +
+  `📺 *Tutorial Ambil Credential:*\n` +
+  `[🎬 Video Tutorial](https://drive.google.com/file/d/1ugR_N5gEtcLx8TDsf7ecTFqYY3zrlHn-/view)\n\n` +
+  `📝 *Langkah Perbaikan:*\n` +
+  `1. Tonton video tutorial\n` +
+  `2. Edit file: \`api-cekpayment-orkut.js\`\n` +
+  `3. Ganti username & token\n` +
+  `4. Restart: \`pm2 restart app\`\n\n` +
+  `🔧 Cek status: /checkpaymentconfig\n\n` +
+  `⚠️ Fitur top-up otomatis dinonaktifkan sementara.`;      
+      if (Array.isArray(adminIds)) {
+        adminIds.forEach(adminId => {
+          setTimeout(() => {
+            bot.telegram.sendMessage(adminId, adminMessage, { 
+              parse_mode: 'Markdown' 
+            }).catch(() => {});
+          }, 2000);
+        });
+      }
+      
+    } else {
+      logger.info(`✅ Credential valid (username: ${decoded.username.substring(0, 3)}***)`);
+    }
+  } catch (error) {
+    logger.error('❌ Gagal validasi payment config:', error.message);
+  }
+  // =================== END VALIDASI ===================
   
   // Fungsi untuk start bot dengan retry
   const startBot = async (retryCount = 0) => {
@@ -6055,7 +6264,8 @@ app.listen(port, () => {
       // Set commands
       await bot.telegram.setMyCommands([
         { command: 'start', description: 'Mulai bot dan tampilkan menu utama' },
-        { command: 'admin', description: 'Menu admin (khusus admin)' }
+        { command: 'admin', description: 'Menu admin (khusus admin)' },
+        { command: 'checkpaymentconfig', description: 'Cek status konfigurasi pembayaran' }
       ]);
       logger.info('✅ Command menu berhasil diset.');
       
@@ -6081,16 +6291,18 @@ app.listen(port, () => {
           startBot(retryCount + 1);
         }, delay);
       } else {
-        logger.error(' Gagal memulai bot setelah 3 kali percobaan. Bot dimatikan.');
+        logger.error('❌ Gagal memulai bot setelah 3 kali percobaan. Bot dimatikan.');
         process.exit(1);
       }
     }
   };
   
+  // Mulai bot
   startBot();
   
+  // Jalankan cleanup awal
   setTimeout(() => {
-    logger.info(' Running initial cleanup...');
+    logger.info('🚀 Running initial cleanup...');
     cleanupOldDeposits();
   }, 10000);
 });
