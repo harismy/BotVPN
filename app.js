@@ -4527,7 +4527,7 @@ async function handleDepositState(ctx, userId, data) {
     
     const amountNum = parseInt(currentAmount);
     
-    if (amountNum < 20) {
+    if (amountNum < 2000) {
       return await ctx.answerCbQuery('⚠️ Jumlah minimal adalah 2.000!', { show_alert: true });
     }
     
@@ -4856,7 +4856,7 @@ async function processDeposit(ctx, amount) {
 
   const amountNum = Number(amount);
   
-  if (amountNum < 20) {
+  if (amountNum < 2000) {
     await ctx.editMessageText(
       '❌ *Minimal top-up Rp 2.000!*\n\nSilakan masukkan nominal yang valid.',
       { 
