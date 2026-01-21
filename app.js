@@ -923,11 +923,6 @@ async function sendMainMenu(ctx) {
 <b>🚀 BOT VPN ${NAMA_STORE}</b>
 <code>┗━━━━━━━━━━━━━━━━━━━━┛</code>
 
-<em>⚡ Koneksi cepat, aman, dan stabil
-✨ Bot VPN Premium 
-🤖 Layanan Bot Otomatis 
-🛡️ Server aman dan terpercaya</em>
-
 <code>┏━━━━━━━━━━━━━━━━━━━━┓</code>
 <b>👤 INFORMASI PENGGUNA</b>
 <code>┣━━━━━━━━━━━━━━━━━━━━┫</code>
@@ -954,14 +949,6 @@ async function sendMainMenu(ctx) {
 <code>┗━━━━━━━━━━━━━━━━━━━━┛</code>
 
 <code>┏━━━━━━━━━━━━━━━━━━━━┓</code>
-<b>⚙️ PANEL PERINTAH</b>
-<code>┣━━━━━━━━━━━━━━━━━━━━┫</code>
-🏠 /start       → Menu Utama
-🔑 /admin       → Menu Admin
-🛡️ /helpadmin  → Panel Admin
-<code>┗━━━━━━━━━━━━━━━━━━━━┛</code>
-
-<code>┏━━━━━━━━━━━━━━━━━━━━┓</code>
 <b>📈 STATUS SISTEM</b>
 <code>┣━━━━━━━━━━━━━━━━━━━━┫</code>
 👥 <b>Users</b>    : ${jumlahPengguna}
@@ -981,7 +968,7 @@ async function sendMainMenu(ctx) {
       { text: '⌛ Trial Akun', callback_data: 'service_trial' }
     ],
     [
-      { text: '📘 Tutorial Penggunaan Bot', callback_data: 'tutorial_bot' }
+     // { text: '📘 Tutorial Penggunaan Bot', callback_data: 'tutorial_bot' }
     ],
     [
       { text: '🤝 Jadi Reseller harga lebih murah!!', callback_data: 'jadi_reseller' }
@@ -991,6 +978,9 @@ async function sendMainMenu(ctx) {
     ],
     [
       { text: '💰 TopUp Saldo Otomatis', callback_data: 'topup_saldo' }
+    ],
+    [
+     { text: '📞 Hubungi Admin', callback_data: 'hubungi_admin' }
     ],
   ];
 
@@ -1794,10 +1784,6 @@ if (isDefaultCredential) {
       '• Biaya admin **RANDOM 100-200**\n' +
       '• Setiap transaksi punya **nominal unik**\n' +
       '• Mencegah duplikasi pembayaran\n\n' +
-      '🎯 *CONTOH NOMINAL UNIK:*\n' +
-      '• Rp 2.000 + Rp 157 = Rp 2.157\n' +
-      '• Rp 5.000 + Rp 189 = Rp 5.189\n' +
-      '• Rp 10.000 + Rp 123 = Rp 10.123\n\n' +
       '⚠️ *PERHATIAN:*\n' +
       'Transfer harus **TEPAT** sesuai nominal unik yang diberikan!\n\n' +
       'Silakan masukkan jumlah top-up:',
@@ -1815,6 +1801,67 @@ if (isDefaultCredential) {
       '❌ Terjadi kesalahan sistem.\nSilakan coba lagi atau hubungi admin.',
       { parse_mode: 'Markdown' }
     );
+  }
+});
+
+// === 📞 HUBUNGI ADMIN (WHATSAPP) ===
+bot.action('hubungi_admin', async (ctx) => {
+  try {
+    await ctx.answerCbQuery();
+    
+    const userId = ctx.from.id;
+    const userName = ctx.from.first_name || ctx.from.username || `User ${userId}`;
+    
+    // Nomor WhatsApp admin
+    const adminWhatsApp = '6289527159281'; // Format internasional tanpa +
+    
+    // Pesan otomatis yang akan dikirim ke WhatsApp
+    const autoMessage = encodeURIComponent(
+      `Hallo min aku dari bot mau menyampaikan sesuatu\n\n` +
+      `ID Telegram: ${userId}\n` +
+      `Nama: ${userName}`
+    );
+    
+    // URL WhatsApp dengan nomor dan pesan otomatis
+    const whatsappUrl = `https://wa.me/${adminWhatsApp}?text=${autoMessage}`;
+    
+    // Kirim pesan dengan tombol WhatsApp
+    await ctx.reply(
+      `📞 *HUBUNGI ADMIN*\n\n` +
+      `Klik tombol di bawah untuk menghubungi admin via WhatsApp:\n\n` +
+      `👤 Nama Anda: *${userName}*\n` +
+      `🆔 ID Telegram: *${userId}*\n\n` +
+      `ℹ️ *ID Telegram Anda sudah disertakan dalam pesan otomatis*\n\n` +
+      `Pesan otomatis sudah disiapkan. Anda bisa mengeditnya sebelum mengirim.`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: '📱 Buka WhatsApp (Pesan Otomatis)',
+                url: whatsappUrl
+              }
+            ],
+            [
+              {
+                text: '📝 Kirim Pesan Manual',
+                url: `https://wa.me/${adminWhatsApp}`
+              }
+            ],
+            [
+              { text: '🔙 Kembali', callback_data: 'send_main_menu' }
+            ]
+          ]
+        }
+      }
+    );
+    
+    logger.info(`User ${userId} membuka menu hubungi admin`);
+    
+  } catch (error) {
+    logger.error('❌ Error di tombol hubungi_admin:', error.message);
+    await ctx.reply('⚠️ Terjadi kesalahan saat membuka WhatsApp. Silakan coba lagi.');
   }
 });
 
@@ -4831,7 +4878,7 @@ async function processDeposit(ctx, amount) {
     // BUAT QRIS
     const urlQr = DATA_QRIS;
     const bayar = await axios.get(
-      `https://api.rajaserverpremium.web.id/orderkuota/createpayment?apikey=AriApiPaymetGetwayMod&amount=${finalAmount}&codeqr=${urlQr}&reference=${referenceId}`,
+      `https://api.rajaserverpremium.web.id/orderkuota/createpayment?apikey=1forcr201219Mycan&amount=${finalAmount}&codeqr=${urlQr}&reference=${referenceId}`,
       { timeout: 15000 }
     );
     
