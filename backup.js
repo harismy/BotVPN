@@ -18,11 +18,10 @@ async function backupDatabase() {
     try {
         console.log('🔄 Starting database backup...');
         
-        const dbFile = path.join(__dirname, 'sellvpn.db');
-        if (!fs.existsSync(dbFile)) {
-            console.error('❌ Database file not found:', dbFile);
-            return;
-        }
+        const dbFiles = [
+            { file: path.join(__dirname, 'sellvpn.db'), prefix: 'sellvpn' },
+            { file: path.join(__dirname, 'ressel.db'), prefix: 'ressel' }
+        ];
         
         // Buat folder backup jika belum ada
         const backupDir = path.join(__dirname, 'backups');
@@ -37,31 +36,46 @@ async function backupDatabase() {
             .replace('T', '_')
             .slice(0, 19);
         
-        const backupFile = path.join(backupDir, `sellvpn_${timestamp}.db`);
-        
-        // Copy database
-        fs.copyFileSync(dbFile, backupFile);
-        
-        const fileSize = (fs.statSync(backupFile).size / 1024 / 1024).toFixed(2); // MB
-        console.log(`✅ Backup created: ${backupFile} (${fileSize} MB)`);
+        const backupFiles = [];
+
+        for (const entry of dbFiles) {
+            if (!fs.existsSync(entry.file)) {
+                console.error('❌ Database file not found:', entry.file);
+                continue;
+            }
+
+            const backupFile = path.join(backupDir, `${entry.prefix}_${timestamp}.db`);
+            fs.copyFileSync(entry.file, backupFile);
+            const fileSize = (fs.statSync(backupFile).size / 1024 / 1024).toFixed(2); // MB
+            console.log(`✅ Backup created: ${backupFile} (${fileSize} MB)`);
+            backupFiles.push({ path: backupFile, size: fileSize, prefix: entry.prefix });
+        }
+
+        if (backupFiles.length === 0) {
+            console.error('❌ Tidak ada database yang berhasil dibackup.');
+            return;
+        }
         
         // Kirim ke semua admin
         for (const adminId of ADMIN_IDS) {
-            try {
-                await bot.telegram.sendDocument(
-                    adminId,
-                    { source: backupFile },
-                    { 
-                        caption: `🗄️ *Database Backup*\n\n` +
-                                `📅 ${now.toLocaleDateString('id-ID', { timeZone: 'Asia/Jakarta' })}\n` +
-                                `⏰ ${now.toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta' })}\n` +
-                                `📊 Size: ${fileSize} MB\n` +
-                                `✅ Backup otomatis harian`
-                    }
-                );
-                console.log(`📤 Sent to admin ${adminId}`);
-            } catch (sendError) {
-                console.error(`❌ Failed to send to admin ${adminId}:`, sendError.message);
+            for (const backup of backupFiles) {
+                try {
+                    await bot.telegram.sendDocument(
+                        adminId,
+                        { source: backup.path },
+                        { 
+                            caption: `🗄️ *Database Backup*\n\n` +
+                                    `📅 ${now.toLocaleDateString('id-ID', { timeZone: 'Asia/Jakarta' })}\n` +
+                                    `⏰ ${now.toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta' })}\n` +
+                                    `📄 File: ${backup.prefix}.db\n` +
+                                    `📊 Size: ${backup.size} MB\n` +
+                                    `✅ Backup otomatis harian`
+                        }
+                    );
+                    console.log(`📤 Sent ${backup.prefix} to admin ${adminId}`);
+                } catch (sendError) {
+                    console.error(`❌ Failed to send ${backup.prefix} to admin ${adminId}:`, sendError.message);
+                }
             }
         }
         
@@ -85,7 +99,7 @@ function cleanupOldBackups(backupDir) {
         const sevenDays = 7 * 24 * 60 * 60 * 1000;
         
         files.forEach(file => {
-            if (file.startsWith('sellvpn_') && file.endsWith('.db')) {
+            if ((file.startsWith('sellvpn_') || file.startsWith('ressel_')) && file.endsWith('.db')) {
                 const filePath = path.join(backupDir, file);
                 const stats = fs.statSync(filePath);
                 const fileAge = now - stats.mtimeMs;

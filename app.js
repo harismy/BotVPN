@@ -1,4 +1,4 @@
-const os = require('os');
+﻿const os = require('os');
 const sqlite3 = require('sqlite3').verbose();
 const express = require('express');
 const { Telegraf } = require('telegraf');
@@ -8,6 +8,57 @@ const fs = require('fs');
 const fsPromises = require('fs/promises');
 const path = require('path');
 const resselFilePath = path.join(__dirname, 'ressel.db');
+const resellerTermsPath = path.join(__dirname, 'reseller_terms.json');
+const defaultResellerTerms = { min_accounts: 5, min_topup: 30000 };
+const topupManualPath = path.join(__dirname, 'topup_manual.json');
+const defaultTopupManual = { enabled: true };
+
+function loadResellerTerms() {
+  try {
+    const raw = fs.readFileSync(resellerTermsPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    const minAccounts = Number(parsed.min_accounts);
+    const minTopup = Number(parsed.min_topup);
+    if (!Number.isFinite(minAccounts) || !Number.isFinite(minTopup)) {
+      return { ...defaultResellerTerms };
+    }
+    return {
+      min_accounts: Math.max(0, Math.floor(minAccounts)),
+      min_topup: Math.max(0, Math.floor(minTopup))
+    };
+  } catch (err) {
+    return { ...defaultResellerTerms };
+  }
+}
+
+function saveResellerTerms(terms) {
+  const payload = {
+    min_accounts: Math.max(0, Math.floor(Number(terms.min_accounts) || 0)),
+    min_topup: Math.max(0, Math.floor(Number(terms.min_topup) || 0))
+  };
+  fs.writeFileSync(resellerTermsPath, JSON.stringify(payload, null, 2), 'utf8');
+  return payload;
+}
+
+function loadTopupManualSetting() {
+  try {
+    const raw = fs.readFileSync(topupManualPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    return !!parsed.enabled;
+  } catch (err) {
+    return defaultTopupManual.enabled;
+  }
+}
+
+function saveTopupManualSetting(enabled) {
+  const payload = { enabled: !!enabled };
+  fs.writeFileSync(topupManualPath, JSON.stringify(payload, null, 2), 'utf8');
+  return payload.enabled;
+}
+
+function formatRupiah(amount) {
+  return `Rp ${Number(amount || 0).toLocaleString('id-ID')}`;
+}
 
 const { buildPayload, headers, API_URL } = require('./api-cekpayment-orkut');
 const { isUserReseller, addReseller, removeReseller, listResellersSync } = require('./modules/reseller');
@@ -40,6 +91,7 @@ const { trialzivpn } = require('./modules/trialzivpn');
 
 const { 
   createssh, 
+  createudphttp,
   createvmess, 
   createvless, 
   createtrojan, 
@@ -48,6 +100,7 @@ const {
 
 const { 
   trialssh, 
+  trialudphttp,
   trialvmess, 
   trialvless, 
   trialtrojan, 
@@ -56,6 +109,7 @@ const {
 
 const { 
   renewssh, 
+  renewudphttp,
   renewvmess, 
   renewvless, 
   renewtrojan, 
@@ -236,6 +290,8 @@ db.run(`CREATE TABLE IF NOT EXISTS Server (
   batas_create_akun INTEGER,
   total_create_akun INTEGER,
   is_reseller_only INTEGER DEFAULT 0,
+  support_zivpn INTEGER DEFAULT 0,
+  support_udp_http INTEGER DEFAULT 0,
   service TEXT DEFAULT 'ssh'
 )`, (err) => {
   if (err) {
@@ -254,6 +310,24 @@ db.run("UPDATE Server SET total_create_akun = 0 WHERE total_create_akun IS NULL"
     }
   }
 });
+
+db.all("PRAGMA table_info(Server)", (err, rows) => {
+  if (err) {
+    logger.error('Error checking Server schema:', err.message);
+    return;
+  }
+  const cols = rows.map(r => r.name);
+  if (!cols.includes('support_zivpn')) {
+    db.run("ALTER TABLE Server ADD COLUMN support_zivpn INTEGER DEFAULT 0");
+  }
+  if (!cols.includes('support_udp_http')) {
+    db.run("ALTER TABLE Server ADD COLUMN support_udp_http INTEGER DEFAULT 0");
+  }
+});
+
+db.run("UPDATE Server SET support_zivpn = 0 WHERE support_zivpn IS NULL");
+db.run("UPDATE Server SET support_udp_http = 0 WHERE support_udp_http IS NULL");
+db.run("UPDATE Server SET support_zivpn = 1 WHERE service = 'zivpn' AND support_zivpn = 0");
 
 db.run(`CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -516,7 +590,7 @@ bot.command('resellerstats', async (ctx) => {
         WHERE user_id = ? 
           AND timestamp >= ? 
           AND timestamp <= ?
-          AND type IN ('ssh', 'vmess', 'vless', 'trojan', 'shadowsocks', 'zivpn')
+          AND type IN ('ssh', 'vmess', 'vless', 'trojan', 'shadowsocks', 'zivpn', 'udp_http')
         GROUP BY type
       `;
       
@@ -602,6 +676,8 @@ bot.command('allresellerstats', async (ctx) => {
     let totalAllAccounts = 0;
     let totalAllRevenue = 0;
     
+    const resellerStats = [];
+
     // Loop melalui setiap reseller
     for (const resellerId of resellers) {
       // Ambil saldo
@@ -616,7 +692,7 @@ bot.command('allresellerstats', async (ctx) => {
         db.all(
           `SELECT COUNT(*) as count, SUM(amount) as total FROM transactions 
            WHERE user_id = ? AND timestamp >= ? AND timestamp <= ? 
-           AND type IN ('ssh', 'vmess', 'vless', 'trojan', 'shadowsocks', 'zivpn')`,
+           AND type IN ('ssh', 'vmess', 'vless', 'trojan', 'shadowsocks', 'zivpn', 'udp_http')`,
           [resellerId, startTimestamp, endTimestamp],
           (err, rows) => {
             resolve(rows[0] || { count: 0, total: 0 });
@@ -624,18 +700,27 @@ bot.command('allresellerstats', async (ctx) => {
         );
       });
       
-      // ✅ PAKAI ID TELEGRAM SAJA, TIDAK PERLU USERNAME
-      const displayId = `<code>${resellerId}</code>`;
-      
       // Tambah ke total
       totalAllAccounts += transactions.count;
       totalAllRevenue += transactions.total || 0;
-      
-      message += 
+
+      resellerStats.push({
+        resellerId,
+        saldo: user.saldo || 0,
+        count: transactions.count || 0,
+        total: transactions.total || 0
+      });
+    }
+
+    resellerStats.sort((a, b) => b.total - a.total);
+
+    for (const stat of resellerStats) {
+      const displayId = `<code>${stat.resellerId}</code>`;
+      message +=
         `<b>👤 ID:</b> ${displayId}\n` +
-        `<code>💰 Saldo:</code> Rp ${user.saldo.toLocaleString('id-ID')}\n` +
-        `<code>📊 Akun Bulan Ini:</code> ${transactions.count}\n` +
-        `<code>💵 Pendapatan:</code> Rp ${(transactions.total || 0).toLocaleString('id-ID')}\n` +
+        `<code>💰 Saldo:</code> Rp ${stat.saldo.toLocaleString('id-ID')}\n` +
+        `<code>📊 Akun Bulan Ini:</code> ${stat.count}\n` +
+        `<code>💵 Pendapatan:</code> Rp ${stat.total.toLocaleString('id-ID')}\n` +
         `────────────────────\n`;
     }
     
@@ -701,6 +786,64 @@ function escapeHtml(text) {
     .replace(/'/g, '&#039;');
 }
 
+async function getResellerStatsForPeriod(userId, startTimestamp, endTimestamp) {
+  return new Promise((resolve) => {
+    db.get(
+      `SELECT COUNT(*) as count
+       FROM transactions
+       WHERE user_id = ?
+         AND timestamp >= ?
+         AND timestamp <= ?
+         AND type IN ('ssh', 'vmess', 'vless', 'trojan', 'shadowsocks', 'zivpn', 'udp_http')
+         AND amount > 0`,
+      [userId, startTimestamp, endTimestamp],
+      (err, row) => {
+        const count = !err && row ? row.count : 0;
+        db.get(
+          `SELECT SUM(amount) as total
+           FROM transactions
+           WHERE user_id = ?
+             AND timestamp >= ?
+             AND timestamp <= ?
+             AND type = 'deposit'`,
+          [userId, startTimestamp, endTimestamp],
+          (err2, row2) => {
+            const total = !err2 && row2 && row2.total ? row2.total : 0;
+            resolve({ count, topup: total });
+          }
+        );
+      }
+    );
+  });
+}
+
+async function evaluateResellerTermsForPeriod(startTimestamp, endTimestamp, periodLabel) {
+  const terms = loadResellerTerms();
+  const resellers = listResellersSync();
+  if (resellers.length === 0) return;
+
+  for (const resellerId of resellers) {
+    const stats = await getResellerStatsForPeriod(resellerId, startTimestamp, endTimestamp);
+    const failedAccounts = stats.count < terms.min_accounts;
+    const failedTopup = stats.topup < terms.min_topup;
+
+    if (failedAccounts || failedTopup) {
+      removeReseller(resellerId);
+      const message =
+        `Syarat reseller bulan ${periodLabel} tidak terpenuhi.\n\n` +
+        `Akun dibuat: ${stats.count} (minimal ${terms.min_accounts})\n` +
+        `Top up: ${formatRupiah(stats.topup)} (minimal ${formatRupiah(terms.min_topup)})\n\n` +
+        'Status reseller dinonaktifkan. Untuk aktif kembali, hubungi admin.';
+      try {
+        await bot.telegram.sendMessage(resellerId, message);
+      } catch (err) {
+        logger.error('Gagal kirim notifikasi demote reseller:', err.message);
+      }
+      logger.info(`Reseller ${resellerId} diturunkan karena tidak memenuhi syarat bulan ${periodLabel}`);
+    }
+  }
+}
+
 ////
 bot.command('addserverzivpn_reseller', async (ctx) => {
   if (!adminIds.includes(ctx.from.id)) {
@@ -723,8 +866,8 @@ bot.command('addserverzivpn_reseller', async (ctx) => {
 
   db.run(
     `INSERT INTO Server
-     (domain, auth, harga, nama_server, quota, iplimit, batas_create_akun, total_create_akun, service, is_reseller_only)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'zivpn', 1)`,
+     (domain, auth, harga, nama_server, quota, iplimit, batas_create_akun, total_create_akun, is_reseller_only, support_zivpn, support_udp_http, service)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 1, 0, 'ssh')`,
     [
       domain,
       auth,
@@ -878,22 +1021,22 @@ async function sendMainMenu(ctx) {
   let globalToday = 0, globalWeek = 0, globalMonth = 0;
   try {
     userToday = await new Promise((resolve) => {
-      db.get('SELECT COUNT(*) as count FROM transactions WHERE user_id = ? AND timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks")', [userId, todayStart], (err, row) => resolve(row ? row.count : 0));
+      db.get('SELECT COUNT(*) as count FROM transactions WHERE user_id = ? AND timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http")', [userId, todayStart], (err, row) => resolve(row ? row.count : 0));
     });
     userWeek = await new Promise((resolve) => {
-      db.get('SELECT COUNT(*) as count FROM transactions WHERE user_id = ? AND timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks")', [userId, weekStart], (err, row) => resolve(row ? row.count : 0));
+      db.get('SELECT COUNT(*) as count FROM transactions WHERE user_id = ? AND timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http")', [userId, weekStart], (err, row) => resolve(row ? row.count : 0));
     });
     userMonth = await new Promise((resolve) => {
-      db.get('SELECT COUNT(*) as count FROM transactions WHERE user_id = ? AND timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks")', [userId, monthStart], (err, row) => resolve(row ? row.count : 0));
+      db.get('SELECT COUNT(*) as count FROM transactions WHERE user_id = ? AND timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http")', [userId, monthStart], (err, row) => resolve(row ? row.count : 0));
     });
     globalToday = await new Promise((resolve) => {
-      db.get('SELECT COUNT(*) as count FROM transactions WHERE timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks")', [todayStart], (err, row) => resolve(row ? row.count : 0));
+      db.get('SELECT COUNT(*) as count FROM transactions WHERE timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http")', [todayStart], (err, row) => resolve(row ? row.count : 0));
     });
     globalWeek = await new Promise((resolve) => {
-      db.get('SELECT COUNT(*) as count FROM transactions WHERE timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks")', [weekStart], (err, row) => resolve(row ? row.count : 0));
+      db.get('SELECT COUNT(*) as count FROM transactions WHERE timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http")', [weekStart], (err, row) => resolve(row ? row.count : 0));
     });
     globalMonth = await new Promise((resolve) => {
-      db.get('SELECT COUNT(*) as count FROM transactions WHERE timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks")', [monthStart], (err, row) => resolve(row ? row.count : 0));
+      db.get('SELECT COUNT(*) as count FROM transactions WHERE timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http")', [monthStart], (err, row) => resolve(row ? row.count : 0));
     });
   } catch (e) {}
 
@@ -974,15 +1117,24 @@ async function sendMainMenu(ctx) {
       { text: '🤝 Jadi Reseller harga lebih murah!!', callback_data: 'jadi_reseller' }
     ],
     [
-     // { text: '💰 TopUp Saldo Manual via (QRIS)', callback_data: 'topup_manual' }
-    ],
-    [
       { text: '💰 TopUp Saldo Otomatis', callback_data: 'topup_saldo' }
     ],
     [
      { text: '📞 Hubungi Admin', callback_data: 'hubungi_admin' }
     ],
   ];
+
+  if (loadTopupManualSetting()) {
+    const topupIndex = keyboard.findIndex(row =>
+      row.some(btn => btn.callback_data === 'topup_saldo')
+    );
+    const manualRow = [{ text: '💰 TopUp Saldo Manual via (QRIS)', callback_data: 'topup_manual' }];
+    if (topupIndex === -1) {
+      keyboard.push(manualRow);
+    } else {
+      keyboard.splice(topupIndex + 1, 0, manualRow);
+    }
+  }
 
   // Jika user adalah reseller, tambahkan tombol khusus
   if (isReseller) {
@@ -1049,8 +1201,8 @@ bot.command('hapuslog', async (ctx) => {
   }
 });
 
-bot.command('helpadmin', async (ctx) => {
-  const userId = ctx.message.from.id;
+async function sendHelpAdmin(ctx) {
+  const userId = ctx.from?.id;
   if (!adminIds.includes(userId)) {
     return ctx.reply('⚠️ Anda tidak memiliki izin untuk menggunakan perintah ini.', { parse_mode: 'Markdown' });
   }
@@ -1080,6 +1232,10 @@ bot.command('helpadmin', async (ctx) => {
 Gunakan perintah ini dengan format yang benar untuk menghindari kesalahan.
 `;
   ctx.reply(helpMessage, { parse_mode: 'Markdown' });
+}
+
+bot.command('helpadmin', async (ctx) => {
+  await sendHelpAdmin(ctx);
 });
 
 //////////
@@ -1093,7 +1249,7 @@ bot.command('addserver_reseller', async (ctx) => {
     const [domain, auth, harga, nama_server, quota, iplimit, batas_create_akun] = args;
     
     // ✅ TAMBAHKAN total_create_akun di VALUES
-    db.run(`INSERT INTO Server (domain, auth, harga, nama_server, quota, iplimit, batas_create_akun, is_reseller_only, total_create_akun) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0)`,
+    db.run(`INSERT INTO Server (domain, auth, harga, nama_server, quota, iplimit, batas_create_akun, is_reseller_only, total_create_akun, support_zivpn, support_udp_http, service) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, 0, 0, 'ssh')`,
       [domain, auth, harga, nama_server, quota, iplimit, batas_create_akun],
       function (err) {
         if (err) {
@@ -1167,7 +1323,7 @@ bot.command('addserver', async (ctx) => {
   // ✅ QUERY YANG BENAR
 const service = userState[ctx.chat.id]?.service || 'ssh'; 
 db.run(
-  "INSERT INTO Server (domain, auth, harga, nama_server, quota, iplimit, batas_create_akun, total_create_akun, service) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)",
+  "INSERT INTO Server (domain, auth, harga, nama_server, quota, iplimit, batas_create_akun, total_create_akun, support_zivpn, support_udp_http, service) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?)",
   [
     domain,
     auth,
@@ -1222,7 +1378,7 @@ bot.command('addserverzivpn', async (ctx) => {
 
   // 🔥 INI SATU-SATUNYA BEDANYA
   db.run(
-    "INSERT INTO Server (domain, auth, harga, nama_server, quota, iplimit, batas_create_akun, total_create_akun, service) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'zivpn')",
+    "INSERT INTO Server (domain, auth, harga, nama_server, quota, iplimit, batas_create_akun, total_create_akun, support_zivpn, support_udp_http, service) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, 'ssh')",
     [
       domain,
       auth,
@@ -1263,7 +1419,7 @@ bot.command('editharga', async (ctx) => {
       return ctx.reply('⚠️ `harga` harus berupa angka.', { parse_mode: 'Markdown' });
   }
 
-  db.run("INSERT INTO Server (domain, auth, harga, nama_server, quota, iplimit, batas_create_akun, total_create_akun) VALUES (?, ?, ?, ?, ?, ?, ?, 0)", 
+  db.run("INSERT INTO Server (domain, auth, harga, nama_server, quota, iplimit, batas_create_akun, total_create_akun, support_zivpn, support_udp_http, service) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 'ssh')", 
       [domain, auth, parseInt(harga), nama_server, parseInt(quota), parseInt(iplimit), parseInt(batas_create_akun)], function(err) {
       if (err) {
           logger.error('⚠️ Kesalahan saat menambahkan server:', err.message);
@@ -1483,42 +1639,60 @@ async function handleServiceAction(ctx, action) {
   if (action === 'create') {
     keyboard = [
       [{ text: 'Buat UDP ZIVPN', callback_data: 'create_zivpn' }],
-      [{ text: 'Buat Ssh/Ovpn', callback_data: 'create_ssh' }],      
+      [
+        { text: 'Buat Ssh/Ovpn', callback_data: 'create_ssh' },
+        { text: 'Buat UDP HC', callback_data: 'create_udp_http' }
+      ],
       [{ text: 'Buat Vmess', callback_data: 'create_vmess' }, { text: 'Buat Vless', callback_data: 'create_vless' }],
-      [{ text: 'Buat Trojan', callback_data: 'create_trojan' }, /*{ text: 'Buat Shadowsocks', callback_data: 'create_shadowsocks' }*/{ text: '🔙 Kembali', callback_data: 'send_main_menu' }]
+      [{ text: 'Buat Trojan', callback_data: 'create_trojan' }, { text: 'Kembali', callback_data: 'send_main_menu' }]
     ];
   } else if (action === 'trial') {
     keyboard = [
       [{ text: 'Trial UDP ZIVPN', callback_data: 'trial_zivpn' }],
-      [{ text: 'Trial Ssh/Ovpn', callback_data: 'trial_ssh' }],      
+      [
+        { text: 'Trial Ssh/Ovpn', callback_data: 'trial_ssh' },
+        { text: 'Trial UDP HTTP', callback_data: 'trial_udp_http' }
+      ],
       [{ text: 'Trial Vmess', callback_data: 'trial_vmess' }, { text: 'Trial Vless', callback_data: 'trial_vless' }],
-      [{ text: 'Trial Trojan', callback_data: 'trial_trojan' }, /*{ text: 'Trial Shadowsocks', callback_data: 'renew_shadowsocks' }*/{ text: '🔙 Kembali', callback_data: 'send_main_menu' }],
+      [{ text: 'Trial Trojan', callback_data: 'trial_trojan' }, { text: 'Kembali', callback_data: 'send_main_menu' }]
     ];
   } else if (action === 'renew') {
     keyboard = [
-      [{ text: 'Perpanjang Ssh/Ovpn', callback_data: 'renew_ssh' }],      
+      [
+        { text: 'Perpanjang Ssh/Ovpn', callback_data: 'renew_ssh' },
+        { text: 'Perpanjang UDP HTTP', callback_data: 'renew_udp_http' }
+      ],
       [{ text: 'Perpanjang Vmess', callback_data: 'renew_vmess' }, { text: 'Perpanjang Vless', callback_data: 'renew_vless' }],
-      [{ text: 'Perpanjang Trojan', callback_data: 'renew_trojan' }, /*{ text: 'Perpanjang Shadowsocks', callback_data: 'renew_shadowsocks' }*/{ text: '🔙 Kembali', callback_data: 'send_main_menu' }],
+      [{ text: 'Perpanjang Trojan', callback_data: 'renew_trojan' }, { text: 'Kembali', callback_data: 'send_main_menu' }]
     ];
   } else if (action === 'del') {
     keyboard = [
-      [{ text: 'Hapus Ssh/Ovpn', callback_data: 'del_ssh' }],      
+      [
+        { text: 'Hapus Ssh/Ovpn', callback_data: 'del_ssh' },
+        { text: 'Hapus UDP HTTP', callback_data: 'del_udp_http' }
+      ],
       [{ text: 'Hapus Vmess', callback_data: 'del_vmess' }, { text: 'Hapus Vless', callback_data: 'del_vless' }],
-      [{ text: 'Hapus Trojan', callback_data: 'del_trojan' }, /*{ text: 'Perpanjang Shadowsocks', callback_data: 'renew_shadowsocks' }*/{ text: '🔙 Kembali', callback_data: 'send_main_menu' }],
+      [{ text: 'Hapus Trojan', callback_data: 'del_trojan' }, { text: 'Kembali', callback_data: 'send_main_menu' }]
     ];
   } else if (action === 'lock') {
     keyboard = [
-      [{ text: 'Lock Ssh/Ovpn', callback_data: 'lock_ssh' }],      
+      [
+        { text: 'Lock Ssh/Ovpn', callback_data: 'lock_ssh' },
+        { text: 'Lock UDP HTTP', callback_data: 'lock_udp_http' }
+      ],
       [{ text: 'Lock Vmess', callback_data: 'lock_vmess' }, { text: 'Lock Vless', callback_data: 'lock_vless' }],
-      [{ text: 'Lock Trojan', callback_data: 'lock_trojan' }, /*{ text: 'Perpanjang Shadowsocks', callback_data: 'renew_shadowsocks' }*/{ text: '🔙 Kembali', callback_data: 'send_main_menu' }],
+      [{ text: 'Lock Trojan', callback_data: 'lock_trojan' }, { text: 'Kembali', callback_data: 'send_main_menu' }]
     ];
   } else if (action === 'unlock') {
     keyboard = [
-      [{ text: 'Unlock Ssh/Ovpn', callback_data: 'unlock_ssh' }],      
+      [
+        { text: 'Unlock Ssh/Ovpn', callback_data: 'unlock_ssh' },
+        { text: 'Unlock UDP HTTP', callback_data: 'unlock_udp_http' }
+      ],
       [{ text: 'Unlock Vmess', callback_data: 'unlock_vmess' }, { text: 'Unlock Vless', callback_data: 'unlock_vless' }],
-      [{ text: 'Unlock Trojan', callback_data: 'unlock_trojan' }, /*{ text: 'Perpanjang Shadowsocks', callback_data: 'renew_shadowsocks' }*/{ text: '🔙 Kembali', callback_data: 'send_main_menu' }],
+      [{ text: 'Unlock Trojan', callback_data: 'unlock_trojan' }, { text: 'Kembali', callback_data: 'send_main_menu' }]
     ];
-  } 
+  }
   try {
     await ctx.editMessageReplyMarkup({
       inline_keyboard: keyboard
@@ -1539,70 +1713,10 @@ async function handleServiceAction(ctx, action) {
 }
 async function sendAdminMenu(ctx) {
   const adminKeyboard = [
-    // Baris 1
-    [{ text: '➕ Tambah Server Reseller', callback_data: 'addserver_reseller' }],
-    
-    // Baris 2
-    [{ text: '➕ Tambah Server Non Reseller', callback_data: 'addserver' }],
-    
-    // Baris 3
-    [{ text: '➕ Tambah Server ZIVPN Reseller', callback_data: 'add_server_zivpn_reseller_cmd' }],
-    
-    // Baris 4
-    [{ text: '➕ Tambah Server ZIVPN', callback_data: 'add_server_zivpn' }],
-    
-    // Baris 5 - TAMBAH SALDO & HAPUS SALDO
-    [
-      { text: '💵 Tambah Saldo', callback_data: 'tambah_saldo' },
-      { text: '🗑️ Hapus Saldo', callback_data: 'hapus_saldo' }
-    ],
-    
-    // Baris 6
-    [{ text: '🖼️ Upload QRIS | Top up manual', callback_data: 'upload_qris' }],
-    
-    // Baris 7
-    [{ text: '💳 Lihat Saldo User', callback_data: 'cek_saldo_user' }],
-    
-    // Baris 8
-    [{ text: '📦 Backup Database', callback_data: 'backup_db' }],
-    
-    // Baris 9
-    [{ text: '❌ Hapus Server', callback_data: 'deleteserver' }],
-    
-    // Baris 10
-    [
-      { text: '💲 Edit Harga', callback_data: 'editserver_harga' },
-      { text: '📝 Edit Nama', callback_data: 'nama_server_edit' }
-    ],
-    
-    // Baris 11
-    [
-      { text: '🌐 Edit Domain', callback_data: 'editserver_domain' },
-      { text: '🔑 Edit Auth', callback_data: 'editserver_auth' }
-    ],
-    
-    // Baris 12
-    [
-      { text: '📊 Edit Quota', callback_data: 'editserver_quota' },
-      { text: '📶 Edit Limit IP', callback_data: 'editserver_limit_ip' }
-    ],
-    
-    // Baris 13
-    [
-      { text: '🔢 Edit Batas Create', callback_data: 'editserver_batas_create_akun' },
-      { text: '🔢 Edit Total Create', callback_data: 'editserver_total_create_akun' }
-    ],
-    
-    // Baris 14
-    [{ text: '📋 List Server', callback_data: 'listserver' }],
-    
-    // Baris 15
-    [
-      { text: '♻️ Reset Server', callback_data: 'resetdb' },
-      { text: 'ℹ️ Detail Server', callback_data: 'detailserver' }
-    ],
-    
-    // Baris 16
+    [{ text: '🖥️ Server', callback_data: 'admin_menu_server' }],
+    [{ text: '💳 Saldo', callback_data: 'admin_menu_saldo' }],
+    [{ text: '🤝 Reseller', callback_data: 'admin_menu_reseller' }],
+    [{ text: '🧰 Tools', callback_data: 'admin_menu_tools' }],
     [{ text: '🔙 Kembali', callback_data: 'send_main_menu' }]
   ];
 
@@ -1632,6 +1746,181 @@ async function sendAdminMenu(ctx) {
     }
   }
 }
+
+bot.action('admin_menu', async (ctx) => {
+  await ctx.answerCbQuery();
+  await sendAdminMenu(ctx);
+});
+
+async function sendAdminServerMenu(ctx) {
+  const keyboard = [
+    [{ text: '➕ Add Server', callback_data: 'addserver' }],
+    [
+      { text: '💲 Edit Harga', callback_data: 'editserver_harga' },
+      { text: '📝 Edit Nama', callback_data: 'nama_server_edit' }
+    ],
+    [
+      { text: '🌐 Edit Domain', callback_data: 'editserver_domain' },
+      { text: '🔑 Edit Auth', callback_data: 'editserver_auth' }
+    ],
+    [
+      { text: '📊 Edit Quota', callback_data: 'editserver_quota' },
+      { text: '📶 Edit Limit IP', callback_data: 'editserver_limit_ip' }
+    ],
+    [
+      { text: '🔢 Edit Batas', callback_data: 'editserver_batas_create_akun' },
+      { text: '🔢 Edit Total', callback_data: 'editserver_total_create_akun' }
+    ],
+    [
+      { text: '📋 List Server', callback_data: 'listserver' },
+      { text: 'ℹ️ Detail Server', callback_data: 'detailserver' }
+    ],
+    [
+      { text: '❌ Hapus Server', callback_data: 'deleteserver' },
+      { text: '♻️ Reset Server', callback_data: 'resetdb' }
+    ],
+    [{ text: '🔙 Kembali', callback_data: 'admin_menu' }]
+  ];
+
+  await ctx.editMessageText('*🖥️ MENU SERVER*', {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: keyboard }
+  });
+}
+
+async function sendAdminSaldoMenu(ctx) {
+  const manualEnabled = loadTopupManualSetting();
+  const manualLabel = manualEnabled ? '✅ TopUp Manual: Aktif' : '🚫 TopUp Manual: Nonaktif';
+  const keyboard = [
+    [
+      { text: '💵 Tambah Saldo', callback_data: 'tambah_saldo' },
+      { text: '🗑️ Hapus Saldo', callback_data: 'hapus_saldo' }
+    ],
+    [
+      { text: '💳 Lihat Saldo User', callback_data: 'cek_saldo_user' },
+      { text: '🖼️ Upload QRIS', callback_data: 'upload_qris' }
+    ],
+    [{ text: manualLabel, callback_data: 'toggle_topup_manual' }],
+    [{ text: '🔙 Kembali', callback_data: 'admin_menu' }]
+  ];
+
+  await ctx.editMessageText('*💳 MENU SALDO*', {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: keyboard }
+  });
+}
+
+async function sendAdminResellerMenu(ctx) {
+  const keyboard = [
+    [{ text: '📜 Syarat Reseller', callback_data: 'reseller_terms_menu' }],
+    [{ text: '🔙 Kembali', callback_data: 'admin_menu' }]
+  ];
+
+  await ctx.editMessageText('*🤝 MENU RESELLER*', {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: keyboard }
+  });
+}
+
+async function sendAdminToolsMenu(ctx) {
+  const keyboard = [
+    [{ text: '📋 Help Admin', callback_data: 'helpadmin_menu' }],
+    [{ text: '📦 Backup Database', callback_data: 'backup_db' }],
+    [{ text: '🔙 Kembali', callback_data: 'admin_menu' }]
+  ];
+
+  await ctx.editMessageText('*🧰 MENU TOOLS*', {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: keyboard }
+  });
+}
+
+bot.action('admin_menu_server', async (ctx) => {
+  await ctx.answerCbQuery();
+  await sendAdminServerMenu(ctx);
+});
+
+bot.action('admin_menu_saldo', async (ctx) => {
+  await ctx.answerCbQuery();
+  await sendAdminSaldoMenu(ctx);
+});
+
+bot.action('toggle_topup_manual', async (ctx) => {
+  await ctx.answerCbQuery();
+  const adminId = ctx.from.id;
+  if (!adminIds.includes(adminId)) {
+    return ctx.reply('🚫 Anda tidak memiliki izin untuk mengubah pengaturan ini.');
+  }
+
+  const current = loadTopupManualSetting();
+  const next = saveTopupManualSetting(!current);
+  const statusText = next ? '✅ TopUp manual diaktifkan.' : '🚫 TopUp manual dinonaktifkan.';
+  await ctx.reply(statusText);
+  return sendAdminSaldoMenu(ctx);
+});
+
+bot.action('admin_menu_reseller', async (ctx) => {
+  await ctx.answerCbQuery();
+  await sendAdminResellerMenu(ctx);
+});
+
+bot.action('admin_menu_tools', async (ctx) => {
+  await ctx.answerCbQuery();
+  await sendAdminToolsMenu(ctx);
+});
+
+bot.action('helpadmin_menu', async (ctx) => {
+  await ctx.answerCbQuery();
+  await sendHelpAdmin(ctx);
+});
+
+bot.action('reseller_terms_menu', async (ctx) => {
+  try {
+    await ctx.answerCbQuery();
+    const adminId = ctx.from.id;
+    if (!adminIds.includes(adminId)) {
+      return ctx.reply('Anda tidak memiliki izin untuk mengakses menu ini.');
+    }
+
+    const terms = loadResellerTerms();
+    const message =
+      '*SYARAT RESELLER*\n\n' +
+      `Minimal akun per bulan: ${terms.min_accounts}\n` +
+      `Minimal top up per bulan: ${formatRupiah(terms.min_topup)}\n\n` +
+      'Gunakan tombol di bawah untuk mengubah syarat.';
+
+    const keyboard = [
+      [{ text: 'Set Syarat', callback_data: 'reseller_terms_set' }],
+      [{ text: 'Kembali', callback_data: 'admin_menu' }]
+    ];
+
+    await ctx.editMessageText(message, {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: keyboard }
+    });
+  } catch (error) {
+    if (error.response && error.response.error_code === 400) {
+      await ctx.reply('Gagal membuka menu. Silakan coba lagi.');
+    } else {
+      logger.error('Error membuka menu syarat reseller:', error.message);
+    }
+  }
+});
+
+bot.action('reseller_terms_set', async (ctx) => {
+  await ctx.answerCbQuery();
+  const adminId = ctx.from.id;
+  if (!adminIds.includes(adminId)) {
+    return ctx.reply('Anda tidak memiliki izin untuk mengubah syarat.');
+  }
+
+  userState[ctx.chat.id] = { step: 'reseller_terms_input' };
+  await ctx.reply(
+    'Kirim format: <min_akun> <min_topup>\n' +
+    'Contoh: 5 30000\n' +
+    'Ketik \"batal\" untuk membatalkan.'
+  );
+});
 
 bot.command('addressel', async (ctx) => {
   try {
@@ -1994,7 +2283,7 @@ bot.action('reseller_stats', async (ctx) => {
       db.all(
         `SELECT type, COUNT(*) as count FROM transactions 
          WHERE user_id = ? AND timestamp >= ? AND timestamp <= ?
-         AND type IN ('ssh', 'vmess', 'vless', 'trojan', 'shadowsocks', 'zivpn')
+         AND type IN ('ssh', 'vmess', 'vless', 'trojan', 'shadowsocks', 'zivpn', 'udp_http')
          GROUP BY type`,
         [userId, firstDay.getTime(), lastDay.getTime()],
         async (err, rows) => {
@@ -2246,6 +2535,7 @@ bot.action('cek_saldo_user', async (ctx) => {
 bot.action('jadi_reseller', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const userId = ctx.from.id;
+  const terms = loadResellerTerms();
 
 await ctx.reply(
   `💼 *Bergabunglah Menjadi RESELLER Resmi Kami!*\n\n` +
@@ -2260,7 +2550,8 @@ await ctx.reply(
   `• Bonus dan promo menarik setiap bulan\n\n` +
   `💰 *Syarat Bergabung:*\n` +
   `> Deposit awal sebesar *Rp18.000* (langsung masuk ke saldo akun kamu)\n` +
-  `> Minimal penjualan *3 akun premium per bulan*\n\n` +
+  `> Minimal pembuatan akun *${terms.min_accounts} akun per bulan*\n` +
+  `> Minimal top up *${formatRupiah(terms.min_topup)} per bulan*\n\n` +
   `✨ Jadilah bagian dari komunitas reseller kami dan nikmati penghasilan tambahan dari setiap penjualan akun VPN!`,
   { parse_mode: 'Markdown' }
 );
@@ -2441,6 +2732,13 @@ bot.action('trial_ssh', async (ctx) => {
   await startSelectServer(ctx, 'trial', 'ssh');
 });
 
+bot.action('trial_udp_http', async (ctx) => {
+  if (!ctx || !ctx.match) {
+    return ctx.reply('❌ *GAGAL!* Terjadi kesalahan saat memproses permintaan Anda. Silakan coba lagi nanti.', { parse_mode: 'Markdown' });
+  }
+  await startSelectServer(ctx, 'trial', 'udp_http');
+});
+
 
 bot.action('create_vmess', async (ctx) => {
   if (!ctx || !ctx.match) {
@@ -2477,6 +2775,13 @@ bot.action('create_ssh', async (ctx) => {
   await startSelectServer(ctx, 'create', 'ssh');
 });
 
+bot.action('create_udp_http', async (ctx) => {
+  if (!ctx || !ctx.match) {
+    return ctx.reply('❌ *GAGAL!* Terjadi kesalahan saat memproses permintaan Anda. Silakan coba lagi nanti.', { parse_mode: 'Markdown' });
+  }
+  await startSelectServer(ctx, 'create', 'udp_http');
+});
+
 ////
 bot.action('create_zivpn', async (ctx) => {
   await startSelectServer(ctx, 'create', 'zivpn');
@@ -2492,6 +2797,13 @@ bot.action('del_ssh', async (ctx) => {
     return ctx.reply('❌ *GAGAL!* Terjadi kesalahan saat memproses permintaan Anda. Silakan coba lagi nanti.', { parse_mode: 'Markdown' });
   }
   await startSelectServer(ctx, 'del', 'ssh');
+});
+
+bot.action('del_udp_http', async (ctx) => {
+  if (!ctx || !ctx.match) {
+    return ctx.reply('❌ *GAGAL!* Terjadi kesalahan saat memproses permintaan Anda. Silakan coba lagi nanti.', { parse_mode: 'Markdown' });
+  }
+  await startSelectServer(ctx, 'del', 'udp_http');
 });
 
 bot.action('del_vmess', async (ctx) => {
@@ -2524,6 +2836,13 @@ bot.action('lock_ssh', async (ctx) => {
   await startSelectServer(ctx, 'lock', 'ssh');
 });
 
+bot.action('lock_udp_http', async (ctx) => {
+  if (!ctx || !ctx.match) {
+    return ctx.reply('❌ *GAGAL!* Terjadi kesalahan saat memproses permintaan Anda. Silakan coba lagi nanti.', { parse_mode: 'Markdown' });
+  }
+  await startSelectServer(ctx, 'lock', 'udp_http');
+});
+
 bot.action('lock_vmess', async (ctx) => {
   if (!ctx || !ctx.match) {
     return ctx.reply('❌ *GAGAL!* Terjadi kesalahan saat memproses permintaan Anda. Silakan coba lagi nanti.', { parse_mode: 'Markdown' });
@@ -2551,6 +2870,13 @@ bot.action('unlock_ssh', async (ctx) => {
     return ctx.reply('❌ *GAGAL!* Terjadi kesalahan saat memproses permintaan Anda. Silakan coba lagi nanti.', { parse_mode: 'Markdown' });
   }
   await startSelectServer(ctx, 'unlock', 'ssh');
+});
+
+bot.action('unlock_udp_http', async (ctx) => {
+  if (!ctx || !ctx.match) {
+    return ctx.reply('❌ *GAGAL!* Terjadi kesalahan saat memproses permintaan Anda. Silakan coba lagi nanti.', { parse_mode: 'Markdown' });
+  }
+  await startSelectServer(ctx, 'unlock', 'udp_http');
 });
 
 bot.action('unlock_vmess', async (ctx) => {
@@ -2609,32 +2935,35 @@ bot.action('renew_ssh', async (ctx) => {
   }
   await startSelectServer(ctx, 'renew', 'ssh');
 });
+
+bot.action('renew_udp_http', async (ctx) => {
+  if (!ctx || !ctx.match) {
+    return ctx.reply('❌ *GAGAL!* Terjadi kesalahan saat memproses permintaan Anda. Silakan coba lagi nanti.', { parse_mode: 'Markdown' });
+  }
+  await startSelectServer(ctx, 'renew', 'udp_http');
+});
 async function startSelectServer(ctx, action, type, page = 0) {
 
 try {
   const isR = await isUserReseller(ctx.from.id);
-const service = type === 'zivpn' ? 'zivpn' : 'ssh';
+  const filters = [];
+  const params = [];
 
-let query;
-let params = [];
+  if (type === 'zivpn') {
+    filters.push('support_zivpn = 1');
+  }
+  if (type === 'udp_http') {
+    filters.push('support_udp_http = 1');
+  }
+  if (isR) {
+    // 🔥 RESELLER: HANYA server reseller
+    filters.push('is_reseller_only = 1');
+  } else {
+    // 🔹 USER BIASA: HANYA server non-reseller
+    filters.push('(is_reseller_only = 0 OR is_reseller_only IS NULL)');
+  }
 
-if (isR) {
-  // 🔥 RESELLER: HANYA server reseller
-  query = `
-    SELECT * FROM Server
-    WHERE service = ?
-      AND is_reseller_only = 1
-  `;
-  params = [service];
-} else {
-  // 🔹 USER BIASA: HANYA server non-reseller
-  query = `
-    SELECT * FROM Server
-    WHERE service = ?
-      AND (is_reseller_only = 0 OR is_reseller_only IS NULL)
-  `;
-  params = [service];
-}
+  const query = `SELECT * FROM Server WHERE ${filters.join(' AND ')}`;
 
 db.all(query, params, (err, servers) => {
   if (err) {
@@ -2711,13 +3040,13 @@ const serverList = currentServers.map(server => {
 }
 }
 
-bot.action(/navigate_(\w+)_(\w+)_(\d+)/, async (ctx) => {
+bot.action(/navigate_([^_]+)_(.+)_(\d+)/, async (ctx) => {
   const [, action, type, page] = ctx.match;
   await startSelectServer(ctx, action, type, parseInt(page, 10));
 });
 
 
-bot.action(/(create|renew)_username_(vmess|vless|trojan|shadowsocks|ssh|zivpn)_(.+)/, async (ctx) => {
+bot.action(/(create|renew)_username_(vmess|vless|trojan|shadowsocks|ssh|zivpn|udp_http)_(.+)/, async (ctx) => {
   const action = ctx.match[1];
   const type = ctx.match[2];
   const serverId = ctx.match[3];
@@ -2745,7 +3074,7 @@ bot.action(/(create|renew)_username_(vmess|vless|trojan|shadowsocks|ssh|zivpn)_(
 });
 
 // === ⚡️ KONFIRMASI TRIAL (semua tipe) ===
-bot.action(/(trial)_username_(vmess|vless|trojan|shadowsocks|ssh|zivpn)_(\d+)/, async (ctx) => {
+bot.action(/(trial)_username_(vmess|vless|trojan|shadowsocks|ssh|zivpn|udp_http)_(\d+)/, async (ctx) => {
   const [action, type, serverId] = [ctx.match[1], ctx.match[2], ctx.match[3]];
 
   // Ambil nama server dari database
@@ -2780,7 +3109,7 @@ bot.action(/(trial)_username_(vmess|vless|trojan|shadowsocks|ssh|zivpn)_(\d+)/, 
   });
 });
 
-bot.action(/(del)_username_(vmess|vless|trojan|shadowsocks|ssh)_(.+)/, async (ctx) => {
+bot.action(/(del)_username_(vmess|vless|trojan|shadowsocks|ssh|udp_http)_(.+)/, async (ctx) => {
   const [action, type, serverId] = [ctx.match[1], ctx.match[2], ctx.match[3]];
 
   userState[ctx.chat.id] = {
@@ -2789,7 +3118,7 @@ bot.action(/(del)_username_(vmess|vless|trojan|shadowsocks|ssh)_(.+)/, async (ct
   };
   await ctx.reply('👤 *Masukkan username yang ingin dihapus:*', { parse_mode: 'Markdown' });
 });
-bot.action(/(unlock)_username_(vmess|vless|trojan|shadowsocks|ssh)_(.+)/, async (ctx) => {
+bot.action(/(unlock)_username_(vmess|vless|trojan|shadowsocks|ssh|udp_http)_(.+)/, async (ctx) => {
   const [action, type, serverId] = [ctx.match[1], ctx.match[2], ctx.match[3]];
 
   userState[ctx.chat.id] = {
@@ -2798,7 +3127,7 @@ bot.action(/(unlock)_username_(vmess|vless|trojan|shadowsocks|ssh)_(.+)/, async 
   };
   await ctx.reply('👤 *Masukkan username yang ingin dibuka:*', { parse_mode: 'Markdown' });
 });
-bot.action(/(lock)_username_(vmess|vless|trojan|shadowsocks|ssh)_(.+)/, async (ctx) => {
+bot.action(/(lock)_username_(vmess|vless|trojan|shadowsocks|ssh|udp_http)_(.+)/, async (ctx) => {
   const [action, type, serverId] = [ctx.match[1], ctx.match[2], ctx.match[3]];
 
   userState[ctx.chat.id] = {
@@ -2811,6 +3140,34 @@ bot.action(/(lock)_username_(vmess|vless|trojan|shadowsocks|ssh)_(.+)/, async (c
 bot.on('text', async (ctx) => {
   const state = userState[ctx.chat.id];
 if (!state || !state.step) return;
+
+  if (state.step === 'reseller_terms_input') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan syarat reseller dibatalkan.');
+    }
+
+    const parts = text.split(/\s+/);
+    if (parts.length !== 2 || !/^\d+$/.test(parts[0]) || !/^\d+$/.test(parts[1])) {
+      return ctx.reply('Format salah. Contoh: 5 30000');
+    }
+
+    const minAccounts = parseInt(parts[0], 10);
+    const minTopup = parseInt(parts[1], 10);
+    if (minAccounts < 0 || minTopup < 0) {
+      return ctx.reply('Nilai tidak boleh negatif.');
+    }
+
+    const saved = saveResellerTerms({ min_accounts: minAccounts, min_topup: minTopup });
+    delete userState[ctx.chat.id];
+    await ctx.reply(
+      'Syarat reseller berhasil diperbarui:\n' +
+      `Minimal akun per bulan: ${saved.min_accounts}\n` +
+      `Minimal top up per bulan: ${formatRupiah(saved.min_topup)}`
+    );
+    return sendAdminMenu(ctx);
+  }
 
   if (state.step === 'add_server_domain') {
   state.data.domain = ctx.message.text.trim();
@@ -2868,7 +3225,7 @@ if (state.step === 'add_server_batas') {
   const service = state.service || 'ssh';
 
   db.run(
-    "INSERT INTO Server (domain, auth, harga, nama_server, quota, iplimit, batas_create_akun, total_create_akun, service) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)",
+    "INSERT INTO Server (domain, auth, harga, nama_server, quota, iplimit, batas_create_akun, total_create_akun, support_zivpn, support_udp_http, service) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?)",
     [
       d.domain,
       d.auth,
@@ -2877,7 +3234,8 @@ if (state.step === 'add_server_batas') {
       d.quota,
       d.iplimit,
       d.batas_create_akun,
-      service
+      service === 'zivpn' ? 1 : 0,
+      'ssh'
     ],
     (err) => {
       if (err) {
@@ -3087,23 +3445,27 @@ if (action === 'trial') {
   if (type === 'ssh') {
     const password = '1';
     msg = await trialssh(username, password, exp, iplimit, serverId);
-    await recordAccountTransaction(ctx.from.id, 'ssh');
+    await recordAccountTransaction(ctx.from.id, 'ssh', 0, 'trial');
 
   } else if (type === 'vmess') {
     msg = await trialvmess(username, exp, quota, iplimit, serverId);
-    await recordAccountTransaction(ctx.from.id, 'vmess');
+    await recordAccountTransaction(ctx.from.id, 'vmess', 0, 'trial');
 
   } else if (type === 'vless') {
     msg = await trialvless(username, exp, quota, iplimit, serverId);
-    await recordAccountTransaction(ctx.from.id, 'vless');
+    await recordAccountTransaction(ctx.from.id, 'vless', 0, 'trial');
 
   } else if (type === 'trojan') {
     msg = await trialtrojan(username, exp, quota, iplimit, serverId);
-    await recordAccountTransaction(ctx.from.id, 'trojan');
+    await recordAccountTransaction(ctx.from.id, 'trojan', 0, 'trial');
 
   } else if (type === 'zivpn') {
     msg = await trialzivpn(serverId);
-    await recordAccountTransaction(ctx.from.id, 'zivpn');
+    await recordAccountTransaction(ctx.from.id, 'zivpn', 0, 'trial');
+  } else if (type === 'udp_http') {
+    const password = '1';
+    msg = await trialudphttp(username, password, exp, iplimit, serverId);
+    await recordAccountTransaction(ctx.from.id, 'udp_http', 0, 'trial');
   }
 
   await saveTrialAccess(ctx.from.id);
@@ -3153,7 +3515,8 @@ if (action === 'trial') {
         vless: unlockvless,
         trojan: unlocktrojan,
         shadowsocks: unlockshadowsocks,
-        ssh: unlockssh
+        ssh: unlockssh,
+        udp_http: unlockssh
       };
 
       if (delFunctions[type]) {
@@ -3207,7 +3570,8 @@ if (action === 'trial') {
         vless: lockvless,
         trojan: locktrojan,
         shadowsocks: lockshadowsocks,
-        ssh: lockssh
+        ssh: lockssh,
+        udp_http: lockssh
       };
 
       if (delFunctions[type]) {
@@ -3261,7 +3625,8 @@ if (action === 'trial') {
         vless: delvless,
         trojan: deltrojan,
         shadowsocks: delshadowsocks,
-        ssh: delssh
+        ssh: delssh,
+        udp_http: delssh
       };
 
       if (delFunctions[type]) {
@@ -3294,7 +3659,7 @@ if (action === 'trial') {
     }
     const { type, action } = state;
     if (action === 'create') {
-      if (type === 'ssh') {
+      if (type === 'ssh' || type === 'udp_http') {
         state.step = `password_${state.action}_${state.type}`;
         await ctx.reply('🔑 *Masukkan password:*', { parse_mode: 'Markdown' });
       } else {
@@ -3384,52 +3749,68 @@ if (exp > 365) {
           if (action === 'create') {
             if (type === 'vmess') {
               msg = await createvmess(username, exp, quota, iplimit, serverId);
-              await recordAccountTransaction(ctx.from.id, 'vmess');
+              await recordAccountTransaction(ctx.from.id, 'vmess', totalHarga, action);
             } else if (type === 'vless') {
               msg = await createvless(username, exp, quota, iplimit, serverId);
-              await recordAccountTransaction(ctx.from.id, 'vless');
+              await recordAccountTransaction(ctx.from.id, 'vless', totalHarga, action);
             } else if (type === 'trojan') {
               msg = await createtrojan(username, exp, quota, iplimit, serverId);
-              await recordAccountTransaction(ctx.from.id, 'trojan');
+              await recordAccountTransaction(ctx.from.id, 'trojan', totalHarga, action);
             } else if (type === 'shadowsocks') {
               msg = await createshadowsocks(username, exp, quota, iplimit, serverId);
-              await recordAccountTransaction(ctx.from.id, 'shadowsocks');
+              await recordAccountTransaction(ctx.from.id, 'shadowsocks', totalHarga, action);
             } else if (type === 'ssh') {
               msg = await createssh(username, password, exp, iplimit, serverId);
-              await recordAccountTransaction(ctx.from.id, 'ssh');
+              await recordAccountTransaction(ctx.from.id, 'ssh', totalHarga, action);
             }
 else if (type === 'zivpn') {
-  msg = await createzivpn(username, password, exp, iplimit, serverId);
-  await recordAccountTransaction(ctx.from.id, 'zivpn');
+  const randomPassword = Math.random().toString(36).slice(-8);
+  msg = await createzivpn(username, randomPassword, exp, iplimit, serverId);
+  await recordAccountTransaction(ctx.from.id, 'zivpn', totalHarga, action);
 }
+            else if (type === 'udp_http') {
+              msg = await createudphttp(username, password, exp, iplimit, serverId);
+              await recordAccountTransaction(ctx.from.id, 'udp_http', totalHarga, action);
+            }
 
             logger.info(`Account created and transaction recorded for user ${ctx.from.id}, type: ${type}`);
           } else if (action === 'renew') {
             if (type === 'vmess') {
               msg = await renewvmess(username, exp, quota, iplimit, serverId);
-              await recordAccountTransaction(ctx.from.id, 'vmess');
+              await recordAccountTransaction(ctx.from.id, 'vmess', totalHarga, action);
             } else if (type === 'vless') {
               msg = await renewvless(username, exp, quota, iplimit, serverId);
-              await recordAccountTransaction(ctx.from.id, 'vless');
+              await recordAccountTransaction(ctx.from.id, 'vless', totalHarga, action);
             } else if (type === 'trojan') {
               msg = await renewtrojan(username, exp, quota, iplimit, serverId);
-              await recordAccountTransaction(ctx.from.id, 'trojan');
+              await recordAccountTransaction(ctx.from.id, 'trojan', totalHarga, action);
             } else if (type === 'shadowsocks') {
               msg = await renewshadowsocks(username, exp, quota, iplimit, serverId);
-              await recordAccountTransaction(ctx.from.id, 'shadowsocks');
+              await recordAccountTransaction(ctx.from.id, 'shadowsocks', totalHarga, action);
             } else if (type === 'ssh') {
               msg = await renewssh(username, exp, iplimit, serverId);
-              await recordAccountTransaction(ctx.from.id, 'ssh');
+              await recordAccountTransaction(ctx.from.id, 'ssh', totalHarga, action);
+            }
+            else if (type === 'udp_http') {
+              msg = await renewudphttp(username, exp, iplimit, serverId);
+              await recordAccountTransaction(ctx.from.id, 'udp_http', totalHarga, action);
             }
             logger.info(`Account renewed and transaction recorded for user ${ctx.from.id}, type: ${type}`);
           }
 //SALDO DATABES
 // setelah bikin akun (create/renew), kita cek hasilnya
-if (msg.includes('❌')) {
+const msgLower = String(msg).toLowerCase();
+if (type === 'zivpn' && action === 'create' && msgLower.includes('username sudah ada')) {
+  state.step = `username_${action}_${type}`;
+  delete state.username;
+  delete state.exp;
+  await ctx.reply('❌ username sudah ada mohon ulangi dengan username yang unik\n\nMasukkan username baru:', { parse_mode: 'Markdown' });
+  return;
+}
+if (msg.includes('?') || msg.includes('❌')) {
   logger.error(`🔄 Rollback saldo user ${ctx.from.id}, type: ${type}, server: ${serverId}, respon: ${msg}`);
   return ctx.reply(msg, { parse_mode: 'Markdown' });
 }
-
 // kalau sampai sini artinya tidak ada ❌, transaksi sukses
 logger.info(`✅ Transaksi sukses untuk user ${ctx.from.id}, type: ${type}, server: ${serverId}`);
 
@@ -3522,18 +3903,25 @@ delete userState[ctx.chat.id];
     const { domain, auth, nama_server, quota, iplimit, batas_create_akun } = state;
 
   try {
-    db.run('INSERT INTO Server (domain, auth, nama_server, quota, iplimit, batas_create_akun, harga, total_create_akun) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-          [domain, auth, nama_server, quota, iplimit, batas_create_akun, harga, 0], function(err) {        if (err) {
+    const isResellerOnly = state.is_reseller_only ? 1 : 0;
+    const supportZivpn = state.support_zivpn ? 1 : 0;
+    const supportUdpHttp = state.support_udp_http ? 1 : 0;
+    db.run(
+      'INSERT INTO Server (domain, auth, nama_server, quota, iplimit, batas_create_akun, harga, total_create_akun, is_reseller_only, support_zivpn, support_udp_http, service) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [domain, auth, nama_server, quota, iplimit, batas_create_akun, harga, 0, isResellerOnly, supportZivpn, supportUdpHttp, 'ssh'],
+      function(err) {
+        if (err) {
           logger.error('Error saat menambahkan server:', err.message);
           ctx.reply('❌ *Terjadi kesalahan saat menambahkan server baru.*', { parse_mode: 'Markdown' });
         } else {
           ctx.reply(`✅ *Server baru dengan domain ${domain} telah berhasil ditambahkan.*\n\n📄 *Detail Server:*\n- Domain: ${domain}\n- Auth: ${auth}\n- Nama Server: ${nama_server}\n- Quota: ${quota}\n- Limit IP: ${iplimit}\n- Batas Create Akun: ${batas_create_akun}\n- Harga: Rp ${harga}`, { parse_mode: 'Markdown' });
         }
-      });
-    } catch (error) {
-      logger.error('Error saat menambahkan server:', error);
-      await ctx.reply('❌ *Terjadi kesalahan saat menambahkan server baru.*', { parse_mode: 'Markdown' });
-    }
+      }
+    );
+  } catch (error) {
+    logger.error('Error saat menambahkan server:', error);
+    await ctx.reply('❌ *Terjadi kesalahan saat menambahkan server baru.*', { parse_mode: 'Markdown' });
+  }
     delete userState[ctx.chat.id];
   }
 // === 🏷️ TAMBAH SERVER UNTUK RESELLER ===
@@ -3577,8 +3965,8 @@ if (state && state.step === 'reseller_batas') {
   state.batas_create_akun = text;
 
   db.run(
-    `INSERT INTO Server (domain, auth, harga, nama_server, quota, iplimit, batas_create_akun, total_create_akun, is_reseller_only)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1)`,
+    `INSERT INTO Server (domain, auth, harga, nama_server, quota, iplimit, batas_create_akun, total_create_akun, is_reseller_only, support_zivpn, support_udp_http, service)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, 0, 'ssh')`,
     [
       state.domain,
       state.auth,
@@ -3655,12 +4043,84 @@ bot.action('addserver', async (ctx) => {
   try {
     logger.info('📥 Proses tambah server dimulai');
     await ctx.answerCbQuery();
-    await ctx.reply('🌐 *Silakan masukkan domain/ip server:*', { parse_mode: 'Markdown' });
-    userState[ctx.chat.id] = { step: 'addserver' };
+    userState[ctx.chat.id] = { step: 'addserver_role', data: {} };
+    await ctx.reply('Pilih tipe server:', {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: 'Server Reseller', callback_data: 'addserver_role_reseller' }],
+          [{ text: 'Server User Biasa', callback_data: 'addserver_role_user' }],
+          [{ text: 'Batal', callback_data: 'admin_menu' }]
+        ]
+      }
+    });
   } catch (error) {
     logger.error('❌ Kesalahan saat memulai proses tambah server:', error);
     await ctx.reply('❌ *GAGAL! Terjadi kesalahan saat memproses permintaan Anda. Silakan coba lagi nanti.*', { parse_mode: 'Markdown' });
   }
+});
+
+bot.action('addserver_role_reseller', async (ctx) => {
+  await ctx.answerCbQuery();
+  const state = userState[ctx.chat.id] || { data: {} };
+  state.is_reseller_only = 1;
+  state.step = 'addserver_support';
+  userState[ctx.chat.id] = state;
+  await ctx.reply('Pilih support server:', {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: 'Support ZIVPN', callback_data: 'addserver_support_zivpn' }],
+        [{ text: 'Support UDP HTTP', callback_data: 'addserver_support_udp_http' }],
+        [{ text: 'Tanpa Support', callback_data: 'addserver_support_none' }]
+      ]
+    }
+  });
+});
+
+bot.action('addserver_role_user', async (ctx) => {
+  await ctx.answerCbQuery();
+  const state = userState[ctx.chat.id] || { data: {} };
+  state.is_reseller_only = 0;
+  state.step = 'addserver_support';
+  userState[ctx.chat.id] = state;
+  await ctx.reply('Pilih support server:', {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: 'Support ZIVPN', callback_data: 'addserver_support_zivpn' }],
+        [{ text: 'Support UDP HTTP', callback_data: 'addserver_support_udp_http' }],
+        [{ text: 'Tanpa Support', callback_data: 'addserver_support_none' }]
+      ]
+    }
+  });
+});
+
+bot.action('addserver_support_zivpn', async (ctx) => {
+  await ctx.answerCbQuery();
+  const state = userState[ctx.chat.id] || { data: {} };
+  state.support_zivpn = 1;
+  state.support_udp_http = 0;
+  state.step = 'addserver';
+  userState[ctx.chat.id] = state;
+  await ctx.reply('🌐 *Silakan masukkan domain/ip server:*', { parse_mode: 'Markdown' });
+});
+
+bot.action('addserver_support_udp_http', async (ctx) => {
+  await ctx.answerCbQuery();
+  const state = userState[ctx.chat.id] || { data: {} };
+  state.support_zivpn = 0;
+  state.support_udp_http = 1;
+  state.step = 'addserver';
+  userState[ctx.chat.id] = state;
+  await ctx.reply('🌐 *Silakan masukkan domain/ip server:*', { parse_mode: 'Markdown' });
+});
+
+bot.action('addserver_support_none', async (ctx) => {
+  await ctx.answerCbQuery();
+  const state = userState[ctx.chat.id] || { data: {} };
+  state.support_zivpn = 0;
+  state.support_udp_http = 0;
+  state.step = 'addserver';
+  userState[ctx.chat.id] = state;
+  await ctx.reply('🌐 *Silakan masukkan domain/ip server:*', { parse_mode: 'Markdown' });
 });
 bot.action('detailserver', async (ctx) => {
   try {
@@ -3668,7 +4128,7 @@ bot.action('detailserver', async (ctx) => {
     await ctx.answerCbQuery();
     
     const servers = await new Promise((resolve, reject) => {
-      db.all('SELECT * FROM Server', [], (err, servers) => {
+      db.all('SELECT * FROM Server ORDER BY domain COLLATE NOCASE ASC', [], (err, servers) => {
         if (err) {
           logger.error('⚠️ Kesalahan saat mengambil detail server:', err.message);
           return reject('⚠️ *PERHATIAN! Terjadi kesalahan saat mengambil detail server.*');
@@ -4298,7 +4758,7 @@ bot.action(/edit_harga_(\d+)/, async (ctx) => {
   userState[ctx.chat.id] = { step: 'edit_harga', serverId: serverId };
 
   await ctx.reply('💰 *Silakan masukkan harga server baru:*', {
-    reply_markup: { inline_keyboard: keyboard_nomor() },
+    reply_markup: { inline_keyboard: keyboard_nomor_simple() },
     parse_mode: 'Markdown'
   });
 });
@@ -4308,7 +4768,7 @@ bot.action(/add_saldo_(\d+)/, async (ctx) => {
   userState[ctx.chat.id] = { step: 'add_saldo', userId: userId };
 
   await ctx.reply('📊 *Silakan masukkan jumlah saldo yang ingin ditambahkan:*', {
-    reply_markup: { inline_keyboard: keyboard_nomor() },
+    reply_markup: { inline_keyboard: keyboard_nomor_simple() },
     parse_mode: 'Markdown'
   });
 });
@@ -4318,7 +4778,7 @@ bot.action(/edit_batas_create_akun_(\d+)/, async (ctx) => {
   userState[ctx.chat.id] = { step: 'edit_batas_create_akun', serverId: serverId };
 
   await ctx.reply('📊 *Silakan masukkan batas create akun server baru:*', {
-    reply_markup: { inline_keyboard: keyboard_nomor() },
+    reply_markup: { inline_keyboard: keyboard_nomor_simple() },
     parse_mode: 'Markdown'
   });
 });
@@ -4328,7 +4788,7 @@ bot.action(/edit_total_create_akun_(\d+)/, async (ctx) => {
   userState[ctx.chat.id] = { step: 'edit_total_create_akun', serverId: serverId };
 
   await ctx.reply('📊 *Silakan masukkan total create akun server baru:*', {
-    reply_markup: { inline_keyboard: keyboard_nomor() },
+    reply_markup: { inline_keyboard: keyboard_nomor_simple() },
     parse_mode: 'Markdown'
   });
 });
@@ -4338,7 +4798,7 @@ bot.action(/edit_limit_ip_(\d+)/, async (ctx) => {
   userState[ctx.chat.id] = { step: 'edit_limit_ip', serverId: serverId };
 
   await ctx.reply('📊 *Silakan masukkan limit IP server baru:*', {
-    reply_markup: { inline_keyboard: keyboard_nomor() },
+    reply_markup: { inline_keyboard: keyboard_nomor_simple() },
     parse_mode: 'Markdown'
   });
 });
@@ -4348,7 +4808,7 @@ bot.action(/edit_quota_(\d+)/, async (ctx) => {
   userState[ctx.chat.id] = { step: 'edit_quota', serverId: serverId };
 
   await ctx.reply('📊 *Silakan masukkan quota server baru:*', {
-    reply_markup: { inline_keyboard: keyboard_nomor() },
+    reply_markup: { inline_keyboard: keyboard_nomor_simple() },
     parse_mode: 'Markdown'
   });
 });
@@ -4647,7 +5107,7 @@ async function handleAddSaldo(ctx, userStateData, data) {
   userStateData.saldo = currentSaldo;
   const newMessage = `📊 *Silakan masukkan jumlah saldo yang ingin ditambahkan:*\n\nJumlah saldo saat ini: *${currentSaldo}*`;
     await ctx.editMessageText(newMessage, {
-      reply_markup: { inline_keyboard: keyboard_nomor() },
+      reply_markup: { inline_keyboard: keyboard_nomor_simple() },
       parse_mode: 'Markdown'
     });
 }
@@ -4669,11 +5129,11 @@ async function handleEditQuota(ctx, userStateData, data) {
 }
 
 async function handleEditAuth(ctx, userStateData, data) {
-  await handleEditField(ctx, userStateData, data, 'auth', 'auth', 'UPDATE Server SET auth = ? WHERE id = ?');
+  await handleEditField(ctx, userStateData, data, 'auth', 'auth', 'UPDATE Server SET auth = ? WHERE id = ?', keyboard_full);
 }
 
 async function handleEditDomain(ctx, userStateData, data) {
-  await handleEditField(ctx, userStateData, data, 'domain', 'domain', 'UPDATE Server SET domain = ? WHERE id = ?');
+  await handleEditField(ctx, userStateData, data, 'domain', 'domain', 'UPDATE Server SET domain = ? WHERE id = ?', keyboard_full);
 }
 
 async function handleEditHarga(ctx, userStateData, data) {
@@ -4712,17 +5172,17 @@ async function handleEditHarga(ctx, userStateData, data) {
   const newMessage = `💰 *Silakan masukkan harga server baru:*\n\nJumlah saat ini: *Rp ${currentAmount}*`;
   if (newMessage !== ctx.callbackQuery.message.text) {
     await ctx.editMessageText(newMessage, {
-      reply_markup: { inline_keyboard: keyboard_nomor() },
+      reply_markup: { inline_keyboard: keyboard_nomor_simple() },
       parse_mode: 'Markdown'
     });
   }
 }
 
 async function handleEditNama(ctx, userStateData, data) {
-  await handleEditField(ctx, userStateData, data, 'name', 'nama server', 'UPDATE Server SET nama_server = ? WHERE id = ?');
+  await handleEditField(ctx, userStateData, data, 'name', 'nama server', 'UPDATE Server SET nama_server = ? WHERE id = ?', keyboard_full);
 }
 
-async function handleEditField(ctx, userStateData, data, field, fieldName, query) {
+async function handleEditField(ctx, userStateData, data, field, fieldName, query, keyboardBuilder) {
   let currentValue = userStateData[field] || '';
 
   if (data === 'delete') {
@@ -4754,7 +5214,7 @@ async function handleEditField(ctx, userStateData, data, field, fieldName, query
   const newMessage = `📊 *Silakan masukkan ${fieldName} server baru:*\n\n${fieldName.charAt(0).toUpperCase() + fieldName.slice(1)} saat ini: *${currentValue}*`;
   if (newMessage !== ctx.callbackQuery.message.text) {
     await ctx.editMessageText(newMessage, {
-      reply_markup: { inline_keyboard: keyboard_nomor() },
+      reply_markup: { inline_keyboard: (keyboardBuilder ? keyboardBuilder() : keyboard_nomor_simple()) },
       parse_mode: 'Markdown'
     });
   }
@@ -4796,13 +5256,16 @@ db.all('SELECT * FROM pending_deposits WHERE status = "pending"', [], (err, rows
     return;
   }
   rows.forEach(row => {
+    const createdAt = row.timestamp || Date.now();
     global.pendingDeposits[row.unique_code] = {
       amount: row.amount,
       originalAmount: row.original_amount,
       userId: row.user_id,
       timestamp: row.timestamp,
-      status: row.status,
-      qrMessageId: row.qr_message_id
+      status: row.status || 'pending',
+      qrMessageId: row.qr_message_id,
+      createdAt,
+      expiresAt: createdAt + (5 * 60 * 1000)
     };
   });
   logger.info('Pending deposit loaded:', Object.keys(global.pendingDeposits).length);
@@ -5039,7 +5502,8 @@ async function pollBankMutations() {
     for (const [uniqueCode, deposit] of pendingDeposits) {
       try {
         // CEK EXPIRED
-        if (now > deposit.expiresAt) {
+        const expiresAt = deposit.expiresAt || (deposit.timestamp ? deposit.timestamp + (5 * 60 * 1000) : 0);
+        if (expiresAt && now > expiresAt) {
           logger.info(`⏰ Deposit expired: ${uniqueCode}`);
           await handleExpiredDeposit(deposit, uniqueCode);
           continue;
@@ -5244,6 +5708,18 @@ function keyboard_nomor() {
       { text: '💰 20rb', callback_data: '20000' }
     ],
     [{ text: '🔙 Kembali ke Menu', callback_data: 'send_main_menu' }]
+  ];
+  return buttons;
+}
+
+function keyboard_nomor_simple() {
+  const buttons = [
+    [{ text: '1', callback_data: '1' }, { text: '2', callback_data: '2' }, { text: '3', callback_data: '3' }],
+    [{ text: '4', callback_data: '4' }, { text: '5', callback_data: '5' }, { text: '6', callback_data: '6' }],
+    [{ text: '7', callback_data: '7' }, { text: '8', callback_data: '8' }, { text: '9', callback_data: '9' }],
+    [{ text: '0', callback_data: '0' }, { text: '00', callback_data: '00' }],
+    [{ text: 'Hapus', callback_data: 'delete' }, { text: 'Konfirmasi', callback_data: 'confirm' }],
+    [{ text: 'Kembali ke Menu', callback_data: 'send_main_menu' }]
   ];
   return buttons;
 }
@@ -5627,12 +6103,12 @@ async function sendPaymentSummary(deposit, transactionDetails) {
   }
 }
 
-async function recordAccountTransaction(userId, type) {
+async function recordAccountTransaction(userId, type, amount = 0, action = 'other') {
   return new Promise((resolve, reject) => {
     const referenceId = `account-${type}-${userId}-${Date.now()}`;
     db.run(
-      'INSERT INTO transactions (user_id, type, reference_id, timestamp) VALUES (?, ?, ?, ?)',
-      [userId, type, referenceId, Date.now()],
+      'INSERT INTO transactions (user_id, amount, type, reference_id, timestamp) VALUES (?, ?, ?, ?, ?)',
+      [userId, amount, type, referenceId, Date.now()],
       async (err) => {
         if (err) {
           logger.error('Error recording account transaction:', err.message);
@@ -5641,7 +6117,7 @@ async function recordAccountTransaction(userId, type) {
           // ✅ TAMBAH: Notifikasi ke grup admin jika user adalah reseller
           try {
             const isReseller = await isUserReseller(userId);
-            if (isReseller && GROUP_ID_NUM) {
+            if (isReseller && GROUP_ID_NUM && action === 'create') {
               // Cek bulan ini sudah berapa akun
               const now = new Date();
               const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -5649,7 +6125,7 @@ async function recordAccountTransaction(userId, type) {
               db.get(
                 `SELECT COUNT(*) as count FROM transactions 
                  WHERE user_id = ? AND timestamp >= ? 
-                 AND type IN ('ssh', 'vmess', 'vless', 'trojan', 'shadowsocks', 'zivpn')`,
+                 AND type IN ('ssh', 'vmess', 'vless', 'trojan', 'shadowsocks', 'zivpn', 'udp_http')`,
                 [userId, firstDay.getTime()],
                 (err, row) => {
                   if (!err && row) {
@@ -5692,6 +6168,26 @@ async function recordAccountTransaction(userId, type) {
 // =============================
 
 const schedule = require('node-schedule');
+
+const resellerRule = new schedule.RecurrenceRule();
+resellerRule.tz = 'Asia/Jakarta';
+resellerRule.dayOfMonth = 1;
+resellerRule.hour = 0;
+resellerRule.minute = 10;
+
+schedule.scheduleJob('reseller_monthly_check', resellerRule, async () => {
+  try {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth();
+    const start = new Date(year, month - 1, 1, 0, 0, 0, 0);
+    const end = new Date(year, month, 0, 23, 59, 59, 999);
+    const periodLabel = start.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
+    await evaluateResellerTermsForPeriod(start.getTime(), end.getTime(), periodLabel);
+  } catch (err) {
+    logger.error('Error menjalankan evaluasi syarat reseller:', err.message);
+  }
+});
 
 const dbFile = path.join(__dirname, "sellvpn.db");
 const autoBackupDir = path.join(__dirname, "auto_backup");
@@ -5879,3 +6375,17 @@ const adminMessage =
     cleanupOldDeposits();
   }, 10000);
 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+

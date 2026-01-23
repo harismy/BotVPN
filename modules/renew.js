@@ -65,6 +65,60 @@ async function renewssh(username, exp, limitip, serverId) {
     });
   });
 }
+
+async function renewudphttp(username, exp, limitip, serverId) {
+  console.log(`Renewing UDP HTTP Custom account for ${username} with expiry ${exp} days, limit IP ${limitip} on server ${serverId}`);
+
+  if (/\s/.test(username) || /[^a-zA-Z0-9]/.test(username)) {
+    return 'âŒ Username tidak valid. Mohon gunakan hanya huruf dan angka tanpa spasi.';
+  }
+
+  return new Promise((resolve) => {
+    db.get('SELECT * FROM Server WHERE id = ?', [serverId], (err, server) => {
+      if (err || !server) {
+        console.error('âŒ Error fetching server:', err?.message || 'server null');
+        return resolve('âŒ Server tidak ditemukan. Silakan coba lagi.');
+      }
+
+      const domain = server.domain;
+      const param = `/vps/renewsshvpn`;
+      const web_URL = `http://${domain}${param}`;
+      const AUTH_TOKEN = server.auth;
+      const days = exp;
+
+      const curlCommand = `curl -s -X PATCH "${web_URL}/${username}/${days}" \
+-H "Authorization: ${AUTH_TOKEN}" \
+-H "accept: application/json" \
+-H "Content-Type: application/json" \
+-d '{"kuota": 0}'`;
+
+      exec(curlCommand, (_, stdout) => {
+        let d;
+        try {
+          d = JSON.parse(stdout);
+        } catch (e) {
+          console.error('âŒ Gagal parsing JSON:', e.message);
+          console.error('ðŸªµ Output:', stdout);
+          return resolve('âŒ Format respon dari server tidak valid.');
+        }
+
+        if (d?.meta?.code !== 200 || !d.data) {
+          console.error('âŒ Respons error:', d);
+          const errMsg = d?.message || d?.meta?.message || JSON.stringify(d, null, 2);
+          return resolve(`âŒ Respons error:\n${errMsg}`);
+        }
+
+        const s = d.data;
+        const msg = `âœ… *Renew UDP HTTP Custom Success!*
+
+*Username* : \`${s.username}\`
+*Expired*  : \`${s.to || s.exp || 'N/A'}\``;
+
+        return resolve(msg);
+      });
+    });
+  });
+}
 async function renewvmess(username, exp, quota, limitip, serverId) {
   console.log(`Renewing VMess account for ${username} with expiry ${exp} days, quota ${quota} GB, limit IP ${limitip}`);
 
@@ -313,4 +367,4 @@ async function renewtrojan(username, exp, quota, limitip, serverId) {
     });
   }
   
-  module.exports = { renewshadowsocks, renewtrojan, renewvless, renewvmess, renewssh };
+module.exports = { renewshadowsocks, renewtrojan, renewvless, renewvmess, renewssh, renewudphttp };

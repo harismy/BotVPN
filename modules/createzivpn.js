@@ -28,6 +28,19 @@ async function createzivpn(username, password, exp, iplimit, serverId) {
         }
 
         if (res?.meta?.code !== 200) {
+          try {
+            console.error(`ZIVPN error response: ${JSON.stringify(res)}`);
+          } catch (e) {
+            console.error('ZIVPN error response: [unserializable]');
+          }
+          const rawMessage = (res?.message || res?.meta?.message || '').toString();
+          const haystack = (rawMessage || JSON.stringify(res) || '').toLowerCase();
+          if (
+            (haystack.includes('username') || haystack.includes('client')) &&
+            (haystack.includes('exist') || haystack.includes('exists') || haystack.includes('already') || haystack.includes('try another'))
+          ) {
+            return resolve('❌ username sudah ada mohon ulangi dengan username yang unik');
+          }
           return resolve('❌ Gagal membuat akun ZIVPN');
         }
 
