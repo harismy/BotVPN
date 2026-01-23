@@ -244,7 +244,7 @@ server_app() {
     input_field "Masukkan ID Group Notif" groupid
     input_field "Masukkan ORKUT Username" orkutuser
     input_field "Masukkan ORKUT Token" orkuttoken
-    input_field "Masukkan RAJASERVER API Key" rajasrvkey
+    input_field "Masukkan API Key" rajasrvkey
 
     merchantid="NONE"
     apikey="NONE"
