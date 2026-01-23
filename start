@@ -242,6 +242,9 @@ server_app() {
     input_field "Masukkan Nama Store" namastore
     input_field "Masukkan Data QRIS" dataqris
     input_field "Masukkan ID Group Notif" groupid
+    input_field "Masukkan ORKUT Username" orkutuser
+    input_field "Masukkan ORKUT Token" orkuttoken
+    input_field "Masukkan RAJASERVER API Key" rajasrvkey
 
     merchantid="NONE"
     apikey="NONE"
@@ -255,7 +258,10 @@ cat >/root/BotVPN/.vars.json <<EOF
   "PORT": "6969",
   "DATA_QRIS": "$dataqris",
   "MERCHANT_ID": "$merchantid",
-  "API_KEY": "$apikey"
+  "API_KEY": "$apikey",
+  "RAJASERVER_API_KEY": "$rajasrvkey",
+  "ORKUT_USERNAME": "$orkutuser",
+  "ORKUT_TOKEN": "$orkuttoken"
 }
 EOF
 

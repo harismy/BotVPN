@@ -201,6 +201,7 @@ const NAMA_STORE = vars.NAMA_STORE || '@ARI_VPN_STORE';
 const DATA_QRIS = vars.DATA_QRIS;
 const MERCHANT_ID = vars.MERCHANT_ID;
 const API_KEY = vars.API_KEY;
+const RAJASERVER_API_KEY = vars.RAJASERVER_API_KEY;
 const GROUP_ID = vars.GROUP_ID;
 
 // =================== PERBAIKAN GROUP_ID ===================
@@ -739,9 +740,17 @@ bot.command('allresellerstats', async (ctx) => {
     resellerStats.sort((a, b) => b.total - a.total);
 
     for (const stat of resellerStats) {
+      let usernameText = '-';
+      try {
+        const username = await getUsernameById(stat.resellerId);
+        usernameText = username ? `@${username.replace(/^@/, '')}` : '-';
+      } catch (e) {
+        usernameText = '-';
+      }
       const displayId = `<code>${stat.resellerId}</code>`;
       message +=
-        `<b>👤 ID:</b> ${displayId}\n` +
+        `<b>👤 Username:</b> ${escapeHtml(usernameText)}\n` +
+        `<b>🆔 ID:</b> ${displayId}\n` +
         `<code>💰 Saldo:</code> Rp ${stat.saldo.toLocaleString('id-ID')}\n` +
         `<code>📊 Akun Bulan Ini:</code> ${stat.count}\n` +
         `<code>💵 Pendapatan:</code> Rp ${stat.total.toLocaleString('id-ID')}\n` +
@@ -5452,8 +5461,11 @@ async function processDeposit(ctx, amount) {
 
     // BUAT QRIS
     const urlQr = DATA_QRIS;
+    if (!RAJASERVER_API_KEY) {
+      throw new Error('RAJASERVER_API_KEY belum diisi di .vars.json');
+    }
     const bayar = await axios.get(
-      `https://api.rajaserverpremium.web.id/orderkuota/createpayment?apikey=1forcr201219Mycan&amount=${finalAmount}&codeqr=${urlQr}&reference=${referenceId}`,
+      `https://api.rajaserverpremium.web.id/orderkuota/createpayment?apikey=${encodeURIComponent(RAJASERVER_API_KEY)}&amount=${finalAmount}&codeqr=${urlQr}&reference=${referenceId}`,
       { timeout: 15000 }
     );
     
