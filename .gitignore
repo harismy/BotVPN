@@ -1,0 +1,5 @@
+node_modules/
+.vars.json
+*.db
+*.log
+backups/
