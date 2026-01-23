@@ -48,13 +48,13 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 && sysctl -w net.ipv6.conf.default.di
   - `support_zivpn` dan `support_udp_http` di tabel `Server`
   - Filter server otomatis berdasarkan support
 - **Syarat Reseller Dinamis**
-  - Admin set minimal akun & minimal top up per bulan
+  - Admin set minimal top up per bulan
   - Otomatis demote reseller jika tidak memenuhi syarat (dengan notifikasi)
 - **Top Up Manual Toggle**
   - Tombol top up manual muncul/hilang dari menu user
 - **Perbaikan Statistik**
-  - Pendapatan reseller dihitung dari transaksi deposit
-  - `/allresellerstats` diurutkan dari pendapatan terbesar
+  - Pendapatan reseller dihitung dari transaksi akun (create/renew)
+  - Top up bulan ini dihitung dari transaksi deposit
 - **ZiVPN UX**
   - Jika username sudah ada, user diminta input ulang
   - Password ZiVPN dibuat random (user hanya input username + hari)
@@ -68,31 +68,11 @@ Gunakan tools berikut untuk extract data QRIS:
 https://qreader.online/
 
 ### Setup API Cek Payment
-Edit file `api-cekpayment-orkut.js`:
+Input saat instalasi melalui `start` (disimpan ke `.vars.json`):
+- `ORKUT_USERNAME`
+- `ORKUT_TOKEN`
 
-```javascript
-const qs = require('qs');
-
-function buildPayload() {
-  return qs.stringify({
-    username: 'your_username_here',
-    token: 'your_auth_token_here',
-    jenis: 'masuk'
-  });
-}
-
-const headers = {
-  'Content-Type': 'application/x-www-form-urlencoded',
-  'Accept-Encoding': 'gzip',
-  'User-Agent': 'okhttp/4.12.0'
-};
-
-const API_URL = 'https://orkutapi.andyyuda41.workers.dev/api/qris-history';
-
-module.exports = { buildPayload, headers, API_URL };
-```
-
-Jika `username/token` belum diisi:
+Jika `ORKUT_USERNAME/ORKUT_TOKEN` belum diisi:
 - Menu top up otomatis akan nonaktif
 - Bot menampilkan notifikasi ke user
 
