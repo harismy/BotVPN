@@ -9,7 +9,7 @@ const fsPromises = require('fs/promises');
 const path = require('path');
 const resselFilePath = path.join(__dirname, 'ressel.db');
 const resellerTermsPath = path.join(__dirname, 'reseller_terms.json');
-const defaultResellerTerms = { min_accounts: 5, min_topup: 30000 };
+const defaultResellerTerms = { min_accounts: 0, min_topup: 30000 };
 const topupManualPath = path.join(__dirname, 'topup_manual.json');
 const defaultTopupManual = { enabled: true };
 
@@ -591,6 +591,7 @@ bot.command('resellerstats', async (ctx) => {
           AND timestamp >= ? 
           AND timestamp <= ?
           AND type IN ('ssh', 'vmess', 'vless', 'trojan', 'shadowsocks', 'zivpn', 'udp_http')
+          AND reference_id NOT LIKE 'account-trial-%'
         GROUP BY type
       `;
       
@@ -600,6 +601,15 @@ bot.command('resellerstats', async (ctx) => {
           return ctx.reply('❌ Terjadi kesalahan saat mengambil transaksi.');
         }
         
+        const totalTopup = await new Promise((resolve) => {
+          db.get(
+            `SELECT SUM(amount) as total FROM transactions
+             WHERE user_id = ? AND timestamp >= ? AND timestamp <= ? AND type = 'deposit'`,
+            [userId, startTimestamp, endTimestamp],
+            (err2, row2) => resolve(!err2 && row2 && row2.total ? row2.total : 0)
+          );
+        });
+
         // Hitung total akun bulan ini
         let totalAccounts = 0;
         let totalRevenue = 0;
@@ -621,7 +631,8 @@ bot.command('resellerstats', async (ctx) => {
           `📊 *STATISTIK RESELLER*\n` +
           `📅 Periode: ${currentMonth} ${currentYear}\n` +
           `👤 ID Reseller: ${userId}\n\n` +
-          `💰 *Saldo Saat Ini:* Rp ${saldo.toLocaleString('id-ID')}\n\n` +
+          `💰 *Saldo Saat Ini:* Rp ${saldo.toLocaleString('id-ID')}\n` +
+          `💳 *Top Up Bulan Ini:* Rp ${totalTopup.toLocaleString('id-ID')}\n\n` +
           `📈 *AKTIVITAS BULAN INI:*\n` +
           (typeDetails.length > 0 ? typeDetails.join('\n') : '• Belum ada transaksi') + `\n\n` +
           `📊 *TOTAL BULAN INI:*\n` +
@@ -675,6 +686,7 @@ bot.command('allresellerstats', async (ctx) => {
     // Total semua
     let totalAllAccounts = 0;
     let totalAllRevenue = 0;
+    let totalAllTopup = 0;
     
     const resellerStats = [];
 
@@ -692,23 +704,35 @@ bot.command('allresellerstats', async (ctx) => {
         db.all(
           `SELECT COUNT(*) as count, SUM(amount) as total FROM transactions 
            WHERE user_id = ? AND timestamp >= ? AND timestamp <= ? 
-           AND type IN ('ssh', 'vmess', 'vless', 'trojan', 'shadowsocks', 'zivpn', 'udp_http')`,
+           AND type IN ('ssh', 'vmess', 'vless', 'trojan', 'shadowsocks', 'zivpn', 'udp_http')
+           AND reference_id NOT LIKE 'account-trial-%'`,
           [resellerId, startTimestamp, endTimestamp],
           (err, rows) => {
             resolve(rows[0] || { count: 0, total: 0 });
           }
         );
       });
+
+      const topupTotal = await new Promise((resolve) => {
+        db.get(
+          `SELECT SUM(amount) as total FROM transactions
+           WHERE user_id = ? AND timestamp >= ? AND timestamp <= ? AND type = 'deposit'`,
+          [resellerId, startTimestamp, endTimestamp],
+          (err, row) => resolve(!err && row && row.total ? row.total : 0)
+        );
+      });
       
       // Tambah ke total
       totalAllAccounts += transactions.count;
       totalAllRevenue += transactions.total || 0;
+      totalAllTopup += topupTotal;
 
       resellerStats.push({
         resellerId,
         saldo: user.saldo || 0,
         count: transactions.count || 0,
-        total: transactions.total || 0
+        total: transactions.total || 0,
+        topup: topupTotal || 0
       });
     }
 
@@ -721,6 +745,7 @@ bot.command('allresellerstats', async (ctx) => {
         `<code>💰 Saldo:</code> Rp ${stat.saldo.toLocaleString('id-ID')}\n` +
         `<code>📊 Akun Bulan Ini:</code> ${stat.count}\n` +
         `<code>💵 Pendapatan:</code> Rp ${stat.total.toLocaleString('id-ID')}\n` +
+        `<code>💳 Top Up Bulan Ini:</code> Rp ${stat.topup.toLocaleString('id-ID')}\n` +
         `────────────────────\n`;
     }
     
@@ -730,6 +755,7 @@ bot.command('allresellerstats', async (ctx) => {
     message += `• <b>Total Reseller:</b> ${totalResellers} orang\n`;
     message += `• <b>Total Akun Bulan Ini:</b> ${totalAllAccounts} akun\n`;
     message += `• <b>Total Pendapatan:</b> Rp ${totalAllRevenue.toLocaleString('id-ID')}\n`;
+    message += `• <b>Total Top Up:</b> Rp ${totalAllTopup.toLocaleString('id-ID')}\n`;
     message += `• <b>Periode:</b> ${escapeHtml(now.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' }))}\n`;
     message += `• <b>Update:</b> ${escapeHtml(now.toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta' }))}`;
     
@@ -792,10 +818,10 @@ async function getResellerStatsForPeriod(userId, startTimestamp, endTimestamp) {
       `SELECT COUNT(*) as count
        FROM transactions
        WHERE user_id = ?
-         AND timestamp >= ?
-         AND timestamp <= ?
-         AND type IN ('ssh', 'vmess', 'vless', 'trojan', 'shadowsocks', 'zivpn', 'udp_http')
-         AND amount > 0`,
+        AND timestamp >= ?
+        AND timestamp <= ?
+        AND type IN ('ssh', 'vmess', 'vless', 'trojan', 'shadowsocks', 'zivpn', 'udp_http')
+        AND reference_id NOT LIKE 'account-trial-%'`,
       [userId, startTimestamp, endTimestamp],
       (err, row) => {
         const count = !err && row ? row.count : 0;
@@ -824,14 +850,12 @@ async function evaluateResellerTermsForPeriod(startTimestamp, endTimestamp, peri
 
   for (const resellerId of resellers) {
     const stats = await getResellerStatsForPeriod(resellerId, startTimestamp, endTimestamp);
-    const failedAccounts = stats.count < terms.min_accounts;
     const failedTopup = stats.topup < terms.min_topup;
 
-    if (failedAccounts || failedTopup) {
+    if (failedTopup) {
       removeReseller(resellerId);
       const message =
         `Syarat reseller bulan ${periodLabel} tidak terpenuhi.\n\n` +
-        `Akun dibuat: ${stats.count} (minimal ${terms.min_accounts})\n` +
         `Top up: ${formatRupiah(stats.topup)} (minimal ${formatRupiah(terms.min_topup)})\n\n` +
         'Status reseller dinonaktifkan. Untuk aktif kembali, hubungi admin.';
       try {
@@ -1813,6 +1837,8 @@ async function sendAdminSaldoMenu(ctx) {
 async function sendAdminResellerMenu(ctx) {
   const keyboard = [
     [{ text: '📜 Syarat Reseller', callback_data: 'reseller_terms_menu' }],
+    [{ text: '⚡ Trigger Cek Syarat', callback_data: 'reseller_terms_trigger' }],
+    [{ text: '♻️ Restore Reseller', callback_data: 'reseller_restore' }],
     [{ text: '🔙 Kembali', callback_data: 'admin_menu' }]
   ];
 
@@ -1826,6 +1852,7 @@ async function sendAdminToolsMenu(ctx) {
   const keyboard = [
     [{ text: '📋 Help Admin', callback_data: 'helpadmin_menu' }],
     [{ text: '📦 Backup Database', callback_data: 'backup_db' }],
+    [{ text: '⏱️ Trigger Backup Sekarang', callback_data: 'auto_backup_now' }],
     [{ text: '🔙 Kembali', callback_data: 'admin_menu' }]
   ];
 
@@ -1874,6 +1901,62 @@ bot.action('helpadmin_menu', async (ctx) => {
   await sendHelpAdmin(ctx);
 });
 
+bot.action('reseller_terms_trigger', async (ctx) => {
+  await ctx.answerCbQuery();
+  const adminId = ctx.from.id;
+  if (!adminIds.includes(adminId)) {
+    return ctx.reply('🚫 Anda tidak memiliki izin untuk menjalankan cek ini.');
+  }
+
+  try {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth();
+    const start = new Date(year, month - 1, 1, 0, 0, 0, 0);
+    const end = new Date(year, month, 0, 23, 59, 59, 999);
+    const periodLabel = start.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
+    await evaluateResellerTermsForPeriod(start.getTime(), end.getTime(), periodLabel);
+    await ctx.reply(`✅ Cek syarat reseller untuk periode ${periodLabel} selesai.`);
+  } catch (err) {
+    logger.error('Error trigger cek syarat reseller:', err.message);
+    await ctx.reply('❌ Gagal menjalankan cek syarat reseller.');
+  }
+});
+
+bot.action('reseller_restore', async (ctx) => {
+  await ctx.answerCbQuery();
+  const adminId = ctx.from.id;
+  if (!adminIds.includes(adminId)) {
+    return ctx.reply('🚫 Anda tidak memiliki izin untuk mengubah reseller.');
+  }
+
+  userState[ctx.chat.id] = { step: 'reseller_restore_input' };
+  await ctx.reply('Kirim ID Telegram reseller yang ingin diaktifkan kembali:');
+});
+
+bot.action('auto_backup_now', async (ctx) => {
+  await ctx.answerCbQuery();
+  const adminId = ctx.from.id;
+  if (!adminIds.includes(adminId)) {
+    return ctx.reply('🚫 Anda tidak memiliki izin untuk menjalankan backup.');
+  }
+
+  const files = [
+    path.join(__dirname, 'sellvpn.db'),
+    path.join(__dirname, 'ressel.db')
+  ];
+
+  for (const filePath of files) {
+    if (fs.existsSync(filePath)) {
+      await sendAutoBackup(filePath);
+    } else {
+      logger.warn(`Backup manual dilewati, file tidak ditemukan: ${filePath}`);
+    }
+  }
+
+  await ctx.reply('✅ Backup otomatis telah dikirim.');
+});
+
 bot.action('reseller_terms_menu', async (ctx) => {
   try {
     await ctx.answerCbQuery();
@@ -1885,7 +1968,6 @@ bot.action('reseller_terms_menu', async (ctx) => {
     const terms = loadResellerTerms();
     const message =
       '*SYARAT RESELLER*\n\n' +
-      `Minimal akun per bulan: ${terms.min_accounts}\n` +
       `Minimal top up per bulan: ${formatRupiah(terms.min_topup)}\n\n` +
       'Gunakan tombol di bawah untuk mengubah syarat.';
 
@@ -1916,8 +1998,8 @@ bot.action('reseller_terms_set', async (ctx) => {
 
   userState[ctx.chat.id] = { step: 'reseller_terms_input' };
   await ctx.reply(
-    'Kirim format: <min_akun> <min_topup>\n' +
-    'Contoh: 5 30000\n' +
+    'Kirim format: <min_topup>\n' +
+    'Contoh: 30000\n' +
     'Ketik \"batal\" untuk membatalkan.'
   );
 });
@@ -2284,6 +2366,7 @@ bot.action('reseller_stats', async (ctx) => {
         `SELECT type, COUNT(*) as count FROM transactions 
          WHERE user_id = ? AND timestamp >= ? AND timestamp <= ?
          AND type IN ('ssh', 'vmess', 'vless', 'trojan', 'shadowsocks', 'zivpn', 'udp_http')
+         AND reference_id NOT LIKE 'account-trial-%'
          GROUP BY type`,
         [userId, firstDay.getTime(), lastDay.getTime()],
         async (err, rows) => {
@@ -2298,6 +2381,15 @@ bot.action('reseller_stats', async (ctx) => {
             await ctx.reply('❌ Terjadi kesalahan saat mengambil data transaksi.');
             return;
           }
+
+          const totalTopup = await new Promise((resolve) => {
+            db.get(
+              `SELECT SUM(amount) as total FROM transactions
+               WHERE user_id = ? AND timestamp >= ? AND timestamp <= ? AND type = 'deposit'`,
+              [userId, firstDay.getTime(), lastDay.getTime()],
+              (err2, row2) => resolve(!err2 && row2 && row2.total ? row2.total : 0)
+            );
+          });
           
           let totalAccounts = 0;
           const details = [];
@@ -2313,6 +2405,7 @@ bot.action('reseller_stats', async (ctx) => {
           const statsMessage = 
             `📊 *STATISTIK RESELLER ANDA*\n\n` +
             `💰 Saldo: Rp ${saldo.toLocaleString('id-ID')}\n` +
+            `💳 Top Up Bulan Ini: Rp ${totalTopup.toLocaleString('id-ID')}\n` +
             `📅 Periode: ${monthNames[now.getMonth()]} ${now.getFullYear()}\n\n` +
             `📈 *Aktivitas Bulan Ini:*\n` +
             (details.length > 0 ? details.join('\n') : '• Belum ada transaksi') + `\n\n` +
@@ -2550,7 +2643,6 @@ await ctx.reply(
   `• Bonus dan promo menarik setiap bulan\n\n` +
   `💰 *Syarat Bergabung:*\n` +
   `> Deposit awal sebesar *Rp18.000* (langsung masuk ke saldo akun kamu)\n` +
-  `> Minimal pembuatan akun *${terms.min_accounts} akun per bulan*\n` +
   `> Minimal top up *${formatRupiah(terms.min_topup)} per bulan*\n\n` +
   `✨ Jadilah bagian dari komunitas reseller kami dan nikmati penghasilan tambahan dari setiap penjualan akun VPN!`,
   { parse_mode: 'Markdown' }
@@ -3149,24 +3241,44 @@ if (!state || !state.step) return;
     }
 
     const parts = text.split(/\s+/);
-    if (parts.length !== 2 || !/^\d+$/.test(parts[0]) || !/^\d+$/.test(parts[1])) {
-      return ctx.reply('Format salah. Contoh: 5 30000');
+    if (parts.length !== 1 || !/^\d+$/.test(parts[0])) {
+      return ctx.reply('Format salah. Contoh: 30000');
     }
 
-    const minAccounts = parseInt(parts[0], 10);
-    const minTopup = parseInt(parts[1], 10);
-    if (minAccounts < 0 || minTopup < 0) {
+    const minTopup = parseInt(parts[0], 10);
+    if (minTopup < 0) {
       return ctx.reply('Nilai tidak boleh negatif.');
     }
 
-    const saved = saveResellerTerms({ min_accounts: minAccounts, min_topup: minTopup });
+    const saved = saveResellerTerms({ min_accounts: 0, min_topup: minTopup });
     delete userState[ctx.chat.id];
     await ctx.reply(
       'Syarat reseller berhasil diperbarui:\n' +
-      `Minimal akun per bulan: ${saved.min_accounts}\n` +
       `Minimal top up per bulan: ${formatRupiah(saved.min_topup)}`
     );
     return sendAdminMenu(ctx);
+  }
+
+  if (state.step === 'reseller_restore_input') {
+    const targetId = ctx.message.text.trim();
+    if (!/^\d+$/.test(targetId)) {
+      return ctx.reply('❌ ID Telegram harus angka. Coba lagi.');
+    }
+
+    addReseller(targetId);
+    delete userState[ctx.chat.id];
+    await ctx.reply(`✅ Reseller ${targetId} berhasil diaktifkan kembali.`);
+
+    try {
+      await bot.telegram.sendMessage(
+        targetId,
+        '✅ Status reseller Anda telah diaktifkan kembali oleh admin.'
+      );
+    } catch (e) {
+      logger.warn(`Gagal kirim notif restore reseller ke ${targetId}:`, e.message);
+    }
+
+    return;
   }
 
   if (state.step === 'add_server_domain') {
@@ -6105,7 +6217,7 @@ async function sendPaymentSummary(deposit, transactionDetails) {
 
 async function recordAccountTransaction(userId, type, amount = 0, action = 'other') {
   return new Promise((resolve, reject) => {
-    const referenceId = `account-${type}-${userId}-${Date.now()}`;
+    const referenceId = `account-${action}-${type}-${userId}-${Date.now()}`;
     db.run(
       'INSERT INTO transactions (user_id, amount, type, reference_id, timestamp) VALUES (?, ?, ?, ?, ?)',
       [userId, amount, type, referenceId, Date.now()],
@@ -6125,7 +6237,8 @@ async function recordAccountTransaction(userId, type, amount = 0, action = 'othe
               db.get(
                 `SELECT COUNT(*) as count FROM transactions 
                  WHERE user_id = ? AND timestamp >= ? 
-                 AND type IN ('ssh', 'vmess', 'vless', 'trojan', 'shadowsocks', 'zivpn', 'udp_http')`,
+                 AND type IN ('ssh', 'vmess', 'vless', 'trojan', 'shadowsocks', 'zivpn', 'udp_http')
+                 AND reference_id NOT LIKE 'account-trial-%'`,
                 [userId, firstDay.getTime()],
                 (err, row) => {
                   if (!err && row) {
@@ -6178,6 +6291,10 @@ resellerRule.minute = 10;
 schedule.scheduleJob('reseller_monthly_check', resellerRule, async () => {
   try {
     const now = new Date();
+    if (now.getDate() !== 1) {
+      logger.warn('Skip reseller check (bukan tanggal 1).');
+      return;
+    }
     const year = now.getFullYear();
     const month = now.getMonth();
     const start = new Date(year, month - 1, 1, 0, 0, 0, 0);
