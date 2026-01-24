@@ -619,7 +619,8 @@ bot.command('resellerstats', async (ctx) => {
         rows.forEach(row => {
           totalAccounts += row.count;
           totalRevenue += row.total || 0;
-          typeDetails.push(`• ${row.type.toUpperCase()}: ${row.count} akun`);
+          const safeType = row.type.toUpperCase().replace(/_/g, '\\_');
+          typeDetails.push(`• ${safeType}: ${row.count} akun`);
         });
         
         // Format pesan
@@ -739,6 +740,10 @@ bot.command('allresellerstats', async (ctx) => {
 
     resellerStats.sort((a, b) => b.total - a.total);
 
+    const parts = [];
+    const header = message;
+    let current = header;
+
     for (const stat of resellerStats) {
       let usernameText = '-';
       try {
@@ -748,7 +753,7 @@ bot.command('allresellerstats', async (ctx) => {
         usernameText = '-';
       }
       const displayId = `<code>${stat.resellerId}</code>`;
-      message +=
+      const entry =
         `<b>👤 Username:</b> ${escapeHtml(usernameText)}\n` +
         `<b>🆔 ID:</b> ${displayId}\n` +
         `<code>💰 Saldo:</code> Rp ${stat.saldo.toLocaleString('id-ID')}\n` +
@@ -756,50 +761,41 @@ bot.command('allresellerstats', async (ctx) => {
         `<code>💵 Pendapatan:</code> Rp ${stat.total.toLocaleString('id-ID')}\n` +
         `<code>💳 Top Up Bulan Ini:</code> Rp ${stat.topup.toLocaleString('id-ID')}\n` +
         `────────────────────\n`;
+
+      if ((current + entry).length > 3900) {
+        parts.push(current);
+        current = `${header}\n<i>(lanjutan)</i>\n\n` + entry;
+      } else {
+        current += entry;
+      }
     }
     
     // Tambahkan summary
     const totalResellers = resellers.length;
-    message += `\n<b>📈 RINGKASAN:</b>\n`;
-    message += `• <b>Total Reseller:</b> ${totalResellers} orang\n`;
-    message += `• <b>Total Akun Bulan Ini:</b> ${totalAllAccounts} akun\n`;
-    message += `• <b>Total Pendapatan:</b> Rp ${totalAllRevenue.toLocaleString('id-ID')}\n`;
-    message += `• <b>Total Top Up:</b> Rp ${totalAllTopup.toLocaleString('id-ID')}\n`;
-    message += `• <b>Periode:</b> ${escapeHtml(now.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' }))}\n`;
-    message += `• <b>Update:</b> ${escapeHtml(now.toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta' }))}`;
-    
-    // Split jika terlalu panjang (Telegram limit 4096 chars)
-    if (message.length > 4000) {
-      const parts = [];
-      const chunkSize = 3900; // Kasih buffer
-      
-      for (let i = 0; i < message.length; i += chunkSize) {
-        const chunk = message.substring(i, Math.min(i + chunkSize, message.length));
-        // Pastikan chunk tidak terpotong di tengah tag HTML
-        if (chunk.includes('<') && !chunk.includes('>')) {
-          // Jika tag tidak tertutup, cari posisi tag terakhir yang utuh
-          const lastCompleteTag = chunk.lastIndexOf('>');
-          if (lastCompleteTag > 0) {
-            parts.push(chunk.substring(0, lastCompleteTag + 1));
-            i = i - (chunk.length - lastCompleteTag - 1); // Adjust index
-          } else {
-            parts.push(chunk);
-          }
-        } else {
-          parts.push(chunk);
-        }
-      }
-      
-      // Kirim part pertama
-      await ctx.reply(parts[0], { parse_mode: 'HTML' });
-      
-      // Kirim part lainnya dengan delay
-      for (let i = 1; i < parts.length; i++) {
-        await new Promise(resolve => setTimeout(resolve, 500));
-        await ctx.reply(parts[i], { parse_mode: 'HTML' });
-      }
+    const summary =
+      `\n<b>📈 RINGKASAN:</b>\n` +
+      `• <b>Total Reseller:</b> ${totalResellers} orang\n` +
+      `• <b>Total Akun Bulan Ini:</b> ${totalAllAccounts} akun\n` +
+      `• <b>Total Pendapatan:</b> Rp ${totalAllRevenue.toLocaleString('id-ID')}\n` +
+      `• <b>Total Top Up:</b> Rp ${totalAllTopup.toLocaleString('id-ID')}\n` +
+      `• <b>Periode:</b> ${escapeHtml(now.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' }))}\n` +
+      `• <b>Update:</b> ${escapeHtml(now.toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta' }))}`;
+
+    if ((current + summary).length > 3900) {
+      parts.push(current);
+      current = `${header}\n<i>(ringkasan)</i>\n\n` + summary;
     } else {
-      await ctx.reply(message, { parse_mode: 'HTML' });
+      current += summary;
+    }
+
+    if (current.trim().length > 0) {
+      parts.push(current);
+    }
+
+    // Kirim semua part
+    for (let i = 0; i < parts.length; i++) {
+      if (i > 0) await new Promise(resolve => setTimeout(resolve, 500));
+      await ctx.reply(parts[i], { parse_mode: 'HTML' });
     }
     
     logger.info(`📊 Admin ${adminId} melihat statistik semua reseller`);
@@ -2405,7 +2401,8 @@ bot.action('reseller_stats', async (ctx) => {
           
           rows.forEach(row => {
             totalAccounts += row.count;
-            details.push(`• ${row.type.toUpperCase()}: ${row.count} akun`);
+            const safeType = row.type.toUpperCase().replace(/_/g, '\\_');
+            details.push(`• ${safeType}: ${row.count} akun`);
           });
           
           const monthNames = ["Januari", "Februari", "Maret", "April", "Mei", "Juni",
@@ -3265,6 +3262,19 @@ if (!state || !state.step) return;
       'Syarat reseller berhasil diperbarui:\n' +
       `Minimal top up per bulan: ${formatRupiah(saved.min_topup)}`
     );
+    try {
+      const resellers = listResellersSync();
+      const notice =
+        `📢 *INFO SYARAT RESELLER DIUBAH*\n\n` +
+        `Minimal top up per bulan sekarang: ${formatRupiah(saved.min_topup)}\n\n` +
+        `Cek total top up bulan ini via menu *📊 Statistik Saya* atau command /resellerstats.\n` +
+        `Harap penuhi syarat agar status reseller tetap aktif.`;
+      for (const resellerId of resellers) {
+        await bot.telegram.sendMessage(resellerId, notice, { parse_mode: 'Markdown' });
+      }
+    } catch (e) {
+      logger.error('Gagal kirim notifikasi perubahan syarat reseller:', e.message);
+    }
     return sendAdminMenu(ctx);
   }
 
@@ -6315,6 +6325,52 @@ schedule.scheduleJob('reseller_monthly_check', resellerRule, async () => {
     await evaluateResellerTermsForPeriod(start.getTime(), end.getTime(), periodLabel);
   } catch (err) {
     logger.error('Error menjalankan evaluasi syarat reseller:', err.message);
+  }
+});
+
+const resellerWarningRule = new schedule.RecurrenceRule();
+resellerWarningRule.tz = 'Asia/Jakarta';
+resellerWarningRule.hour = 0;
+resellerWarningRule.minute = 10;
+
+schedule.scheduleJob('reseller_monthly_warning', resellerWarningRule, async () => {
+  try {
+    const now = new Date();
+    const nextMonthFirst = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const msPerDay = 24 * 60 * 60 * 1000;
+    const daysUntilFirst = Math.ceil((nextMonthFirst - now) / msPerDay);
+
+    if (daysUntilFirst !== 5) return;
+
+    const terms = loadResellerTerms();
+    const resellers = listResellersSync();
+    if (resellers.length === 0) return;
+
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const periodLabel = monthStart.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
+
+    for (const resellerId of resellers) {
+      const stats = await getResellerStatsForPeriod(resellerId, monthStart.getTime(), now.getTime());
+      if (stats.topup >= terms.min_topup) continue;
+
+      const remaining = Math.max(0, terms.min_topup - stats.topup);
+      const message =
+        `⏰ *PENGINGAT SYARAT RESELLER*\n\n` +
+        `Periode: ${periodLabel}\n` +
+        `Top up saat ini: ${formatRupiah(stats.topup)}\n` +
+        `Minimal top up: ${formatRupiah(terms.min_topup)}\n` +
+        `Sisa target: ${formatRupiah(remaining)}\n\n` +
+        `Sisa waktu: 5 hari lagi menuju reset bulan.\n` +
+        `Segera penuhi target agar status reseller tidak turun.`;
+
+      try {
+        await bot.telegram.sendMessage(resellerId, message, { parse_mode: 'Markdown' });
+      } catch (err) {
+        logger.error('Gagal kirim notifikasi pengingat reseller:', err.message);
+      }
+    }
+  } catch (err) {
+    logger.error('Error menjalankan pengingat reseller:', err.message);
   }
 });
 

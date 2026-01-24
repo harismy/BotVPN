@@ -41,23 +41,18 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 && sysctl -w net.ipv6.conf.default.di
 
 ---
 
-## 🔥 Update Terbaru
-- **Support UDP HTTP Custom**
-  - Tipe akun baru dengan output ringkas dan format copy
-- **Support Server Flag**
-  - `support_zivpn` dan `support_udp_http` di tabel `Server`
-  - Filter server otomatis berdasarkan support
-- **Syarat Reseller Dinamis**
-  - Admin set minimal top up per bulan
-  - Otomatis demote reseller jika tidak memenuhi syarat (dengan notifikasi)
-- **Top Up Manual Toggle**
-  - Tombol top up manual muncul/hilang dari menu user bisa di nonaktifkan di menu admin
-- **Perbaikan Statistik**
-  - Pendapatan reseller dihitung dari transaksi akun (create/renew)
-  - Top up bulan ini dihitung dari transaksi deposit
-- **ZiVPN UX**
-  - Jika username sudah ada, user diminta input ulang
-  - Password ZiVPN dibuat random (user hanya input username + hari)
+## Update Terbaru
+- UDP HTTP Custom sudah didukung penuh, termasuk output akun yang ringkas dan format siap copy.
+- Server sekarang punya flag `support_zivpn` dan `support_udp_http`, jadi bot hanya menampilkan server yang benar-benar mendukung layanannya.
+- Syarat reseller disederhanakan: sekarang hanya melihat total top up bulan berjalan, bukan jumlah akun.
+- Saat admin mengubah syarat reseller, semua reseller otomatis mendapat pemberitahuan. Ada reminder H-5 sebelum reset bulan.
+- Admin bisa trigger manual cek syarat reseller dan trigger backup langsung dari menu tools.
+- Top up manual bisa diaktifkan/nonaktifkan lewat menu admin, tombolnya ikut muncul/hilang di menu user.
+- Statistik reseller diperjelas: pendapatan dihitung dari transaksi akun (create/renew), top up dihitung dari transaksi deposit.
+- `/allresellerstats` kini menampilkan username Telegram, bukan hanya ID.
+- Trial tidak ikut dihitung di statistik (berdasarkan `reference_id`).
+- ZIVPN lebih ramah: jika username sudah ada akan diminta ulang, dan password dibuat random otomatis.
+- Konfigurasi API dirapikan: ORKUT username/token dan API key sekarang disimpan di `.vars.json`.
 
 ---
 
