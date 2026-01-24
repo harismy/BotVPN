@@ -4,7 +4,7 @@ Referensi awal dari [arivpnstores](https://github.com/arivpnstores), based BOT: 
 
 ---
 
-## 🚀 Instalasi Otomatis
+## Instalasi Otomatis
 Rekomendasi OS: Ubuntu 24 / Debian 12
 
 ```bash
@@ -13,12 +13,12 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 && sysctl -w net.ipv6.conf.default.di
 
 ---
 
-## 🤖 Bot Telegram
+## Bot Telegram
 [Menuju Bot Cihuyyyyy](https://t.me/BOT1FORCR_STORE_bot)
 
 ---
 
-## ✨ Fitur Utama
+## Fitur Utama
 
 ### Untuk User
 - Pembelian akun otomatis: SSH, VMESS, VLESS, TROJAN, ZiVPN, dan UDP HTTP Custom
@@ -51,7 +51,7 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 && sysctl -w net.ipv6.conf.default.di
   - Admin set minimal top up per bulan
   - Otomatis demote reseller jika tidak memenuhi syarat (dengan notifikasi)
 - **Top Up Manual Toggle**
-  - Tombol top up manual muncul/hilang dari menu user
+  - Tombol top up manual muncul/hilang dari menu user bisa di nonaktifkan di menu admin
 - **Perbaikan Statistik**
   - Pendapatan reseller dihitung dari transaksi akun (create/renew)
   - Top up bulan ini dihitung dari transaksi deposit
@@ -61,7 +61,7 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 && sysctl -w net.ipv6.conf.default.di
 
 ---
 
-## 💳 Sistem Pembayaran (Top Up Otomatis)
+## Sistem Pembayaran (Top Up Otomatis)
 
 ### Data QRIS
 Gunakan tools berikut untuk extract data QRIS:  
@@ -71,6 +71,7 @@ https://qreader.online/
 Input saat instalasi melalui `start` (disimpan ke `.vars.json`):
 - `ORKUT_USERNAME`
 - `ORKUT_TOKEN`
+- `Untuk api key bisa chat ke +6289612745096`
 
 Jika `ORKUT_USERNAME/ORKUT_TOKEN` belum diisi:
 - Menu top up otomatis akan nonaktif
@@ -78,7 +79,7 @@ Jika `ORKUT_USERNAME/ORKUT_TOKEN` belum diisi:
 
 ---
 
-## 🗄️ Database
+## Database
 Database utama: `sellvpn.db`
 
 Auto-migrasi saat bot start:
@@ -87,5 +88,5 @@ Auto-migrasi saat bot start:
 
 ---
 
-## 📌 Catatan
+## Catatan
 Pastikan file disimpan UTF-8 agar emoji tampil normal.
