@@ -12,8 +12,6 @@ const resellerTermsPath = path.join(__dirname, 'reseller_terms.json');
 const defaultResellerTerms = { min_accounts: 0, min_topup: 30000 };
 const topupManualPath = path.join(__dirname, 'topup_manual.json');
 const defaultTopupManual = { enabled: true };
-const topupBonusPath = path.join(__dirname, 'topup_bonus.json');
-const defaultTopupBonus = { enabled: true, range_10_40: 0, range_50_70: 0, range_70_100: 0 };
 
 function loadResellerTerms() {
   try {
@@ -56,32 +54,6 @@ function saveTopupManualSetting(enabled) {
   const payload = { enabled: !!enabled };
   fs.writeFileSync(topupManualPath, JSON.stringify(payload, null, 2), 'utf8');
   return payload.enabled;
-}
-
-function loadTopupBonusSetting() {
-  try {
-    const raw = fs.readFileSync(topupBonusPath, 'utf8');
-    const parsed = JSON.parse(raw);
-    return {
-      enabled: parsed.enabled !== false,
-      range_10_40: Number(parsed.range_10_40) || 0,
-      range_50_70: Number(parsed.range_50_70) || 0,
-      range_70_100: Number(parsed.range_70_100) || 0
-    };
-  } catch (err) {
-    return { ...defaultTopupBonus };
-  }
-}
-
-function saveTopupBonusSetting(next) {
-  const payload = {
-    enabled: next.enabled !== false,
-    range_10_40: Math.max(0, Math.min(100, Number(next.range_10_40) || 0)),
-    range_50_70: Math.max(0, Math.min(100, Number(next.range_50_70) || 0)),
-    range_70_100: Math.max(0, Math.min(100, Number(next.range_70_100) || 0))
-  };
-  fs.writeFileSync(topupBonusPath, JSON.stringify(payload, null, 2), 'utf8');
-  return payload;
 }
 
 function formatRupiah(amount) {
@@ -1124,46 +1096,22 @@ async function sendMainMenu(ctx) {
   let globalToday = 0, globalWeek = 0, globalMonth = 0;
   try {
     userToday = await new Promise((resolve) => {
-      db.get(
-        'SELECT COUNT(*) as count FROM transactions WHERE user_id = ? AND timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http","zivpn") AND reference_id NOT LIKE "account-trial-%"',
-        [userId, todayStart],
-        (err, row) => resolve(row ? row.count : 0)
-      );
+      db.get('SELECT COUNT(*) as count FROM transactions WHERE user_id = ? AND timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http")', [userId, todayStart], (err, row) => resolve(row ? row.count : 0));
     });
     userWeek = await new Promise((resolve) => {
-      db.get(
-        'SELECT COUNT(*) as count FROM transactions WHERE user_id = ? AND timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http","zivpn") AND reference_id NOT LIKE "account-trial-%"',
-        [userId, weekStart],
-        (err, row) => resolve(row ? row.count : 0)
-      );
+      db.get('SELECT COUNT(*) as count FROM transactions WHERE user_id = ? AND timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http")', [userId, weekStart], (err, row) => resolve(row ? row.count : 0));
     });
     userMonth = await new Promise((resolve) => {
-      db.get(
-        'SELECT COUNT(*) as count FROM transactions WHERE user_id = ? AND timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http","zivpn") AND reference_id NOT LIKE "account-trial-%"',
-        [userId, monthStart],
-        (err, row) => resolve(row ? row.count : 0)
-      );
+      db.get('SELECT COUNT(*) as count FROM transactions WHERE user_id = ? AND timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http")', [userId, monthStart], (err, row) => resolve(row ? row.count : 0));
     });
     globalToday = await new Promise((resolve) => {
-      db.get(
-        'SELECT COUNT(*) as count FROM transactions WHERE timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http","zivpn") AND reference_id NOT LIKE "account-trial-%"',
-        [todayStart],
-        (err, row) => resolve(row ? row.count : 0)
-      );
+      db.get('SELECT COUNT(*) as count FROM transactions WHERE timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http")', [todayStart], (err, row) => resolve(row ? row.count : 0));
     });
     globalWeek = await new Promise((resolve) => {
-      db.get(
-        'SELECT COUNT(*) as count FROM transactions WHERE timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http","zivpn") AND reference_id NOT LIKE "account-trial-%"',
-        [weekStart],
-        (err, row) => resolve(row ? row.count : 0)
-      );
+      db.get('SELECT COUNT(*) as count FROM transactions WHERE timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http")', [weekStart], (err, row) => resolve(row ? row.count : 0));
     });
     globalMonth = await new Promise((resolve) => {
-      db.get(
-        'SELECT COUNT(*) as count FROM transactions WHERE timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http","zivpn") AND reference_id NOT LIKE "account-trial-%"',
-        [monthStart],
-        (err, row) => resolve(row ? row.count : 0)
-      );
+      db.get('SELECT COUNT(*) as count FROM transactions WHERE timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http")', [monthStart], (err, row) => resolve(row ? row.count : 0));
     });
   } catch (e) {}
 
@@ -1927,7 +1875,6 @@ async function sendAdminSaldoMenu(ctx) {
       { text: '💳 Lihat Saldo User', callback_data: 'cek_saldo_user' },
       { text: '🖼️ Upload QRIS', callback_data: 'upload_qris' }
     ],
-    [{ text: '🎁 Bonus Topup', callback_data: 'bonus_topup_menu' }],
     [{ text: manualLabel, callback_data: 'toggle_topup_manual' }],
     [{ text: '🔙 Kembali', callback_data: 'admin_menu' }]
   ];
@@ -1940,10 +1887,6 @@ async function sendAdminSaldoMenu(ctx) {
 
 async function sendAdminResellerMenu(ctx) {
   const keyboard = [
-    [
-      { text: '➕ Tambah Reseller', callback_data: 'add_reseller_menu' },
-      { text: '🗑️ Hapus Reseller', callback_data: 'del_reseller_menu' }
-    ],
     [{ text: '📜 Syarat Reseller', callback_data: 'reseller_terms_menu' }],
     [{ text: '⚡ Trigger Cek Syarat', callback_data: 'reseller_terms_trigger' }],
     [{ text: '♻️ Restore Reseller', callback_data: 'reseller_restore' }],
@@ -1955,26 +1898,6 @@ async function sendAdminResellerMenu(ctx) {
     reply_markup: { inline_keyboard: keyboard }
   });
 }
-
-bot.action('add_reseller_menu', async (ctx) => {
-  await ctx.answerCbQuery();
-  const adminId = ctx.from.id;
-  if (!adminIds.includes(adminId)) {
-    return ctx.reply('🚫 Anda tidak memiliki izin untuk melakukan tindakan ini.');
-  }
-  userState[ctx.chat.id] = { step: 'add_reseller_userid' };
-  await ctx.reply('Masukkan ID Telegram user yang ingin dijadikan reseller:');
-});
-
-bot.action('del_reseller_menu', async (ctx) => {
-  await ctx.answerCbQuery();
-  const adminId = ctx.from.id;
-  if (!adminIds.includes(adminId)) {
-    return ctx.reply('🚫 Anda tidak memiliki izin untuk melakukan tindakan ini.');
-  }
-  userState[ctx.chat.id] = { step: 'del_reseller_userid' };
-  await ctx.reply('Masukkan ID Telegram reseller yang ingin dihapus:');
-});
 
 async function sendAdminToolsMenu(ctx) {
   const keyboard = [
@@ -1999,62 +1922,6 @@ bot.action('admin_menu_server', async (ctx) => {
 bot.action('admin_menu_saldo', async (ctx) => {
   await ctx.answerCbQuery();
   await sendAdminSaldoMenu(ctx);
-});
-
-bot.action('bonus_topup_menu', async (ctx) => {
-  await ctx.answerCbQuery();
-  const adminId = ctx.from.id;
-  if (!adminIds.includes(adminId)) {
-    return ctx.reply('🚫 Anda tidak memiliki izin untuk mengubah pengaturan ini.');
-  }
-  const bonus = loadTopupBonusSetting();
-  const statusLabel = bonus.enabled ? '✅ Aktif' : '🚫 Nonaktif';
-  const message =
-    '*🎁 BONUS TOPUP OTOMATIS*\n\n' +
-    `Status: ${statusLabel}\n` +
-    `• 10-40rb  : ${bonus.range_10_40}%\n` +
-    `• 50-70rb  : ${bonus.range_50_70}%\n` +
-    `• 70-100rb+: ${bonus.range_70_100}%\n\n` +
-    'Pilih range untuk ubah persen bonus:';
-  const keyboard = [
-    [{ text: bonus.enabled ? '🚫 Nonaktifkan Bonus' : '✅ Aktifkan Bonus', callback_data: 'bonus_toggle' }],
-    [{ text: 'Set 10-40rb', callback_data: 'bonus_set_10_40' }],
-    [{ text: 'Set 50-70rb', callback_data: 'bonus_set_50_70' }],
-    [{ text: 'Set 70-100rb+', callback_data: 'bonus_set_70_100' }],
-    [{ text: '🔙 Kembali', callback_data: 'admin_menu_saldo' }]
-  ];
-  await ctx.editMessageText(message, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } });
-});
-
-bot.action('bonus_toggle', async (ctx) => {
-  await ctx.answerCbQuery();
-  const adminId = ctx.from.id;
-  if (!adminIds.includes(adminId)) {
-    return ctx.reply('🚫 Anda tidak memiliki izin untuk mengubah pengaturan ini.');
-  }
-  const current = loadTopupBonusSetting();
-  current.enabled = !current.enabled;
-  saveTopupBonusSetting(current);
-  await ctx.reply(current.enabled ? '✅ Bonus topup diaktifkan.' : '🚫 Bonus topup dinonaktifkan.');
-  return sendAdminSaldoMenu(ctx);
-});
-
-bot.action('bonus_set_10_40', async (ctx) => {
-  await ctx.answerCbQuery();
-  userState[ctx.chat.id] = { step: 'bonus_set_10_40' };
-  await ctx.reply('Masukkan persen bonus untuk topup 10-40rb (contoh: 5):');
-});
-
-bot.action('bonus_set_50_70', async (ctx) => {
-  await ctx.answerCbQuery();
-  userState[ctx.chat.id] = { step: 'bonus_set_50_70' };
-  await ctx.reply('Masukkan persen bonus untuk topup 50-70rb (contoh: 7):');
-});
-
-bot.action('bonus_set_70_100', async (ctx) => {
-  await ctx.answerCbQuery();
-  userState[ctx.chat.id] = { step: 'bonus_set_70_100' };
-  await ctx.reply('Masukkan persen bonus untuk topup 70-100rb+ (contoh: 10):');
 });
 
 bot.action('notif_settings_menu', async (ctx) => {
@@ -2380,20 +2247,9 @@ if (isDefaultCredential) {
     
     const keyboard = keyboard_nomor();
     
-    const bonusCfg = loadTopupBonusSetting();
-    const bonusInfo = bonusCfg.enabled
-      ? (
-        `🎁 *BONUS TOPUP OTOMATIS:*\n` +
-        `• 10-49rb: ${bonusCfg.range_10_40}%\n` +
-        `• 50-79rb: ${bonusCfg.range_50_70}%\n` +
-        `• 80rb+: ${bonusCfg.range_70_100}%\n\n`
-      )
-      : '';
-
     await ctx.editMessageText(
       '💰 *TOP UP SALDO OTOMATIS*\n\n' +
       '💳 *Minimal:* Rp 2.000\n\n' +
-      bonusInfo +
       '🎲 *SISTEM KEAMANAN BARU:*\n' +
       '• Biaya admin **RANDOM 100-200**\n' +
       '• Setiap transaksi punya **nominal unik**\n' +
@@ -3299,7 +3155,7 @@ try {
     filters.push('(is_reseller_only = 0 OR is_reseller_only IS NULL)');
   }
 
-  const query = `SELECT * FROM Server WHERE ${filters.join(' AND ')} ORDER BY nama_server COLLATE NOCASE ASC`;
+  const query = `SELECT * FROM Server WHERE ${filters.join(' AND ')}`;
 
 db.all(query, params, (err, servers) => {
   if (err) {
@@ -3544,71 +3400,6 @@ if (!state || !state.step) return;
       logger.error('Gagal kirim notifikasi perubahan syarat reseller:', e.message);
     }
     return sendAdminMenu(ctx);
-  }
-
-  if (state.step === 'bonus_set_10_40' || state.step === 'bonus_set_50_70' || state.step === 'bonus_set_70_100') {
-    const text = ctx.message.text.trim();
-    if (text.toLowerCase() === 'batal') {
-      delete userState[ctx.chat.id];
-      return ctx.reply('Pengaturan bonus dibatalkan.');
-    }
-    if (!/^\d+$/.test(text)) {
-      return ctx.reply('Persen harus angka 0-100. Masukkan ulang:');
-    }
-    const percent = Math.max(0, Math.min(100, parseInt(text, 10)));
-    const current = loadTopupBonusSetting();
-    if (state.step === 'bonus_set_10_40') current.range_10_40 = percent;
-    if (state.step === 'bonus_set_50_70') current.range_50_70 = percent;
-    if (state.step === 'bonus_set_70_100') current.range_70_100 = percent;
-    saveTopupBonusSetting(current);
-    delete userState[ctx.chat.id];
-    await ctx.reply('✅ Bonus topup berhasil diperbarui.');
-    return sendAdminSaldoMenu(ctx);
-  }
-
-  if (state.step === 'add_reseller_userid') {
-    const targetId = ctx.message.text.trim();
-    if (!/^\d+$/.test(targetId)) {
-      return ctx.reply('ID harus angka. Masukkan ulang:');
-    }
-
-    let resellerList = [];
-    if (fs.existsSync(resselFilePath)) {
-      const fileContent = fs.readFileSync(resselFilePath, 'utf8');
-      resellerList = fileContent.split('\n').filter(line => line.trim() !== '');
-    }
-
-    if (resellerList.includes(targetId)) {
-      delete userState[ctx.chat.id];
-      await ctx.reply(`User dengan ID ${targetId} sudah menjadi reseller.`);
-      return sendAdminResellerMenu(ctx);
-    }
-
-    fs.appendFileSync(resselFilePath, `${targetId}\n`);
-    delete userState[ctx.chat.id];
-    await ctx.reply(`✅ User dengan ID ${targetId} berhasil dijadikan reseller.`);
-    return sendAdminResellerMenu(ctx);
-  }
-
-  if (state.step === 'del_reseller_userid') {
-    const targetId = ctx.message.text.trim();
-    if (!/^\d+$/.test(targetId)) {
-      return ctx.reply('ID harus angka. Masukkan ulang:');
-    }
-
-    if (!fs.existsSync(resselFilePath)) {
-      delete userState[ctx.chat.id];
-      await ctx.reply('📁 File reseller belum dibuat.');
-      return sendAdminResellerMenu(ctx);
-    }
-
-    const fileContent = fs.readFileSync(resselFilePath, 'utf8');
-    const resellerList = fileContent.split('\n').filter(line => line.trim() !== '' && line.trim() !== targetId);
-    fs.writeFileSync(resselFilePath, resellerList.join('\n') + (resellerList.length ? '\n' : ''));
-
-    delete userState[ctx.chat.id];
-    await ctx.reply(`✅ User dengan ID ${targetId} berhasil dihapus dari daftar reseller.`);
-    return sendAdminResellerMenu(ctx);
   }
 
   if (state.step === 'reseller_restore_input') {
@@ -4229,12 +4020,14 @@ if (exp > 365) {
             } else if (type === 'ssh') {
               msg = await createssh(username, password, exp, iplimit, serverId);
               await recordAccountTransaction(ctx.from.id, 'ssh', totalHarga, action);
-            } else if (type === 'zivpn') {
-              const randomPassword = Math.random().toString(36).slice(-8);
-              usedPassword = randomPassword;
-              msg = await createzivpn(username, randomPassword, exp, iplimit, serverId);
-              await recordAccountTransaction(ctx.from.id, 'zivpn', totalHarga, action);
-            } else if (type === 'udp_http') {
+            }
+else if (type === 'zivpn') {
+  const randomPassword = Math.random().toString(36).slice(-8);
+  usedPassword = randomPassword;
+  msg = await createzivpn(username, randomPassword, exp, iplimit, serverId);
+  await recordAccountTransaction(ctx.from.id, 'zivpn', totalHarga, action);
+}
+            else if (type === 'udp_http') {
               msg = await createudphttp(username, password, exp, iplimit, serverId);
               await recordAccountTransaction(ctx.from.id, 'udp_http', totalHarga, action);
             }
@@ -4665,7 +4458,7 @@ bot.action('listserver', async (ctx) => {
     await ctx.answerCbQuery();
     
     const servers = await new Promise((resolve, reject) => {
-      db.all('SELECT * FROM Server ORDER BY nama_server COLLATE NOCASE ASC', [], (err, servers) => {
+      db.all('SELECT * FROM Server', [], (err, servers) => {
         if (err) {
           logger.error('⚠️ Kesalahan saat mengambil daftar server:', err.message);
           return reject('⚠️ *PERHATIAN! Terjadi kesalahan saat mengambil daftar server.*');
@@ -5496,16 +5289,6 @@ async function handleDepositState(ctx, userId, data) {
     const adminFee = amountNum < 5000 ? 200 : 150;
     const totalAmount = amountNum + adminFee;
     
-    const bonusCfg = loadTopupBonusSetting();
-    let bonusInfo = '';
-    if (bonusCfg.enabled && amountNum >= 10000) {
-      let bonusPercent = 0;
-      if (amountNum <= 49000) bonusPercent = bonusCfg.range_10_40;
-      else if (amountNum <= 79000) bonusPercent = bonusCfg.range_50_70;
-      else bonusPercent = bonusCfg.range_70_100;
-      bonusInfo = `\n🎁 *Bonus:* ${bonusPercent}% (akan ditambah ke saldo jika pembayaran sukses)\n`;
-    }
-
     // TAMPILAN BARU YANG PROFESIONAL
     const confirmMessage = 
 `💳 *KONFIRMASI TOP-UP*
@@ -5515,7 +5298,7 @@ async function handleDepositState(ctx, userId, data) {
 ┗━━━━━━━━━━━━━━━━━━━┛
 
 💰 *Nominal Top-up:* Rp ${amountNum.toLocaleString('id-ID')}
-${bonusInfo}💸 *Biaya Admin:* Rp 100 - Rp 200 (random)
+💸 *Biaya Admin:* Rp 100 - Rp 200 (random)
 🎯 *Perkiraan Total:* Rp ${(amountNum + 100).toLocaleString('id-ID')} - Rp ${(amountNum + 200).toLocaleString('id-ID')}
 
 ┏━━━━━━━━━━━━━━━━━━━┓
@@ -6043,31 +5826,16 @@ async function processSuccessfulPayment(deposit, uniqueCode) {
   logger.info(`💰 Processing successful payment: ${uniqueCode}`);
   
   try {
-    const bonusConfig = loadTopupBonusSetting();
-    const amountBase = deposit.originalAmount;
-    let bonusPercent = 0;
-    if (bonusConfig.enabled) {
-      if (amountBase >= 10000 && amountBase <= 49000) {
-        bonusPercent = bonusConfig.range_10_40;
-      } else if (amountBase >= 50000 && amountBase <= 79000) {
-        bonusPercent = bonusConfig.range_50_70;
-      } else if (amountBase >= 80000) {
-        bonusPercent = bonusConfig.range_70_100;
-      }
-    }
-    const bonusAmount = Math.floor((amountBase * bonusPercent) / 100);
-    const totalCredit = amountBase + bonusAmount;
-
-    // 1. UPDATE SALDO USER (HANYA NOMINAL ASLI + BONUS)
+    // 1. UPDATE SALDO USER (HANYA NOMINAL ASLI, TANPA ADMIN FEE)
     db.run('UPDATE users SET saldo = saldo + ? WHERE user_id = ?',
-      [totalCredit, deposit.userId],
+      [deposit.originalAmount, deposit.userId],
       async (err) => {
         if (err) {
           logger.error('❌ Error update saldo:', err.message);
           return;
         }
         
-        logger.info(`✅ Saldo updated: +${totalCredit} for user ${deposit.userId} (bonus ${bonusAmount})`);
+        logger.info(`✅ Saldo updated: +${deposit.originalAmount} for user ${deposit.userId}`);
         
         // 2. SIMPAN TRANSAKSI
         db.run(
@@ -6081,16 +5849,6 @@ async function processSuccessfulPayment(deposit, uniqueCode) {
             }
           }
         );
-        if (bonusAmount > 0) {
-          const bonusRef = `${deposit.referenceId}-bonus`;
-          db.run(
-            'INSERT INTO transactions (user_id, amount, type, reference_id, timestamp) VALUES (?, ?, ?, ?, ?)',
-            [deposit.userId, bonusAmount, 'deposit_bonus', bonusRef, Date.now()],
-            (err) => {
-              if (err) logger.error('❌ Error save bonus transaction:', err.message);
-            }
-          );
-        }
         
         // 3. HAPUS DARI PENDING
         delete global.pendingDeposits[uniqueCode];
@@ -6098,7 +5856,7 @@ async function processSuccessfulPayment(deposit, uniqueCode) {
         
         // 4. AMBIL SALDO TERBARU
         db.get('SELECT saldo FROM users WHERE user_id = ?', [deposit.userId], async (err, row) => {
-          const currentBalance = row ? row.saldo : totalCredit;
+          const currentBalance = row ? row.saldo : deposit.originalAmount;
           
           // 5. KIRIM NOTIFIKASI KE USER
           try {
@@ -6106,7 +5864,6 @@ async function processSuccessfulPayment(deposit, uniqueCode) {
               deposit.userId,
               `🎉 *PEMBAYARAN BERHASIL!*\n\n` +
               `💰 Top-up: Rp ${deposit.originalAmount.toLocaleString('id-ID')}\n` +
-              (bonusAmount > 0 ? `🎁 Bonus: Rp ${bonusAmount.toLocaleString('id-ID')}\n` : '') +
               `💵 Total bayar: Rp ${deposit.amount.toLocaleString('id-ID')}\n` +
               `🏦 Saldo sekarang: Rp ${currentBalance.toLocaleString('id-ID')}\n\n` +
               `🆔 Referensi: \`${deposit.referenceId}\`\n` +
@@ -6131,7 +5888,6 @@ async function processSuccessfulPayment(deposit, uniqueCode) {
                   `💰 *TOP-UP BERHASIL*\n\n` +
                   `👤 User: \`${deposit.userId}\`\n` +
                   `💸 Amount: Rp ${deposit.originalAmount.toLocaleString('id-ID')}\n` +
-                  (bonusAmount > 0 ? `🎁 Bonus: Rp ${bonusAmount.toLocaleString('id-ID')}\n` : '') +
                   `🏦 New Balance: Rp ${currentBalance.toLocaleString('id-ID')}\n` +
                   `🆔 Ref: ${deposit.referenceId.substring(0, 12)}...`,
                   { parse_mode: 'Markdown' }
