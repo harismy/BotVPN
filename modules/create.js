@@ -37,7 +37,7 @@ async function createssh(username, password, exp, iplimit, serverId) {
           d = JSON.parse(stdout);
         } catch (e) {
           console.error('❌ Gagal parsing JSON:', e.message);
-          console.error('🧪 Output:', stdout);
+          console.error('🪵 Output:', stdout);
           return resolve('❌ Format respon dari server tidak valid.');
         }
 
@@ -92,7 +92,7 @@ Upgrade[crlf]User-Agent: [ua][crlf][crlf][split]HTTP/1.1 200 OK[crlf][crlf]\`
 http://${s.hostname}:81/myvpn-config.zip
 
 ------------------------------
-*Â© Telegram Bots 1forcr - 2025*
+*© Telegram Bots 1forcr - 2025*
 *Terima kasih telah menggunakan layanan kami.*
 `;
 
@@ -136,7 +136,7 @@ async function createudphttp(username, password, exp, iplimit, serverId) {
           d = JSON.parse(stdout);
         } catch (e) {
           console.error('❌ Gagal parsing JSON:', e.message);
-          console.error('🧪 Output:', stdout);
+          console.error('🪵 Output:', stdout);
           return resolve('❌ Format respon dari server tidak valid.');
         }
 
@@ -204,7 +204,7 @@ async function createvmess(username, exp, quota, limitip, serverId) {
           d = JSON.parse(stdout);
         } catch (e) {
           console.error('❌ Gagal parsing JSON:', e.message);
-          console.error('🧪 Output:', stdout);
+          console.error('🪵 Output:', stdout);
           return resolve('❌ Format respon dari server tidak valid.');
         }
 
@@ -310,7 +310,7 @@ async function createvless(username, exp, quota, limitip, serverId) {
           d = JSON.parse(stdout);
         } catch (e) {
           console.error('❌ Gagal parsing JSON:', e.message);
-          console.error('🧪 Output:', stdout);
+          console.error('🪵 Output:', stdout);
           return resolve('❌ Format respon dari server tidak valid.');
         }
 
@@ -378,7 +378,7 @@ Up Non-TLS:
 http://${s.hostname}:81/vless-config.zip
 
 -----------------------------
-*Â© Telegram Bots 1forcr - 2025*
+*© Telegram Bots 1forcr - 2025*
 *Terima kasih telah menggunakan layanan kami.*
 `;
 
@@ -422,7 +422,7 @@ async function createtrojan(username, exp, quota, limitip, serverId) {
           d = JSON.parse(stdout);
         } catch (e) {
           console.error('❌ Gagal parsing JSON:', e.message);
-          console.error('🧪 Output:', stdout);
+          console.error('🪵 Output:', stdout);
           return resolve('❌ Format respon dari server tidak valid.');
         }
 
@@ -485,7 +485,7 @@ Up TLS:
 http://${s.hostname}:81/trojan-config.zip
 
 -----------------------------
-*Â© Telegram Bots 1forcr - 2025*
+*© Telegram Bots 1forcr - 2025*
 *Terima kasih telah menggunakan layanan kami.*
 `;
 
@@ -495,8 +495,86 @@ http://${s.hostname}:81/trojan-config.zip
   });
 }
 
-module.exports = { createssh, createudphttp, createvmess, createvless, createtrojan, createshadowsocks };
 
+//create shadowsocks ga ada di potato
+async function createshadowsocks(username, exp, quota, limitip, serverId) {
+  console.log(`Creating Shadowsocks account for ${username} with expiry ${exp} days, quota ${quota} GB, limit IP ${limitip} on server ${serverId}`);
+
+  // Validasi username
+  if (/\s/.test(username) || /[^a-zA-Z0-9]/.test(username)) {
+    return '❌ Username tidak valid. Mohon gunakan hanya huruf dan angka tanpa spasi.';
+  }
+
+  // Ambil domain dari database
+  return new Promise((resolve, reject) => {
+    db.get('SELECT * FROM Server WHERE id = ?', [serverId], (err, server) => {
+      if (err) {
+        console.error('Error fetching server:', err.message);
+        return resolve('❌ Server tidak ditemukan. Silakan coba lagi.');
+      }
+
+      if (!server) return resolve('❌ Server tidak ditemukan. Silakan coba lagi.');
+
+      const domain = server.domain;
+      const auth = server.auth;
+      const param = `:5888/createshadowsocks?user=${username}&exp=${exp}&quota=${quota}&iplimit=${limitip}&auth=${auth}`;
+      const url = `http://${domain}${param}`;
+      axios.get(url)
+        .then(response => {
+          if (response.data.status === "success") {
+            const shadowsocksData = response.data.data;
+            const msg = `
+🌟 *AKUN SHADOWSOCKS PREMIUM* 🌟
+
+🔹 *Informasi Akun*
+┌─────────────────────
+│ *Username* : \`${shadowsocksData.username}\`
+│ *Domain*   : \`${shadowsocksData.domain}\`
+│ *NS*       : \`${shadowsocksData.ns_domain}\`
+│ *Port TLS* : \`443\`
+│ *Port HTTP*: \`80\`
+│ *Alter ID* : \`0\`
+│ *Security* : \`Auto\`
+│ *Network*  : \`Websocket (WS)\`
+│ *Path*     : \`/shadowsocks\`
+│ *Path GRPC*: \`shadowsocks-grpc\`
+└─────────────────────
+🔐 *URL SHADOWSOCKS TLS*
+\`\`\`
+${shadowsocksData.ss_link_ws}
+\`\`\`
+🔒 *URL SHADOWSOCKS GRPC*
+\`\`\`
+${shadowsocksData.ss_link_grpc}
+\`\`\`
+🔒 *PUBKEY*
+\`\`\`
+${shadowsocksData.pubkey}
+\`\`\`
+┌─────────────────────
+│ Expiry: \`${shadowsocksData.expired}\`
+│ Quota: \`${shadowsocksData.quota === '0 GB' ? 'Unlimited' : shadowsocksData.quota}\`
+│ IP Limit: \`${shadowsocksData.ip_limit === '0' ? 'Unlimited' : shadowsocksData.ip_limit} IP\`
+└─────────────────────
+Save Account Link: [Save Account](https://${shadowsocksData.domain}:81/shadowsocks-${shadowsocksData.username}.txt)
+✨ Selamat menggunakan layanan kami! ✨
+`;
+            console.log('Shadowsocks account created successfully');
+            return resolve(msg);
+          } else {
+            console.log('Error creating Shadowsocks account');
+            return resolve(`❌ Terjadi kesalahan: ${response.data.message}`);
+          }
+        })
+        .catch(error => {
+          console.error('Error saat membuat Shadowsocks:', error);
+          return resolve('❌ Terjadi kesalahan saat membuat Shadowsocks. Silakan coba lagi nanti.');
+        });
+    });
+  });
+}
+
+module.exports = { createssh, createudphttp, createvmess, createvless, createtrojan, createshadowsocks };
 
 
 

@@ -1,4 +1,4 @@
-const axios = require('axios');
+﻿const axios = require('axios');
 const { exec } = require('child_process');
 const sqlite3 = require('sqlite3').verbose();
 const db = new sqlite3.Database('./sellvpn.db');
@@ -7,68 +7,6 @@ async function renewssh(username, exp, limitip, serverId) {
   console.log(`Renewing SSH account for ${username} with expiry ${exp} days, limit IP ${limitip} on server ${serverId}`);
 
   // Validasi username
-  if (/\s/.test(username) || /[^a-zA-Z0-9]/.test(username)) {
-    return '❌ Username tidak valid. Mohon gunakan hanya huruf dan angka tanpa spasi.';
-  }
-
-  return new Promise((resolve) => {
-    db.get('SELECT * FROM Server WHERE id = ?', [serverId], (err, server) => {
-      if (err || !server) {
-        console.error('❌ Error fetching server:', err?.message || 'server null');
-        return resolve('❌ Server tidak ditemukan. Silakan coba lagi.');
-      }
-
-      const domain = server.domain;
-      const param = `/vps/renewsshvpn`;
-      const web_URL = `http://${domain}${param}`; // Contoh: http://domainmu.com/vps/sshvpn
-      const AUTH_TOKEN = server.auth;
-      const days = exp;
-
-      const curlCommand = `curl -s -X PATCH "${web_URL}/${username}/${days}" \
--H "Authorization: ${AUTH_TOKEN}" \
--H "accept: application/json" \
--H "Content-Type: application/json" \
--d '{"kuota": 0}'`;
-
-      exec(curlCommand, (_, stdout) => {
-        let d;
-        try {
-          d = JSON.parse(stdout);
-        } catch (e) {
-          console.error('❌ Gagal parsing JSON:', e.message);
-          console.error('🪵 Output:', stdout);
-          return resolve('❌ Format respon dari server tidak valid.');
-        }
-
-        if (d?.meta?.code !== 200 || !d.data) {
-          console.error('❌ Respons error:', d);
-          const errMsg = d?.message || d?.meta?.message || JSON.stringify(d, null, 2);
-          return resolve(`❌ Respons error:\n${errMsg}`);
-        }
-
-        const s = d.data;
-        const msg = `✅ *Renew SSH Account Success!*
-
-🔄 *Akun berhasil diperpanjang*
-────────────────────────────
-👤 *Username*     : \`${s.username}\`
-📆 *Masa Aktif*   :
-🕒 Dari: \`${s.from}\`
-🕒 Sampai: \`${s.to}\`
-────────────────────────────
-
-✨ Terima kasih telah memperpanjang layanan kami!
-*© Telegram Bots - 2025*`;
-
-        return resolve(msg);
-      });
-    });
-  });
-}
-
-async function renewudphttp(username, exp, limitip, serverId) {
-  console.log(`Renewing UDP HTTP Custom account for ${username} with expiry ${exp} days, limit IP ${limitip} on server ${serverId}`);
-
   if (/\s/.test(username) || /[^a-zA-Z0-9]/.test(username)) {
     return 'âŒ Username tidak valid. Mohon gunakan hanya huruf dan angka tanpa spasi.';
   }
@@ -82,7 +20,7 @@ async function renewudphttp(username, exp, limitip, serverId) {
 
       const domain = server.domain;
       const param = `/vps/renewsshvpn`;
-      const web_URL = `http://${domain}${param}`;
+      const web_URL = `http://${domain}${param}`; // Contoh: http://domainmu.com/vps/sshvpn
       const AUTH_TOKEN = server.auth;
       const days = exp;
 
@@ -109,7 +47,69 @@ async function renewudphttp(username, exp, limitip, serverId) {
         }
 
         const s = d.data;
-        const msg = `âœ… *Renew UDP HTTP Custom Success!*
+        const msg = `âœ… *Renew SSH Account Success!*
+
+ðŸ”„ *Akun berhasil diperpanjang*
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ðŸ‘¤ *Username*     : \`${s.username}\`
+ðŸ“† *Masa Aktif*   :
+ðŸ•’ Dari: \`${s.from}\`
+ðŸ•’ Sampai: \`${s.to}\`
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+âœ¨ Terima kasih telah memperpanjang layanan kami!
+*Â© Telegram Bots - 2025*`;
+
+        return resolve(msg);
+      });
+    });
+  });
+}
+
+async function renewudphttp(username, exp, limitip, serverId) {
+  console.log(`Renewing UDP HTTP Custom account for ${username} with expiry ${exp} days, limit IP ${limitip} on server ${serverId}`);
+
+  if (/\s/.test(username) || /[^a-zA-Z0-9]/.test(username)) {
+    return '❌ Username tidak valid. Mohon gunakan hanya huruf dan angka tanpa spasi.';
+  }
+
+  return new Promise((resolve) => {
+    db.get('SELECT * FROM Server WHERE id = ?', [serverId], (err, server) => {
+      if (err || !server) {
+        console.error('❌ Error fetching server:', err?.message || 'server null');
+        return resolve('❌ Server tidak ditemukan. Silakan coba lagi.');
+      }
+
+      const domain = server.domain;
+      const param = `/vps/renewsshvpn`;
+      const web_URL = `http://${domain}${param}`;
+      const AUTH_TOKEN = server.auth;
+      const days = exp;
+
+      const curlCommand = `curl -s -X PATCH "${web_URL}/${username}/${days}" \
+-H "Authorization: ${AUTH_TOKEN}" \
+-H "accept: application/json" \
+-H "Content-Type: application/json" \
+-d '{"kuota": 0}'`;
+
+      exec(curlCommand, (_, stdout) => {
+        let d;
+        try {
+          d = JSON.parse(stdout);
+        } catch (e) {
+          console.error('❌ Gagal parsing JSON:', e.message);
+          console.error('🪵 Output:', stdout);
+          return resolve('❌ Format respon dari server tidak valid.');
+        }
+
+        if (d?.meta?.code !== 200 || !d.data) {
+          console.error('❌ Respons error:', d);
+          const errMsg = d?.message || d?.meta?.message || JSON.stringify(d, null, 2);
+          return resolve(`❌ Respons error:\n${errMsg}`);
+        }
+
+        const s = d.data;
+        const msg = `✅ *Renew UDP HTTP Custom Success!*
 
 *Username* : \`${s.username}\`
 *Expired*  : \`${s.to || s.exp || 'N/A'}\``;
@@ -124,14 +124,14 @@ async function renewvmess(username, exp, quota, limitip, serverId) {
 
   // Validasi username
   if (/\s/.test(username) || /[^a-zA-Z0-9]/.test(username)) {
-    return '❌ Username tidak valid. Mohon gunakan hanya huruf dan angka tanpa spasi.';
+    return 'âŒ Username tidak valid. Mohon gunakan hanya huruf dan angka tanpa spasi.';
   }
 
   return new Promise((resolve) => {
     db.get('SELECT * FROM Server WHERE id = ?', [serverId], (err, server) => {
       if (err || !server) {
-        console.error('❌ Error fetching server:', err?.message || 'server null');
-        return resolve('❌ Server tidak ditemukan. Silakan coba lagi.');
+        console.error('âŒ Error fetching server:', err?.message || 'server null');
+        return resolve('âŒ Server tidak ditemukan. Silakan coba lagi.');
       }
 
       const domain = server.domain;
@@ -152,31 +152,31 @@ async function renewvmess(username, exp, quota, limitip, serverId) {
         try {
           d = JSON.parse(stdout);
         } catch (e) {
-          console.error('❌ Gagal parsing JSON:', e.message);
-          console.error('🪵 Output:', stdout);
-          return resolve('❌ Format respon dari server tidak valid.');
+          console.error('âŒ Gagal parsing JSON:', e.message);
+          console.error('ðŸªµ Output:', stdout);
+          return resolve('âŒ Format respon dari server tidak valid.');
         }
 
         if (d?.meta?.code !== 200 || !d.data) {
-          console.error('❌ Respons error:', d);
+          console.error('âŒ Respons error:', d);
           const errMsg = d?.message || d?.meta?.message || JSON.stringify(d, null, 2);
-          return resolve(`❌ Respons error:\n${errMsg}`);
+          return resolve(`âŒ Respons error:\n${errMsg}`);
         }
 
         const s = d.data;
-        const msg = `✅ *Renew VMess Account Success!*
+        const msg = `âœ… *Renew VMess Account Success!*
 
-🔄 *Akun berhasil diperpanjang*
-────────────────────────────
-👤 *Username*    : \`${s.username}\`
-📦 *Quota*       : \`${s.quota === "0" ? "Unlimited" : s.quota} GB\`
-📅 *Masa Aktif*  :
-🕒 Dari   : \`${s.from}\`
-🕒 Sampai : \`${s.to}\`
-────────────────────────────
+ðŸ”„ *Akun berhasil diperpanjang*
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ðŸ‘¤ *Username*    : \`${s.username}\`
+ðŸ“¦ *Quota*       : \`${s.quota === "0" ? "Unlimited" : s.quota} GB\`
+ðŸ“… *Masa Aktif*  :
+ðŸ•’ Dari   : \`${s.from}\`
+ðŸ•’ Sampai : \`${s.to}\`
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-✨ Terima kasih telah memperpanjang layanan kami!
-*© Telegram Bots - 2025*`;
+âœ¨ Terima kasih telah memperpanjang layanan kami!
+*Â© Telegram Bots - 2025*`;
 
         return resolve(msg);
       });
@@ -188,14 +188,14 @@ async function renewvless(username, exp, quota, limitip, serverId) {
 
   // Validasi username
   if (/\s/.test(username) || /[^a-zA-Z0-9]/.test(username)) {
-    return '❌ Username tidak valid. Mohon gunakan hanya huruf dan angka tanpa spasi.';
+    return 'âŒ Username tidak valid. Mohon gunakan hanya huruf dan angka tanpa spasi.';
   }
 
   return new Promise((resolve) => {
     db.get('SELECT * FROM Server WHERE id = ?', [serverId], (err, server) => {
       if (err || !server) {
-        console.error('❌ Error fetching server:', err?.message || 'server null');
-        return resolve('❌ Server tidak ditemukan. Silakan coba lagi.');
+        console.error('âŒ Error fetching server:', err?.message || 'server null');
+        return resolve('âŒ Server tidak ditemukan. Silakan coba lagi.');
       }
 
       const domain = server.domain;
@@ -216,31 +216,31 @@ async function renewvless(username, exp, quota, limitip, serverId) {
         try {
           d = JSON.parse(stdout);
         } catch (e) {
-          console.error('❌ Gagal parsing JSON:', e.message);
-          console.error('🪵 Output:', stdout);
-          return resolve('❌ Format respon dari server tidak valid.');
+          console.error('âŒ Gagal parsing JSON:', e.message);
+          console.error('ðŸªµ Output:', stdout);
+          return resolve('âŒ Format respon dari server tidak valid.');
         }
 
         if (d?.meta?.code !== 200 || !d.data) {
-          console.error('❌ Respons error:', d);
+          console.error('âŒ Respons error:', d);
           const errMsg = d?.message || d?.meta?.message || JSON.stringify(d, null, 2);
-          return resolve(`❌ Respons error:\n${errMsg}`);
+          return resolve(`âŒ Respons error:\n${errMsg}`);
         }
 
         const s = d.data;
-        const msg = `✅ *Renew VLESS Account Success!*
+        const msg = `âœ… *Renew VLESS Account Success!*
 
-🔄 *Akun berhasil diperpanjang*
-────────────────────────────
-👤 *Username*    : \`${s.username}\`
-📦 *Quota*       : \`${s.quota === "0" ? "Unlimited" : s.quota} GB\`
-📅 *Masa Aktif*  :
-🕒 Dari   : \`${s.from}\`
-🕒 Sampai : \`${s.to}\`
-────────────────────────────
+ðŸ”„ *Akun berhasil diperpanjang*
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ðŸ‘¤ *Username*    : \`${s.username}\`
+ðŸ“¦ *Quota*       : \`${s.quota === "0" ? "Unlimited" : s.quota} GB\`
+ðŸ“… *Masa Aktif*  :
+ðŸ•’ Dari   : \`${s.from}\`
+ðŸ•’ Sampai : \`${s.to}\`
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-✨ Terima kasih telah memperpanjang layanan kami!
-*© Telegram Bots - 2025*`;
+âœ¨ Terima kasih telah memperpanjang layanan kami!
+*Â© Telegram Bots - 2025*`;
 
         return resolve(msg);
       });
@@ -252,14 +252,14 @@ async function renewtrojan(username, exp, quota, limitip, serverId) {
 
   // Validasi username
   if (/\s/.test(username) || /[^a-zA-Z0-9]/.test(username)) {
-    return '❌ Username tidak valid. Mohon gunakan hanya huruf dan angka tanpa spasi.';
+    return 'âŒ Username tidak valid. Mohon gunakan hanya huruf dan angka tanpa spasi.';
   }
 
   return new Promise((resolve) => {
     db.get('SELECT * FROM Server WHERE id = ?', [serverId], (err, server) => {
       if (err || !server) {
-        console.error('❌ Error fetching server:', err?.message || 'server null');
-        return resolve('❌ Server tidak ditemukan. Silakan coba lagi.');
+        console.error('âŒ Error fetching server:', err?.message || 'server null');
+        return resolve('âŒ Server tidak ditemukan. Silakan coba lagi.');
       }
 
       const domain = server.domain;
@@ -280,31 +280,31 @@ async function renewtrojan(username, exp, quota, limitip, serverId) {
         try {
           d = JSON.parse(stdout);
         } catch (e) {
-          console.error('❌ Gagal parsing JSON:', e.message);
-          console.error('🪵 Output:', stdout);
-          return resolve('❌ Format respon dari server tidak valid.');
+          console.error('âŒ Gagal parsing JSON:', e.message);
+          console.error('ðŸªµ Output:', stdout);
+          return resolve('âŒ Format respon dari server tidak valid.');
         }
 
         if (d?.meta?.code !== 200 || !d.data) {
-          console.error('❌ Respons error:', d);
+          console.error('âŒ Respons error:', d);
           const errMsg = d?.message || d?.meta?.message || JSON.stringify(d, null, 2);
-          return resolve(`❌ Respons error:\n${errMsg}`);
+          return resolve(`âŒ Respons error:\n${errMsg}`);
         }
 
         const s = d.data;
-        const msg = `✅ *Renew TROJAN Account Success!*
+        const msg = `âœ… *Renew TROJAN Account Success!*
 
-🔄 *Akun berhasil diperpanjang*
-────────────────────────────
-👤 *Username*    : \`${s.username}\`
-📦 *Quota*       : \`${s.quota === "0" ? "Unlimited" : s.quota} GB\`
-📅 *Masa Aktif*  :
-🕒 Dari   : \`${s.from}\`
-🕒 Sampai : \`${s.to}\`
-────────────────────────────
+ðŸ”„ *Akun berhasil diperpanjang*
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ðŸ‘¤ *Username*    : \`${s.username}\`
+ðŸ“¦ *Quota*       : \`${s.quota === "0" ? "Unlimited" : s.quota} GB\`
+ðŸ“… *Masa Aktif*  :
+ðŸ•’ Dari   : \`${s.from}\`
+ðŸ•’ Sampai : \`${s.to}\`
+â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-✨ Terima kasih telah memperpanjang layanan kami!
-*© Telegram Bots - 2025*`;
+âœ¨ Terima kasih telah memperpanjang layanan kami!
+*Â© Telegram Bots - 2025*`;
 
         return resolve(msg);
       });
@@ -317,7 +317,7 @@ async function renewtrojan(username, exp, quota, limitip, serverId) {
     
     // Validasi username
     if (/\s/.test(username) || /[^a-zA-Z0-9]/.test(username)) {
-      return '❌ Username tidak valid. Mohon gunakan hanya huruf dan angka tanpa spasi.';
+      return 'âŒ Username tidak valid. Mohon gunakan hanya huruf dan angka tanpa spasi.';
     }
   
     // Ambil domain dari database
@@ -325,10 +325,10 @@ async function renewtrojan(username, exp, quota, limitip, serverId) {
       db.get('SELECT * FROM Server WHERE id = ?', [serverId], (err, server) => {
         if (err) {
           console.error('Error fetching server:', err.message);
-          return resolve('❌ Server tidak ditemukan. Silakan coba lagi.');
+          return resolve('âŒ Server tidak ditemukan. Silakan coba lagi.');
         }
   
-        if (!server) return resolve('❌ Server tidak ditemukan. Silakan coba lagi.');
+        if (!server) return resolve('âŒ Server tidak ditemukan. Silakan coba lagi.');
   
         const domain = server.domain;
         const auth = server.auth;
@@ -339,32 +339,91 @@ async function renewtrojan(username, exp, quota, limitip, serverId) {
             if (response.data.status === "success") {
               const shadowsocksData = response.data.data;
               const msg = `
-  🌟 *RENEW SHADOWSOCKS PREMIUM* 🌟
+  ðŸŒŸ *RENEW SHADOWSOCKS PREMIUM* ðŸŒŸ
   
-  🔹 *Informasi Akun*
-  ┌─────────────────────────────
-  │ Username: \`${username}\`
-  │ Kadaluarsa: \`${vmessData.exp}\`
-  │ Kuota: \`${vmessData.quota}\`
-  │ Batas IP: \`${shadowsocksData.limitip} IP\`
-  └─────────────────────────────
-  ✅ Akun ${username} berhasil diperbarui
-  ✨ Selamat menggunakan layanan kami! ✨
+  ðŸ”¹ *Informasi Akun*
+  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  â”‚ Username: \`${username}\`
+  â”‚ Kadaluarsa: \`${vmessData.exp}\`
+  â”‚ Kuota: \`${vmessData.quota}\`
+  â”‚ Batas IP: \`${shadowsocksData.limitip} IP\`
+  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  âœ… Akun ${username} berhasil diperbarui
+  âœ¨ Selamat menggunakan layanan kami! âœ¨
   `;
            
                 console.log('Shadowsocks account renewed successfully');
                 return resolve(msg);
               } else {
                 console.log('Error renewing Shadowsocks account');
-                return resolve(`❌ Terjadi kesalahan: ${response.data.message}`);
+                return resolve(`âŒ Terjadi kesalahan: ${response.data.message}`);
               }
             })
           .catch(error => {
             console.error('Error saat memperbarui Shadowsocks:', error);
-            return resolve('❌ Terjadi kesalahan saat memperbarui Shadowsocks. Silakan coba lagi nanti.');
+            return resolve('âŒ Terjadi kesalahan saat memperbarui Shadowsocks. Silakan coba lagi nanti.');
           });
       });
     });
   }
   
-module.exports = { renewshadowsocks, renewtrojan, renewvless, renewvmess, renewssh, renewudphttp };
+
+async function renewzivpn(username, exp, limitip, serverId) {
+  console.log(`Renewing ZIVPN account for ${username} with expiry ${exp} days, limit IP ${limitip} on server ${serverId}`);
+
+  if (/\s/.test(username) || /[^a-zA-Z0-9]/.test(username)) {
+    return '❌ Username tidak valid. Mohon gunakan hanya huruf dan angka tanpa spasi.';
+  }
+
+  return new Promise((resolve) => {
+    db.get('SELECT * FROM Server WHERE id = ?', [serverId], (err, server) => {
+      if (err || !server) {
+        console.error('❌ Error fetching server:', err?.message || 'server null');
+        return resolve('❌ Server tidak ditemukan. Silakan coba lagi.');
+      }
+
+      const domain = server.domain;
+      const param = `/vps/renewsshvpn`;
+      const web_URL = `http://${domain}${param}`;
+      const AUTH_TOKEN = server.auth;
+      const days = exp;
+
+      const curlCommand = `curl -s -X PATCH "${web_URL}/${username}/${days}" \
+-H "Authorization: ${AUTH_TOKEN}" \
+-H "accept: application/json" \
+-H "Content-Type: application/json" \
+-d '{"kuota": 0}'`;
+
+      exec(curlCommand, (_, stdout) => {
+        let d;
+        try {
+          d = JSON.parse(stdout);
+        } catch (e) {
+          console.error('❌ Gagal parsing JSON:', e.message);
+          console.error('🪵 Output:', stdout);
+          return resolve('❌ Format respon dari server tidak valid.');
+        }
+
+        if (d?.meta?.code !== 200 || !d.data) {
+          console.error('❌ Respons error:', d);
+          const errMsg = d?.message || d?.meta?.message || JSON.stringify(d, null, 2);
+          return resolve(`❌ Respons error:\n${errMsg}`);
+        }
+
+        const s = d.data;
+        const msg = `✅ *Renew ZIVPN Success!*
+
+*Username* : \`${s.username}\`
+*Expired*  : \`${s.to || s.exp || 'N/A'}\``;
+
+        return resolve(msg);
+      });
+    });
+  });
+}
+
+module.exports = { renewshadowsocks, renewtrojan, renewvless, renewvmess, renewssh, renewudphttp, renewzivpn };
+
+
+
+

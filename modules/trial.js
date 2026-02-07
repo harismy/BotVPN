@@ -105,14 +105,14 @@ async function trialudphttp(username, password, exp, iplimit, serverId) {
   console.log(`Creating UDP HTTP Custom trial for ${username} with expiry ${exp} days, IP limit ${iplimit}, and password ${password}`);
 
   if (/\s/.test(username) || /[^a-zA-Z0-9]/.test(username)) {
-    return 'âŒ Username tidak valid. Mohon gunakan hanya huruf dan angka tanpa spasi.';
+    return '❌ Username tidak valid. Mohon gunakan hanya huruf dan angka tanpa spasi.';
   }
 
   return new Promise((resolve) => {
     db.get('SELECT * FROM Server WHERE id = ?', [serverId], (err, server) => {
       if (err || !server) {
-        console.error('âŒ Error fetching server:', err?.message || 'server null');
-        return resolve('âŒ Server tidak ditemukan. Silakan coba lagi.');
+        console.error('❌ Error fetching server:', err?.message || 'server null');
+        return resolve('❌ Server tidak ditemukan. Silakan coba lagi.');
       }
 
       const domain = server.domain;
@@ -131,15 +131,15 @@ async function trialudphttp(username, password, exp, iplimit, serverId) {
         try {
           d = JSON.parse(stdout);
         } catch (e) {
-          console.error('âŒ Gagal parsing JSON:', e.message);
-          console.error('ðŸªµ Output:', stdout);
-          return resolve('âŒ Format respon dari server tidak valid.');
+          console.error('❌ Gagal parsing JSON:', e.message);
+          console.error('🪵 Output:', stdout);
+          return resolve('❌ Format respon dari server tidak valid.');
         }
 
         if (d?.meta?.code !== 200 || !d.data) {
-          console.error('âŒ Respons error:', d);
+          console.error('❌ Respons error:', d);
           const errMsg = d?.message || d?.meta?.message || JSON.stringify(d, null, 2);
-          return resolve(`âŒ Respons error:\n${errMsg}`);
+          return resolve(`❌ Respons error:\n${errMsg}`);
         }
 
         const s = d.data;

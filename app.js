@@ -12,6 +12,8 @@ const resellerTermsPath = path.join(__dirname, 'reseller_terms.json');
 const defaultResellerTerms = { min_accounts: 0, min_topup: 30000 };
 const topupManualPath = path.join(__dirname, 'topup_manual.json');
 const defaultTopupManual = { enabled: true };
+const topupAutoPath = path.join(__dirname, 'topup_auto.json');
+const defaultTopupAuto = { enabled: true };
 const topupBonusPath = path.join(__dirname, 'topup_bonus.json');
 const defaultTopupBonus = { enabled: true, range_10_40: 0, range_50_70: 0, range_70_100: 0 };
 
@@ -58,6 +60,22 @@ function saveTopupManualSetting(enabled) {
   return payload.enabled;
 }
 
+function loadTopupAutoSetting() {
+  try {
+    const raw = fs.readFileSync(topupAutoPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    return !!parsed.enabled;
+  } catch (err) {
+    return defaultTopupAuto.enabled;
+  }
+}
+
+function saveTopupAutoSetting(enabled) {
+  const payload = { enabled: !!enabled };
+  fs.writeFileSync(topupAutoPath, JSON.stringify(payload, null, 2), 'utf8');
+  return payload.enabled;
+}
+
 function loadTopupBonusSetting() {
   try {
     const raw = fs.readFileSync(topupBonusPath, 'utf8');
@@ -86,6 +104,16 @@ function saveTopupBonusSetting(next) {
 
 function formatRupiah(amount) {
   return `Rp ${Number(amount || 0).toLocaleString('id-ID')}`;
+}
+
+function escapeHtmlLocal(text) {
+  if (!text && text !== 0) return '';
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 }
 
 const { buildPayload, headers, API_URL } = require('./api-cekpayment-orkut');
@@ -141,7 +169,8 @@ const {
   renewvmess, 
   renewvless, 
   renewtrojan, 
-  renewshadowsocks 
+  renewshadowsocks,
+  renewzivpn
 } = require('./modules/renew');
 
 const { 
@@ -253,6 +282,92 @@ function formatDateId(date) {
     return date.toISOString().slice(0, 10);
   }
 }
+
+function upsertAccountRecord(payload) {
+  const now = Date.now();
+  db.get(
+    'SELECT id FROM accounts WHERE user_id = ? AND type = ? AND username = ? AND server_id = ?',
+    [payload.userId, payload.type, payload.username, payload.serverId],
+    (err, row) => {
+      if (err) {
+        logger.error('Gagal cek akun:', err.message);
+        return;
+      }
+      if (row) {
+        db.run(
+          'UPDATE accounts SET password = ?, server_name = ?, domain = ?, link_tls = ?, link_none = ?, link_grpc = ?, link_uptls = ?, link_upntls = ?, expires_at = ? WHERE id = ?',
+          [
+            payload.password || null,
+            payload.serverName || null,
+            payload.domain || null,
+            payload.link_tls || null,
+            payload.link_none || null,
+            payload.link_grpc || null,
+            payload.link_uptls || null,
+            payload.link_upntls || null,
+            payload.expiresAt,
+            row.id
+          ]
+        );
+      } else {
+        db.run(
+          'INSERT INTO accounts (user_id, type, username, password, server_id, server_name, domain, link_tls, link_none, link_grpc, link_uptls, link_upntls, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [
+            payload.userId,
+            payload.type,
+            payload.username,
+            payload.password || null,
+            payload.serverId,
+            payload.serverName || null,
+            payload.domain || null,
+            payload.link_tls || null,
+            payload.link_none || null,
+            payload.link_grpc || null,
+            payload.link_uptls || null,
+            payload.link_upntls || null,
+            now,
+            payload.expiresAt
+          ]
+        );
+      }
+    }
+  );
+}
+
+function cleanupExpiredAccounts() {
+  const now = Date.now();
+  const cutoff = now - (3 * 24 * 60 * 60 * 1000);
+  db.run('DELETE FROM accounts WHERE expires_at IS NOT NULL AND expires_at < ?', [cutoff], (err) => {
+    if (err) {
+      logger.error('Gagal cleanup accounts expired:', err.message);
+    }
+  });
+}
+
+function extractAccountLinksFromMessage(message) {
+  const text = String(message || '');
+  const getLine = (label) => {
+    const re = new RegExp(`${label}\\s*:\\s*([^\\n]+)`, 'i');
+    const m = text.match(re);
+    return m ? m[1].replace(/[`]/g, '').trim() : null;
+  };
+
+  const linkTls = getLine('link TLS') || getLine('TLS');
+  const linkNone = getLine('link none TLS') || getLine('Non-TLS');
+  const linkGrpc = getLine('link GRPC') || getLine('gRPC');
+  const linkUpTls = getLine('link Upgrade TLS') || getLine('Up TLS');
+  const linkUpNone = getLine('link Upgrade nTLS') || getLine('Up Non-TLS');
+
+  return {
+    link_tls: linkTls,
+    link_none: linkNone,
+    link_grpc: linkGrpc,
+    link_uptls: linkUpTls,
+    link_upntls: linkUpNone
+  };
+}
+
+setInterval(cleanupExpiredAccounts, 6 * 60 * 60 * 1000);
 
 async function sendNonResellerCreateNotification(payload) {
   if (!NOTIF_BOT_TOKEN || !NOTIF_CHAT_ID) return;
@@ -474,6 +589,7 @@ db.run(`CREATE TABLE IF NOT EXISTS transactions (
 });
 
 const userState = {};
+const lastMenuMessageId = new Map();
 logger.info('User state initialized');
 
 // Tambah di section command, setelah command 'admin'
@@ -998,6 +1114,16 @@ bot.command(['start', 'menu'], async (ctx) => {
   logger.info('Start or Menu command received');
   
   const userId = ctx.from.id;
+  // hapus pesan /start atau /menu agar tidak menumpuk
+  if (ctx.message && ctx.message.text && (ctx.message.text.startsWith('/start') || ctx.message.text.startsWith('/menu'))) {
+    try {
+      await ctx.deleteMessage();
+    } catch (e) {
+      // ignore jika tidak bisa dihapus
+    }
+  }
+  ctx.state = ctx.state || {};
+  ctx.state.forceNewMenu = true;
   db.get('SELECT * FROM users WHERE user_id = ?', [userId], (err, row) => {
     if (err) {
       logger.error('Kesalahan saat memeriksa user_id:', err.message);
@@ -1019,6 +1145,8 @@ bot.command(['start', 'menu'], async (ctx) => {
 
   await sendMainMenu(ctx);
 });
+
+cleanupExpiredAccounts();
 ////////////////
 // Manual admin command: /addsaldo <user_id> <jumlah>
 bot.command('addsaldo', async (ctx) => {
@@ -1231,11 +1359,11 @@ async function sendMainMenu(ctx) {
   let keyboard = [
     [
       { text: '➕ Buat Akun', callback_data: 'service_create' },
-      { text: '♻️ Perpanjang Akun', callback_data: 'service_renew' }
+      { text: '📂 Lihat Akun Saya', callback_data: 'view_accounts' }
     ],
     [
-      { text: '📶 Cek Server', callback_data: 'cek_server' },
-      { text: '⌛ Trial Akun', callback_data: 'service_trial' }
+      { text: '⌛ Trial Akun', callback_data: 'service_trial' },
+      { text: '🧰 Menu Tools', callback_data: 'menu_tools' }
     ],
     [
      // { text: '📘 Tutorial Penggunaan Bot', callback_data: 'tutorial_bot' }
@@ -1244,12 +1372,19 @@ async function sendMainMenu(ctx) {
       { text: '🤝 Jadi Reseller harga lebih murah!!', callback_data: 'jadi_reseller' }
     ],
     [
-      { text: '💰 TopUp Saldo Otomatis', callback_data: 'topup_saldo' }
-    ],
-    [
      { text: '📞 Hubungi Admin', callback_data: 'hubungi_admin' }
     ],
   ];
+
+  if (loadTopupAutoSetting()) {
+    const topupIndex = keyboard.findIndex(row =>
+      row.some(btn => btn.callback_data === 'topup_saldo')
+    );
+    const autoRow = [{ text: '💰 TopUp Saldo Otomatis', callback_data: 'topup_saldo' }];
+    if (topupIndex === -1) {
+      keyboard.splice(4, 0, autoRow);
+    }
+  }
 
   if (loadTopupManualSetting()) {
     const topupIndex = keyboard.findIndex(row =>
@@ -1283,28 +1418,80 @@ async function sendMainMenu(ctx) {
   try {
     if (ctx.updateType === 'callback_query') {
       try {
-      await ctx.editMessageText(messageText, {
+        await ctx.editMessageText(messageText, {
           parse_mode: 'HTML',
           reply_markup: { inline_keyboard: keyboard }
         });
+        if (ctx.callbackQuery && ctx.callbackQuery.message) {
+          lastMenuMessageId.set(userId, ctx.callbackQuery.message.message_id);
+        }
       } catch (error) {
-        // Jika error karena message sudah diedit/dihapus, abaikan
         if (error && error.response && error.response.error_code === 400 &&
             (error.response.description.includes('message is not modified') ||
              error.response.description.includes('message to edit not found') ||
              error.response.description.includes('message can\'t be edited'))
         ) {
           logger.info('Edit message diabaikan karena pesan sudah diedit/dihapus atau tidak berubah.');
-    } else {
+        } else {
           logger.error('Error saat mengedit menu utama:', error);
         }
       }
     } else {
       try {
-        await ctx.reply(messageText, {
-          parse_mode: 'HTML',
-          reply_markup: { inline_keyboard: keyboard }
-        });
+        const forceNewMenu = ctx.state && ctx.state.forceNewMenu;
+        const isStartCommand = forceNewMenu || (ctx.message && typeof ctx.message.text === 'string' && (ctx.message.text.startsWith('/start') || ctx.message.text.startsWith('/menu')));
+        if (isStartCommand) {
+          if (lastMenuMessageId.has(userId)) {
+            try {
+              await ctx.telegram.deleteMessage(userId, lastMenuMessageId.get(userId));
+            } catch (e) {
+              // ignore if cannot delete
+            }
+          }
+          const sent = await ctx.reply(messageText, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+          });
+          if (sent && sent.message_id) {
+            lastMenuMessageId.set(userId, sent.message_id);
+          }
+          logger.info('Main menu sent');
+          return;
+        }
+
+        if (lastMenuMessageId.has(userId)) {
+          try {
+            await ctx.telegram.editMessageText(
+              userId,
+              lastMenuMessageId.get(userId),
+              null,
+              messageText,
+              { parse_mode: 'HTML', reply_markup: { inline_keyboard: keyboard } }
+            );
+          } catch (e) {
+            // fallback: hapus lama lalu kirim baru
+            try {
+              await ctx.telegram.deleteMessage(userId, lastMenuMessageId.get(userId));
+            } catch (delErr) {
+              // ignore jika tidak bisa dihapus
+            }
+            const sent = await ctx.reply(messageText, {
+              parse_mode: 'HTML',
+              reply_markup: { inline_keyboard: keyboard }
+            });
+            if (sent && sent.message_id) {
+              lastMenuMessageId.set(userId, sent.message_id);
+            }
+          }
+        } else {
+          const sent = await ctx.reply(messageText, {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: keyboard }
+          });
+          if (sent && sent.message_id) {
+            lastMenuMessageId.set(userId, sent.message_id);
+          }
+        }
       } catch (error) {
         logger.error('Error saat mengirim menu utama:', error);
       }
@@ -1785,6 +1972,7 @@ async function handleServiceAction(ctx, action) {
     ];
   } else if (action === 'renew') {
     keyboard = [
+      [{ text: 'Perpanjang UDP ZIVPN', callback_data: 'renew_zivpn' }],
       [
         { text: 'Perpanjang Ssh/Ovpn', callback_data: 'renew_ssh' },
         { text: 'Perpanjang UDP HTTP', callback_data: 'renew_udp_http' }
@@ -1918,6 +2106,8 @@ async function sendAdminServerMenu(ctx) {
 async function sendAdminSaldoMenu(ctx) {
   const manualEnabled = loadTopupManualSetting();
   const manualLabel = manualEnabled ? '✅ TopUp Manual: Aktif' : '🚫 TopUp Manual: Nonaktif';
+  const autoEnabled = loadTopupAutoSetting();
+  const autoLabel = autoEnabled ? '✅ TopUp Otomatis: Aktif' : '🚫 TopUp Otomatis: Nonaktif';
   const keyboard = [
     [
       { text: '💵 Tambah Saldo', callback_data: 'tambah_saldo' },
@@ -1928,6 +2118,7 @@ async function sendAdminSaldoMenu(ctx) {
       { text: '🖼️ Upload QRIS', callback_data: 'upload_qris' }
     ],
     [{ text: '🎁 Bonus Topup', callback_data: 'bonus_topup_menu' }],
+    [{ text: autoLabel, callback_data: 'toggle_topup_auto' }],
     [{ text: manualLabel, callback_data: 'toggle_topup_manual' }],
     [{ text: '🔙 Kembali', callback_data: 'admin_menu' }]
   ];
@@ -2114,6 +2305,20 @@ bot.action('toggle_topup_manual', async (ctx) => {
   const current = loadTopupManualSetting();
   const next = saveTopupManualSetting(!current);
   const statusText = next ? '✅ TopUp manual diaktifkan.' : '🚫 TopUp manual dinonaktifkan.';
+  await ctx.reply(statusText);
+  return sendAdminSaldoMenu(ctx);
+});
+
+bot.action('toggle_topup_auto', async (ctx) => {
+  await ctx.answerCbQuery();
+  const adminId = ctx.from.id;
+  if (!adminIds.includes(adminId)) {
+    return ctx.reply('🚫 Anda tidak memiliki izin untuk mengubah pengaturan ini.');
+  }
+
+  const current = loadTopupAutoSetting();
+  const next = saveTopupAutoSetting(!current);
+  const statusText = next ? '✅ TopUp otomatis diaktifkan.' : '🚫 TopUp otomatis dinonaktifkan.';
   await ctx.reply(statusText);
   return sendAdminSaldoMenu(ctx);
 });
@@ -2335,6 +2540,14 @@ bot.on('photo', async (ctx) => {
 bot.action('topup_saldo', async (ctx) => {
   try {
     await ctx.answerCbQuery();
+    if (!loadTopupAutoSetting()) {
+      await ctx.reply(
+        '❌ *TOP-UP OTOMATIS SEDANG NONAKTIF*\n\n' +
+        'Silakan gunakan menu *TopUp Manual* untuk sementara.',
+        { parse_mode: 'Markdown' }
+      );
+      return;
+    }
     
     // Cek credential OrderKuota REAL-TIME
     const { buildPayload } = require('./api-cekpayment-orkut');
@@ -2477,6 +2690,362 @@ bot.action('hubungi_admin', async (ctx) => {
     logger.error('❌ Error di tombol hubungi_admin:', error.message);
     await ctx.reply('⚠️ Terjadi kesalahan saat membuka WhatsApp. Silakan coba lagi.');
   }
+});
+
+db.run(`CREATE TABLE IF NOT EXISTS accounts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER,
+  type TEXT,
+  username TEXT,
+  password TEXT,
+  server_id INTEGER,
+  server_name TEXT,
+  domain TEXT,
+  link_tls TEXT,
+  link_none TEXT,
+  link_grpc TEXT,
+  link_uptls TEXT,
+  link_upntls TEXT,
+  created_at INTEGER,
+  expires_at INTEGER
+)`, (err) => {
+  if (err) {
+    logger.error('Kesalahan membuat tabel accounts:', err.message);
+  } else {
+    logger.info('Accounts table created or already exists');
+  }
+});
+
+db.all("PRAGMA table_info(accounts)", (err, rows) => {
+  if (err) {
+    logger.error('Error checking accounts schema:', err.message);
+    return;
+  }
+  const cols = rows.map(r => r.name);
+  if (!cols.includes('link_tls')) db.run("ALTER TABLE accounts ADD COLUMN link_tls TEXT");
+  if (!cols.includes('link_none')) db.run("ALTER TABLE accounts ADD COLUMN link_none TEXT");
+  if (!cols.includes('link_grpc')) db.run("ALTER TABLE accounts ADD COLUMN link_grpc TEXT");
+  if (!cols.includes('link_uptls')) db.run("ALTER TABLE accounts ADD COLUMN link_uptls TEXT");
+  if (!cols.includes('link_upntls')) db.run("ALTER TABLE accounts ADD COLUMN link_upntls TEXT");
+});
+
+bot.action('view_accounts', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const userId = ctx.from.id;
+  const now = Date.now();
+
+  db.get(
+    'SELECT COUNT(*) as count FROM accounts WHERE user_id = ? AND (expires_at IS NULL OR expires_at > ?)',
+    [userId, now],
+    async (err, row) => {
+      if (err) {
+        logger.error('❌ Error hitung akun aktif:', err.message);
+        return ctx.reply('❌ Terjadi kesalahan saat memuat akun.');
+      }
+      const total = row ? row.count : 0;
+      const keyboard = [
+        [{ text: '✅ Lihat Akun Aktif Saya', callback_data: 'view_accounts_active' }]
+      ];
+      if (total > 10) {
+        keyboard.push([{ text: '📂 Lihat Semua Akun Saya', callback_data: 'view_accounts_active_all' }]);
+      }
+      keyboard.push([{ text: '⌛ Lihat Akun Expired', callback_data: 'view_accounts_expired' }]);
+      keyboard.push([{ text: '🔙 Kembali', callback_data: 'send_main_menu' }]);
+
+      await ctx.reply('📂 *Lihat Akun Saya*', {
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: keyboard }
+      });
+    }
+  );
+});
+
+async function sendAccountList(ctx, isExpired, limit = 10) {
+  const userId = ctx.from.id;
+  const now = Date.now();
+  const cutoff = now - (3 * 24 * 60 * 60 * 1000);
+  if (isExpired) {
+    cleanupExpiredAccounts();
+    limit = 0;
+  }
+
+  const query = isExpired
+    ? `SELECT * FROM accounts WHERE user_id = ? AND expires_at <= ? AND expires_at >= ? ORDER BY expires_at DESC${limit ? ' LIMIT ' + limit : ''}`
+    : `SELECT * FROM accounts WHERE user_id = ? AND (expires_at IS NULL OR expires_at > ?) ORDER BY created_at DESC${limit ? ' LIMIT ' + limit : ''}`;
+  const params = isExpired ? [userId, now, cutoff] : [userId, now];
+
+  db.all(query, params, async (err, rows) => {
+    if (err) {
+      const errMsg = err && err.message ? err.message : String(err);
+      logger.error('❌ Error ambil akun:', errMsg);
+      if (errMsg.includes('no such table')) {
+        return ctx.reply('📭 Belum ada data akun. Silakan buat akun dulu.');
+      }
+      return ctx.reply('❌ Terjadi kesalahan saat mengambil data akun.');
+    }
+    if (!rows || rows.length === 0) {
+      return ctx.reply(isExpired ? '📭 Tidak ada akun expired.' : '📭 Tidak ada akun aktif.');
+    }
+
+    const escapeHtmlLocal = (text) => {
+      if (!text && text !== 0) return '';
+      return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    };
+
+    const items = rows.map((row, idx) => {
+      const expText = row.expires_at ? formatDateId(new Date(row.expires_at)) : '-';
+      const linkLines = [];
+      if (row.link_tls) linkLines.push(`• <b>Link TLS</b>: <code>${escapeHtmlLocal(row.link_tls)}</code>`);
+      if (row.link_none) linkLines.push(`• <b>Link NTLS</b>: <code>${escapeHtmlLocal(row.link_none)}</code>`);
+      if (row.link_grpc) linkLines.push(`• <b>Link GRPC</b>: <code>${escapeHtmlLocal(row.link_grpc)}</code>`);
+      return (
+        `#${idx + 1}\n` +
+        `• <b>Layanan:</b> ${escapeHtmlLocal(row.type).toUpperCase()}\n` +
+        `• <b>Username:</b> ${escapeHtmlLocal(row.username)}\n` +
+        (row.password ? `• <b>Password:</b> ${escapeHtmlLocal(row.password)}\n` : '') +
+        `• <b>Server:</b> ${escapeHtmlLocal(row.server_name || row.domain || '-')}\n` +
+        `• <b>Domain:</b> ${escapeHtmlLocal(row.domain || '-')}\n` +
+        `• <b>Expired:</b> ${escapeHtmlLocal(expText)}` +
+        (linkLines.length ? `\n${linkLines.join('\n')}` : '')
+      );
+    }).join('\n\n');
+
+    await ctx.reply(`📂 <b>${isExpired ? 'Akun Expired' : 'Akun Aktif'}</b>\n\n${items}`, { parse_mode: 'HTML' });
+  });
+}
+
+bot.action('view_accounts_active', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  await sendAccountList(ctx, false, 10);
+});
+
+bot.action('view_accounts_active_all', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  await sendAccountList(ctx, false, 0);
+});
+
+bot.action('view_accounts_expired', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  await sendAccountList(ctx, true, 0);
+});
+
+async function sendToolsMenu(ctx) {
+  const keyboard = [
+    [
+      { text: '♻️ Perpanjang Akun', callback_data: 'service_renew' },
+      { text: '📶 Cek Server', callback_data: 'cek_server' }
+    ],
+    [
+      { text: '🧩 Buat V2Ray Setting HC', callback_data: 'hc_v2ray' }
+    ],
+    [
+      { text: '💳 Riwayat TopUp', callback_data: 'topup_history' }
+    ],
+    [{ text: '🔙 Kembali', callback_data: 'send_main_menu' }]
+  ];
+
+  try {
+    if (ctx.updateType === 'callback_query') {
+      await ctx.editMessageText('*🧰 MENU TOOLS*', {
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: keyboard }
+      });
+    } else {
+      await ctx.reply('*🧰 MENU TOOLS*', {
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: keyboard }
+      });
+    }
+  } catch (error) {
+    logger.error('Error saat mengirim menu tools:', error);
+  }
+}
+
+bot.action('menu_tools', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  await sendToolsMenu(ctx);
+});
+
+bot.action('topup_history', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const userId = ctx.from.id;
+  db.all(
+    `SELECT amount, type, timestamp
+     FROM transactions
+     WHERE user_id = ? AND type IN ('deposit','deposit_bonus')
+     ORDER BY timestamp DESC
+     LIMIT 10`,
+    [userId],
+    async (err, rows) => {
+      if (err) {
+        logger.error('❌ Error ambil riwayat topup:', err.message);
+        return ctx.reply('❌ Terjadi kesalahan saat mengambil riwayat topup.');
+      }
+      if (!rows || rows.length === 0) {
+        return ctx.reply('📭 Belum ada riwayat topup.');
+      }
+
+      const items = rows.map((row, idx) => {
+        const dateText = row.timestamp ? new Date(row.timestamp).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' }) : '-';
+        const label = row.type === 'deposit_bonus' ? 'Bonus' : 'TopUp';
+        return (
+          `#${idx + 1}\n` +
+          `• <b>Tipe:</b> ${escapeHtmlLocal(label)}\n` +
+          `• <b>Nominal:</b> ${escapeHtmlLocal(formatRupiah(row.amount))}\n` +
+          `• <b>Waktu:</b> ${escapeHtmlLocal(dateText)}`
+        );
+      }).join('\n\n');
+
+      return ctx.reply(`💳 <b>Riwayat TopUp (10 terakhir)</b>\n\n${items}`, { parse_mode: 'HTML' });
+    }
+  );
+});
+
+function parseVmessLink(link) {
+  const raw = link.replace(/^vmess:\/\//i, '').trim();
+  const padded = raw.padEnd(Math.ceil(raw.length / 4) * 4, '=');
+  const decoded = Buffer.from(padded, 'base64').toString('utf8');
+  const data = JSON.parse(decoded);
+  return {
+    protocol: 'vmess',
+    address: data.add || '',
+    port: Number(data.port || 0),
+    id: data.id || '',
+    alterId: Number(data.aid || 0),
+    security: data.scy || data.security || 'auto',
+    network: data.net || 'ws',
+    path: data.path || '/',
+    host: data.host || data.sni || data.add || '',
+    tls: data.tls || '',
+    sni: data.sni || data.host || ''
+  };
+}
+
+function parseVlessLink(link) {
+  const url = new URL(link);
+  return {
+    protocol: 'vless',
+    address: url.hostname,
+    port: Number(url.port || 0),
+    id: decodeURIComponent(url.username || ''),
+    security: url.searchParams.get('security') || 'none',
+    network: url.searchParams.get('type') || 'ws',
+    path: url.searchParams.get('path') || '/',
+    host: url.searchParams.get('host') || url.searchParams.get('sni') || url.hostname,
+    sni: url.searchParams.get('sni') || ''
+  };
+}
+
+function parseTrojanLink(link) {
+  const url = new URL(link);
+  return {
+    protocol: 'trojan',
+    address: url.hostname,
+    port: Number(url.port || 0),
+    password: decodeURIComponent(url.username || ''),
+    security: url.searchParams.get('security') || 'none',
+    network: url.searchParams.get('type') || 'ws',
+    path: url.searchParams.get('path') || '/',
+    host: url.searchParams.get('host') || url.searchParams.get('sni') || url.hostname,
+    sni: url.searchParams.get('sni') || ''
+  };
+}
+
+function buildHcJson(parsed, bugHost) {
+  const address = bugHost;
+  const isTls = parsed.security === 'tls' || parsed.tls === 'tls';
+  const port = parsed.port || (isTls ? 443 : 80);
+  const outbound = {
+    mux: { enabled: false },
+    protocol: parsed.protocol,
+    settings: {},
+    streamSettings: {
+      network: parsed.network || 'ws',
+      security: isTls ? 'tls' : 'none'
+    },
+    tag: parsed.protocol.toUpperCase()
+  };
+
+  if (parsed.protocol === 'vmess') {
+    outbound.settings.vnext = [{
+      address,
+      port,
+      users: [{
+        alterId: parsed.alterId || 0,
+        id: parsed.id || '',
+        level: 8,
+        security: parsed.security === 'tls' ? 'auto' : (parsed.security || 'auto')
+      }]
+    }];
+  } else if (parsed.protocol === 'vless') {
+    outbound.settings.vnext = [{
+      address,
+      port,
+      users: [{
+        id: parsed.id || '',
+        encryption: 'none',
+        level: 8
+      }]
+    }];
+  } else if (parsed.protocol === 'trojan') {
+    outbound.settings.servers = [{
+      address,
+      port,
+      password: parsed.password || '',
+      level: 8
+    }];
+  }
+
+  if (parsed.network === 'grpc') {
+    outbound.streamSettings.grpcSettings = {
+      serviceName: (parsed.path || '').replace(/^\//, '') || parsed.protocol
+    };
+  } else if (parsed.network === 'httpupgrade') {
+    outbound.streamSettings.httpupgradeSettings = {
+      path: parsed.path || '/',
+      host: parsed.host || parsed.sni || ''
+    };
+  } else {
+    outbound.streamSettings.wsSettings = {
+      headers: { Host: parsed.host || parsed.sni || '' },
+      path: parsed.path || '/'
+    };
+  }
+
+  if (isTls) {
+    const serverName = parsed.sni || parsed.host || '';
+    outbound.streamSettings.tlsSettings = { allowInsecure: true, serverName };
+  }
+
+  return {
+    inbounds: [],
+    outbounds: [outbound],
+    policy: {
+      levels: {
+        8: {
+          connIdle: 300,
+          downlinkOnly: 1,
+          handshake: 4,
+          uplinkOnly: 1
+        }
+      }
+    }
+  };
+}
+
+bot.action('hc_v2ray', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  userState[ctx.chat.id] = { step: 'hc_link' };
+  await ctx.reply(
+    'Kirim link *VMESS/VLESS/TROJAN* (TLS/NTLS).\n' +
+    'Contoh: `vmess://...`',
+    { parse_mode: 'Markdown' }
+  );
 });
 
 // =================== HANDLER CONFIRM HAPUS SALDO ===================
@@ -3278,6 +3847,13 @@ bot.action('renew_udp_http', async (ctx) => {
   }
   await startSelectServer(ctx, 'renew', 'udp_http');
 });
+
+bot.action('renew_zivpn', async (ctx) => {
+  if (!ctx || !ctx.match) {
+    return ctx.reply('❌ *GAGAL!* Terjadi kesalahan saat memproses permintaan Anda. Silakan coba lagi nanti.', { parse_mode: 'Markdown' });
+  }
+  await startSelectServer(ctx, 'renew', 'zivpn');
+});
 async function startSelectServer(ctx, action, type, page = 0) {
 
 try {
@@ -3332,7 +3908,7 @@ db.all(query, params, (err, servers) => {
         navButtons.push({ text: '⬅️ Back', callback_data: `navigate_${action}_${type}_${currentPage - 1}` });
       }
       if (currentPage < totalPages - 1) {
-        navButtons.push({ text: '➡️ Next', callback_data: `navigate_${action}_${type}_${currentPage + 1}` });
+        navButtons.push({ text: 'Lihat server selanjutnya ➡️ Next', callback_data: `navigate_${action}_${type}_${currentPage + 1}` });
       }
     }
     if (navButtons.length > 0) keyboard.push(navButtons);
@@ -3544,6 +4120,42 @@ if (!state || !state.step) return;
       logger.error('Gagal kirim notifikasi perubahan syarat reseller:', e.message);
     }
     return sendAdminMenu(ctx);
+  }
+
+  if (state.step === 'hc_link') {
+    const text = ctx.message.text.trim();
+    let parsed;
+    try {
+      if (text.startsWith('vmess://')) {
+        parsed = parseVmessLink(text);
+      } else if (text.startsWith('vless://')) {
+        parsed = parseVlessLink(text);
+      } else if (text.startsWith('trojan://')) {
+        parsed = parseTrojanLink(text);
+      } else {
+        return ctx.reply('❌ Link tidak dikenal. Kirim link VMESS/VLESS/TROJAN yang valid.');
+      }
+    } catch (e) {
+      return ctx.reply('❌ Gagal membaca link. Pastikan link valid dan lengkap.');
+    }
+
+    userState[ctx.chat.id] = { step: 'hc_bug', parsed };
+    return ctx.reply('Masukkan *BUG/Host* yang akan dipasang ke bagian address:', { parse_mode: 'Markdown' });
+  }
+
+  if (state.step === 'hc_bug') {
+    const bug = ctx.message.text.trim();
+    if (!bug) {
+      return ctx.reply('❌ BUG tidak boleh kosong. Masukkan BUG/Host.');
+    }
+
+    const json = buildHcJson(state.parsed, bug);
+    const jsonText = JSON.stringify(json, null, 2);
+    delete userState[ctx.chat.id];
+    return ctx.reply(
+      `Berikut JSON V2Ray Setting HC:\n<pre><code>${escapeHtmlLocal(jsonText)}</code></pre>`,
+      { parse_mode: 'HTML' }
+    );
   }
 
   if (state.step === 'bonus_set_10_40' || state.step === 'bonus_set_50_70' || state.step === 'bonus_set_70_100') {
@@ -3909,27 +4521,21 @@ if (action === 'trial') {
   if (type === 'ssh') {
     const password = '1';
     msg = await trialssh(username, password, exp, iplimit, serverId);
-    await recordAccountTransaction(ctx.from.id, 'ssh', 0, 'trial');
 
   } else if (type === 'vmess') {
     msg = await trialvmess(username, exp, quota, iplimit, serverId);
-    await recordAccountTransaction(ctx.from.id, 'vmess', 0, 'trial');
 
   } else if (type === 'vless') {
     msg = await trialvless(username, exp, quota, iplimit, serverId);
-    await recordAccountTransaction(ctx.from.id, 'vless', 0, 'trial');
 
   } else if (type === 'trojan') {
     msg = await trialtrojan(username, exp, quota, iplimit, serverId);
-    await recordAccountTransaction(ctx.from.id, 'trojan', 0, 'trial');
 
   } else if (type === 'zivpn') {
     msg = await trialzivpn(serverId);
-    await recordAccountTransaction(ctx.from.id, 'zivpn', 0, 'trial');
   } else if (type === 'udp_http') {
     const password = '1';
     msg = await trialudphttp(username, password, exp, iplimit, serverId);
-    await recordAccountTransaction(ctx.from.id, 'udp_http', 0, 'trial');
   }
 
   await saveTrialAccess(ctx.from.id);
@@ -3985,7 +4591,6 @@ if (action === 'trial') {
 
       if (delFunctions[type]) {
         msg = await delFunctions[type](username, password, exp, iplimit, serverId);
-        await recordAccountTransaction(ctx.from.id, type);
       }
 
       await ctx.reply(msg, { parse_mode: 'Markdown' });
@@ -4040,7 +4645,6 @@ if (action === 'trial') {
 
       if (delFunctions[type]) {
         msg = await delFunctions[type](username, password, exp, iplimit, serverId);
-        await recordAccountTransaction(ctx.from.id, type);
       }
 
       await ctx.reply(msg, { parse_mode: 'Markdown' });
@@ -4095,7 +4699,6 @@ if (action === 'trial') {
 
       if (delFunctions[type]) {
         msg = await delFunctions[type](username, password, exp, iplimit, serverId);
-        await recordAccountTransaction(ctx.from.id, type);
       }
 
       await ctx.reply(msg, { parse_mode: 'Markdown' });
@@ -4216,52 +4819,42 @@ if (exp > 365) {
           if (action === 'create') {
             if (type === 'vmess') {
               msg = await createvmess(username, exp, quota, iplimit, serverId);
-              await recordAccountTransaction(ctx.from.id, 'vmess', totalHarga, action);
             } else if (type === 'vless') {
               msg = await createvless(username, exp, quota, iplimit, serverId);
-              await recordAccountTransaction(ctx.from.id, 'vless', totalHarga, action);
             } else if (type === 'trojan') {
               msg = await createtrojan(username, exp, quota, iplimit, serverId);
-              await recordAccountTransaction(ctx.from.id, 'trojan', totalHarga, action);
             } else if (type === 'shadowsocks') {
               msg = await createshadowsocks(username, exp, quota, iplimit, serverId);
-              await recordAccountTransaction(ctx.from.id, 'shadowsocks', totalHarga, action);
             } else if (type === 'ssh') {
               msg = await createssh(username, password, exp, iplimit, serverId);
-              await recordAccountTransaction(ctx.from.id, 'ssh', totalHarga, action);
             } else if (type === 'zivpn') {
               const randomPassword = Math.random().toString(36).slice(-8);
               usedPassword = randomPassword;
               msg = await createzivpn(username, randomPassword, exp, iplimit, serverId);
-              await recordAccountTransaction(ctx.from.id, 'zivpn', totalHarga, action);
             } else if (type === 'udp_http') {
               msg = await createudphttp(username, password, exp, iplimit, serverId);
-              await recordAccountTransaction(ctx.from.id, 'udp_http', totalHarga, action);
             }
 
-            logger.info(`Account created and transaction recorded for user ${ctx.from.id}, type: ${type}`);
+            logger.info(`Account created for user ${ctx.from.id}, type: ${type}`);
           } else if (action === 'renew') {
             if (type === 'vmess') {
               msg = await renewvmess(username, exp, quota, iplimit, serverId);
-              await recordAccountTransaction(ctx.from.id, 'vmess', totalHarga, action);
             } else if (type === 'vless') {
               msg = await renewvless(username, exp, quota, iplimit, serverId);
-              await recordAccountTransaction(ctx.from.id, 'vless', totalHarga, action);
             } else if (type === 'trojan') {
               msg = await renewtrojan(username, exp, quota, iplimit, serverId);
-              await recordAccountTransaction(ctx.from.id, 'trojan', totalHarga, action);
             } else if (type === 'shadowsocks') {
               msg = await renewshadowsocks(username, exp, quota, iplimit, serverId);
-              await recordAccountTransaction(ctx.from.id, 'shadowsocks', totalHarga, action);
             } else if (type === 'ssh') {
               msg = await renewssh(username, exp, iplimit, serverId);
-              await recordAccountTransaction(ctx.from.id, 'ssh', totalHarga, action);
             }
             else if (type === 'udp_http') {
               msg = await renewudphttp(username, exp, iplimit, serverId);
-              await recordAccountTransaction(ctx.from.id, 'udp_http', totalHarga, action);
             }
-            logger.info(`Account renewed and transaction recorded for user ${ctx.from.id}, type: ${type}`);
+            else if (type === 'zivpn') {
+              msg = await renewzivpn(username, exp, iplimit, serverId);
+            }
+            logger.info(`Account renewed for user ${ctx.from.id}, type: ${type}`);
           }
 //SALDO DATABES
 // setelah bikin akun (create/renew), kita cek hasilnya
@@ -4273,11 +4866,17 @@ if (type === 'zivpn' && action === 'create' && msgLower.includes('username sudah
   await ctx.reply('❌ username sudah ada mohon ulangi dengan username yang unik\n\nMasukkan username baru:', { parse_mode: 'Markdown' });
   return;
 }
-if (msg.includes('?') || msg.includes('❌')) {
+const isErrorMsg = msg.includes('?') || msg.includes('❌') || msgLower.includes('sudah ada') || msgLower.includes('exists') || msgLower.includes('already exists');
+if (isErrorMsg) {
   logger.error(`🔄 Rollback saldo user ${ctx.from.id}, type: ${type}, server: ${serverId}, respon: ${msg}`);
   return ctx.reply(msg, { parse_mode: 'Markdown' });
 }
 // kalau sampai sini artinya tidak ada ❌, transaksi sukses
+if (action === 'create') {
+  await recordAccountTransaction(ctx.from.id, type, totalHarga, action);
+} else if (action === 'renew') {
+  await recordAccountTransaction(ctx.from.id, type, totalHarga, action);
+}
 logger.info(`✅ Transaksi sukses untuk user ${ctx.from.id}, type: ${type}, server: ${serverId}`);
 
 db.run('UPDATE users SET saldo = saldo - ? WHERE user_id = ?', [totalHarga, ctx.from.id], (err) => {
@@ -4291,6 +4890,24 @@ db.run('UPDATE Server SET total_create_akun = total_create_akun + 1 WHERE id = ?
   if (err) {
     logger.error('⚠️ Kesalahan saat menambahkan total_create_akun:', err.message);
   }
+});
+
+const expDays = Number(exp) || 0;
+const expiresAt = expDays > 0 ? (Date.now() + expDays * 24 * 60 * 60 * 1000) : null;
+const passwordToStore = (type === 'zivpn') ? usedPassword : password;
+const linkPayload = (type === 'vmess' || type === 'vless' || type === 'trojan')
+  ? extractAccountLinksFromMessage(msg)
+  : {};
+upsertAccountRecord({
+  userId: ctx.from.id,
+  type,
+  username,
+  password: passwordToStore,
+  serverId,
+  serverName: state.serverName,
+  domain: state.serverDomain,
+  expiresAt,
+  ...linkPayload
 });
 
 if (action === 'create') {
@@ -5946,11 +6563,17 @@ async function processDeposit(ctx, amount) {
 
 // =================== POLLING MUTASI BANK ===================
 let lastPollTime = 0;
+let lastPollErrorTime = 0;
 const POLL_INTERVAL = 10000; // Poll setiap 10 detik
+const POLL_ERROR_INTERVAL = 60000; // log error maksimal 1 menit sekali
 
 async function pollBankMutations() {
   const now = Date.now();
   
+  if (!loadTopupAutoSetting()) {
+    return;
+  }
+
   // Rate limiting polling
   if (now - lastPollTime < POLL_INTERVAL) {
     return;
@@ -6032,7 +6655,12 @@ async function pollBankMutations() {
     }
     
   } catch (error) {
-    logger.error('❌ Polling error:', error.message);
+    const errMsg = error && error.message ? error.message : String(error);
+    const nowErr = Date.now();
+    if (nowErr - lastPollErrorTime > POLL_ERROR_INTERVAL) {
+      logger.error('❌ Polling error:', errMsg);
+      lastPollErrorTime = nowErr;
+    }
     // Tidak perlu throw error, polling akan coba lagi nanti
   }
 }
@@ -6957,6 +7585,17 @@ const adminMessage =
     cleanupOldDeposits();
   }, 10000);
 });
+
+
+
+
+
+
+
+
+
+
+
 
 
 
