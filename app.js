@@ -178,7 +178,8 @@ const {
   delvmess, 
   delvless, 
   deltrojan, 
-  delshadowsocks 
+  delzivpn,
+  deludphttp
 } = require('./modules/del');
 
 const { 
@@ -1986,6 +1987,7 @@ async function handleServiceAction(ctx, action) {
         { text: 'Hapus Ssh/Ovpn', callback_data: 'del_ssh' },
         { text: 'Hapus UDP HTTP', callback_data: 'del_udp_http' }
       ],
+      [{ text: 'Hapus UDP ZIVPN', callback_data: 'del_zivpn' }],
       [{ text: 'Hapus Vmess', callback_data: 'del_vmess' }, { text: 'Hapus Vless', callback_data: 'del_vless' }],
       [{ text: 'Hapus Trojan', callback_data: 'del_trojan' }, { text: 'Kembali', callback_data: 'send_main_menu' }]
     ];
@@ -2070,6 +2072,9 @@ bot.action('admin_menu', async (ctx) => {
 async function sendAdminServerMenu(ctx) {
   const keyboard = [
     [{ text: '➕ Add Server', callback_data: 'addserver' }],
+        [
+      { text: '🛠️ Kelola Server', callback_data: 'admin_manage_server' }
+    ],
     [
       { text: '💲 Edit Harga', callback_data: 'editserver_harga' },
       { text: '📝 Edit Nama', callback_data: 'nama_server_edit' }
@@ -2081,10 +2086,6 @@ async function sendAdminServerMenu(ctx) {
     [
       { text: '📊 Edit Quota', callback_data: 'editserver_quota' },
       { text: '📶 Edit Limit IP', callback_data: 'editserver_limit_ip' }
-    ],
-    [
-      { text: '🔢 Edit Batas', callback_data: 'editserver_batas_create_akun' },
-      { text: '🔢 Edit Total', callback_data: 'editserver_total_create_akun' }
     ],
     [
       { text: '📋 List Server', callback_data: 'listserver' },
@@ -2185,6 +2186,109 @@ async function sendAdminToolsMenu(ctx) {
 bot.action('admin_menu_server', async (ctx) => {
   await ctx.answerCbQuery();
   await sendAdminServerMenu(ctx);
+});
+
+async function sendAdminManageServerMenu(ctx) {
+  const keyboard = [
+    [{ text: '🔢 Edit Total + Batas', callback_data: 'manage_edit_total_batas' }],
+    [{ text: '🚫 Jadikan Server Penuh', callback_data: 'manage_server_full' }],
+    [{ text: '✅ Aktifkan Server Penuh', callback_data: 'manage_server_activate' }],
+    [{ text: '🔙 Kembali', callback_data: 'admin_menu_server' }]
+  ];
+
+  await ctx.editMessageText('*🛠️ KELOLA SERVER*', {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: keyboard }
+  });
+}
+
+bot.action('admin_manage_server', async (ctx) => {
+  await ctx.answerCbQuery();
+  await sendAdminManageServerMenu(ctx);
+});
+
+bot.action('manage_edit_total_batas', async (ctx) => {
+  await ctx.answerCbQuery();
+  db.all('SELECT id, nama_server FROM Server', [], async (err, servers) => {
+    if (err) {
+      logger.error('❌ Kesalahan saat mengambil daftar server:', err.message);
+      return ctx.reply('❌ Terjadi kesalahan saat mengambil daftar server.');
+    }
+    if (!servers || servers.length === 0) {
+      return ctx.reply('⚠️ Tidak ada server yang tersedia.');
+    }
+
+    const buttons = servers.map(server => ({
+      text: server.nama_server,
+      callback_data: `edit_total_batas_${server.id}`
+    }));
+    const inlineKeyboard = [];
+    for (let i = 0; i < buttons.length; i += 2) {
+      inlineKeyboard.push(buttons.slice(i, i + 2));
+    }
+    inlineKeyboard.push([{ text: '🔙 Kembali', callback_data: 'admin_manage_server' }]);
+
+    await ctx.reply('📊 Pilih server untuk edit total+batas:', {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: inlineKeyboard }
+    });
+  });
+});
+
+bot.action('manage_server_full', async (ctx) => {
+  await ctx.answerCbQuery();
+  db.all('SELECT id, nama_server FROM Server', [], async (err, servers) => {
+    if (err) {
+      logger.error('❌ Kesalahan saat mengambil daftar server:', err.message);
+      return ctx.reply('❌ Terjadi kesalahan saat mengambil daftar server.');
+    }
+    if (!servers || servers.length === 0) {
+      return ctx.reply('⚠️ Tidak ada server yang tersedia.');
+    }
+
+    const buttons = servers.map(server => ({
+      text: server.nama_server,
+      callback_data: `set_server_full_${server.id}`
+    }));
+    const inlineKeyboard = [];
+    for (let i = 0; i < buttons.length; i += 2) {
+      inlineKeyboard.push(buttons.slice(i, i + 2));
+    }
+    inlineKeyboard.push([{ text: '🔙 Kembali', callback_data: 'admin_manage_server' }]);
+
+    await ctx.reply('🚫 Pilih server yang akan dijadikan penuh:', {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: inlineKeyboard }
+    });
+  });
+});
+
+bot.action('manage_server_activate', async (ctx) => {
+  await ctx.answerCbQuery();
+  db.all('SELECT id, nama_server FROM Server', [], async (err, servers) => {
+    if (err) {
+      logger.error('❌ Kesalahan saat mengambil daftar server:', err.message);
+      return ctx.reply('❌ Terjadi kesalahan saat mengambil daftar server.');
+    }
+    if (!servers || servers.length === 0) {
+      return ctx.reply('⚠️ Tidak ada server yang tersedia.');
+    }
+
+    const buttons = servers.map(server => ({
+      text: server.nama_server,
+      callback_data: `activate_server_${server.id}`
+    }));
+    const inlineKeyboard = [];
+    for (let i = 0; i < buttons.length; i += 2) {
+      inlineKeyboard.push(buttons.slice(i, i + 2));
+    }
+    inlineKeyboard.push([{ text: '🔙 Kembali', callback_data: 'admin_manage_server' }]);
+
+    await ctx.reply('✅ Pilih server yang akan diaktifkan (isi ulang total & batas):', {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: inlineKeyboard }
+    });
+  });
 });
 
 bot.action('admin_menu_saldo', async (ctx) => {
@@ -3711,6 +3815,13 @@ bot.action('del_udp_http', async (ctx) => {
   await startSelectServer(ctx, 'del', 'udp_http');
 });
 
+bot.action('del_zivpn', async (ctx) => {
+  if (!ctx || !ctx.match) {
+    return ctx.reply('❌ *GAGAL!* Terjadi kesalahan saat memproses permintaan Anda. Silakan coba lagi nanti.', { parse_mode: 'Markdown' });
+  }
+  await startSelectServer(ctx, 'del', 'zivpn');
+});
+
 bot.action('del_vmess', async (ctx) => {
   if (!ctx || !ctx.match) {
     return ctx.reply('❌ *GAGAL!* Terjadi kesalahan saat memproses permintaan Anda. Silakan coba lagi nanti.', { parse_mode: 'Markdown' });
@@ -4021,7 +4132,7 @@ bot.action(/(trial)_username_(vmess|vless|trojan|shadowsocks|ssh|zivpn|udp_http)
   });
 });
 
-bot.action(/(del)_username_(vmess|vless|trojan|shadowsocks|ssh|udp_http)_(.+)/, async (ctx) => {
+bot.action(/(del)_username_(vmess|vless|trojan|ssh|udp_http|zivpn)_(.+)/, async (ctx) => {
   const [action, type, serverId] = [ctx.match[1], ctx.match[2], ctx.match[3]];
 
   userState[ctx.chat.id] = {
@@ -4176,6 +4287,43 @@ if (!state || !state.step) return;
     delete userState[ctx.chat.id];
     await ctx.reply('✅ Bonus topup berhasil diperbarui.');
     return sendAdminSaldoMenu(ctx);
+  }
+
+  if (state.step === 'edit_total_batas_input') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Edit total+batas dibatalkan.');
+    }
+
+    const parts = text.split(/\s+/);
+    if (parts.length !== 2 || !/^\d+$/.test(parts[0]) || !/^\d+$/.test(parts[1])) {
+      return ctx.reply('Format salah. Contoh: 10 50');
+    }
+
+    const total = parseInt(parts[0], 10);
+    const batas = parseInt(parts[1], 10);
+    if (total < 0 || batas < 0) {
+      return ctx.reply('Nilai tidak boleh negatif.');
+    }
+    if (total > batas) {
+      return ctx.reply('Total tidak boleh lebih besar dari batas.');
+    }
+
+    const serverId = state.serverId;
+    db.run(
+      'UPDATE Server SET total_create_akun = ?, batas_create_akun = ? WHERE id = ?',
+      [total, batas, serverId],
+      function (err) {
+        if (err) {
+          logger.error('❌ Gagal update total+batas:', err.message);
+          return ctx.reply('❌ Gagal mengupdate total+batas.');
+        }
+        delete userState[ctx.chat.id];
+        ctx.reply(`✅ Total & batas berhasil diupdate.\nTotal: ${total}\nBatas: ${batas}`);
+      }
+    );
+    return;
   }
 
   if (state.step === 'add_reseller_userid') {
@@ -4692,9 +4840,9 @@ if (action === 'trial') {
         vmess: delvmess,
         vless: delvless,
         trojan: deltrojan,
-        shadowsocks: delshadowsocks,
         ssh: delssh,
-        udp_http: delssh
+        udp_http: deludphttp,
+        zivpn: delzivpn
       };
 
       if (delFunctions[type]) {
@@ -5899,6 +6047,47 @@ bot.action(/edit_total_create_akun_(\d+)/, async (ctx) => {
     reply_markup: { inline_keyboard: keyboard_nomor_simple() },
     parse_mode: 'Markdown'
   });
+});
+
+bot.action(/edit_total_batas_(\d+)/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const serverId = ctx.match[1];
+  userState[ctx.chat.id] = { step: 'edit_total_batas_input', serverId };
+  await ctx.reply(
+    'Kirim format: <total_create_akun> <batas_create_akun>\nContoh: 10 50',
+    { parse_mode: 'Markdown' }
+  );
+});
+
+bot.action(/set_server_full_(\d+)/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const serverId = ctx.match[1];
+  db.get('SELECT batas_create_akun FROM Server WHERE id = ?', [serverId], (err, row) => {
+    if (err || !row) {
+      return ctx.reply('❌ Gagal mengambil data server.');
+    }
+    db.run(
+      'UPDATE Server SET total_create_akun = ? WHERE id = ?',
+      [row.batas_create_akun, serverId],
+      function (err2) {
+        if (err2) {
+          logger.error('❌ Gagal set server penuh:', err2.message);
+          return ctx.reply('❌ Gagal menjadikan server penuh.');
+        }
+        ctx.reply(`✅ Server berhasil dijadikan penuh (total = ${row.batas_create_akun}).`);
+      }
+    );
+  });
+});
+
+bot.action(/activate_server_(\d+)/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const serverId = ctx.match[1];
+  userState[ctx.chat.id] = { step: 'edit_total_batas_input', serverId };
+  await ctx.reply(
+    'Kirim format: <total_create_akun> <batas_create_akun>\nContoh: 10 50',
+    { parse_mode: 'Markdown' }
+  );
 });
 bot.action(/edit_limit_ip_(\d+)/, async (ctx) => {
   const serverId = ctx.match[1];
