@@ -275,8 +275,6 @@ const RAJASERVER_API_KEY = vars.RAJASERVER_API_KEY;
 const GROUP_ID = vars.GROUP_ID;
 let NOTIF_BOT_TOKEN = vars.NOTIF_BOT_TOKEN || '';
 let NOTIF_CHAT_ID = vars.NOTIF_CHAT_ID || '';
-let ADMIN_WHATSAPP = String(vars.ADMIN_WHATSAPP || vars.CONTACT_WA || '').replace(/\D/g, '');
-let ADMIN_TELEGRAM = String(vars.ADMIN_TELEGRAM || vars.CONTACT_TELEGRAM || '').trim().replace(/^@+/, '');
 
 function formatDateId(date) {
   try {
@@ -284,21 +282,6 @@ function formatDateId(date) {
   } catch (e) {
     return date.toISOString().slice(0, 10);
   }
-}
-
-function getAdminWhatsappNumber() {
-  return String(ADMIN_WHATSAPP || '').replace(/\D/g, '');
-}
-
-function getAdminWhatsappUrl() {
-  const number = getAdminWhatsappNumber();
-  return number ? `https://wa.me/${number}` : null;
-}
-
-function getAdminTelegramUsername() {
-  const normalized = String(ADMIN_TELEGRAM || '').trim().replace(/^@+/, '');
-  if (normalized) return `@${normalized}`;
-  return ADMIN_USERNAME || 'Admin';
 }
 
 function upsertAccountRecord(payload) {
@@ -1416,18 +1399,22 @@ async function sendMainMenu(ctx) {
       keyboard.splice(topupIndex + 1, 0, manualRow);
     }
   }
+
   // Jika user adalah reseller, tambahkan tombol khusus
   if (isReseller) {
-    // Letakkan menu reseller tepat di bawah baris Tools + Hubungi Admin
-    keyboard.splice(3, 0, [
-      { text: '🔐 Buka Kunci Akun', callback_data: 'service_unlock' },
+    // Sisipkan tombol reseller setelah baris "Cek Server"
+    keyboard.splice(2, 0, [
+      { text: '❌ Hapus Akun', callback_data: 'service_del' },
       { text: '🗝️ Kunci Akun', callback_data: 'service_lock' }
     ]);
-    keyboard.splice(4, 0, [
-      { text: '📊 Statistik Saya', callback_data: 'reseller_stats' }
+    keyboard.splice(3, 0, [
+      { text: '🔐 Buka Kunci Akun', callback_data: 'service_unlock' }
     ]);
-
-    logger.info('🛡️ Menu reseller ditampilkan untuk user: ' + userId);
+    keyboard.splice(4, 0, [
+    { text: '📊 Statistik Saya', callback_data: 'reseller_stats' }
+    ]);
+    
+    logger.info(`🛡️ Menu reseller ditampilkan untuk user: ${userId}`);
   }
 
   try {
@@ -1602,10 +1589,7 @@ bot.command('broadcast', async (ctx) => {
       return ctx.reply('⚠️ Anda tidak memiliki izin untuk menggunakan perintah ini.', { parse_mode: 'Markdown' });
   }
 
-  const rawText = ctx.message.text || '';
-  const message = ctx.message.reply_to_message
-    ? (ctx.message.reply_to_message.text || ctx.message.reply_to_message.caption || '')
-    : rawText.replace(/^\/broadcast(?:@\w+)?\s*/i, '');
+  const message = ctx.message.reply_to_message ? ctx.message.reply_to_message.text : ctx.message.text.split(' ').slice(1).join(' ');
   if (!message) {
       logger.info('⚠️ Pesan untuk disiarkan tidak diberikan.');
       return ctx.reply('⚠️ Mohon berikan pesan untuk disiarkan.', { parse_mode: 'Markdown' });
@@ -2191,7 +2175,6 @@ async function sendAdminToolsMenu(ctx) {
     [{ text: '📦 Backup Database', callback_data: 'backup_db' }],
     [{ text: '⏱️ Trigger Backup Sekarang', callback_data: 'auto_backup_now' }],
     [{ text: '🔔 Notif Create (Bot)', callback_data: 'notif_settings_menu' }],
-    [{ text: '📞 Kontak Admin', callback_data: 'admin_contact_settings_menu' }],
     [{ text: '🔙 Kembali', callback_data: 'admin_menu' }]
   ];
 
@@ -2210,7 +2193,7 @@ async function sendAdminManageServerMenu(ctx) {
   const keyboard = [
     [{ text: '🔢 Edit Total + Batas', callback_data: 'manage_edit_total_batas' }],
     [{ text: '🚫 Jadikan Server Penuh', callback_data: 'manage_server_full' }],
-    [{ text: '✅ Jadikan Server Tersedia', callback_data: 'manage_server_activate' }],
+    [{ text: '✅ Aktifkan Server Penuh', callback_data: 'manage_server_activate' }],
     [{ text: '🔙 Kembali', callback_data: 'admin_menu_server' }]
   ];
 
@@ -2417,52 +2400,6 @@ bot.action('notif_set_chat', async (ctx) => {
   await ctx.reply('Kirim *CHAT ID* tujuan notifikasi.\nKetik "batal" untuk membatalkan.', { parse_mode: 'Markdown' });
 });
 
-
-bot.action('admin_contact_settings_menu', async (ctx) => {
-  await ctx.answerCbQuery();
-  const adminId = ctx.from.id;
-  if (!adminIds.includes(adminId)) {
-    return ctx.reply('🚫 Anda tidak memiliki izin untuk mengakses menu ini.');
-  }
-
-  const wa = getAdminWhatsappNumber();
-  const tg = getAdminTelegramUsername();
-  const keyboard = [
-    [{ text: 'Set Nomor WhatsApp', callback_data: 'admin_set_whatsapp' }],
-    [{ text: 'Set Username Telegram', callback_data: 'admin_set_telegram' }],
-    [{ text: '🔙 Kembali', callback_data: 'admin_menu_tools' }]
-  ];
-
-  await ctx.editMessageText(
-    '*📞 PENGATURAN KONTAK ADMIN*\n\n' +
-    'WhatsApp: ' + (wa || '-') + '\n' +
-    'Telegram: `' + tg + '`',
-    {
-      parse_mode: 'Markdown',
-      reply_markup: { inline_keyboard: keyboard }
-    }
-  );
-});
-
-bot.action('admin_set_whatsapp', async (ctx) => {
-  await ctx.answerCbQuery();
-  const adminId = ctx.from.id;
-  if (!adminIds.includes(adminId)) {
-    return ctx.reply('🚫 Anda tidak memiliki izin untuk mengubah pengaturan ini.');
-  }
-  userState[ctx.chat.id] = { step: 'admin_contact_whatsapp' };
-  await ctx.reply('Kirim nomor WhatsApp admin (format internasional, contoh: 6281234567890).\nKetik "batal" untuk membatalkan.');
-});
-
-bot.action('admin_set_telegram', async (ctx) => {
-  await ctx.answerCbQuery();
-  const adminId = ctx.from.id;
-  if (!adminIds.includes(adminId)) {
-    return ctx.reply('🚫 Anda tidak memiliki izin untuk mengubah pengaturan ini.');
-  }
-  userState[ctx.chat.id] = { step: 'admin_contact_telegram' };
-  await ctx.reply('Kirim username Telegram admin (contoh: @myadmin atau myadmin).\nKetik "batal" untuk membatalkan.');
-});
 bot.action('toggle_topup_manual', async (ctx) => {
   await ctx.answerCbQuery();
   const adminId = ctx.from.id;
@@ -2803,24 +2740,24 @@ if (isDefaultCredential) {
 bot.action('hubungi_admin', async (ctx) => {
   try {
     await ctx.answerCbQuery();
-
+    
     const userId = ctx.from.id;
     const userName = ctx.from.first_name || ctx.from.username || `User ${userId}`;
-
-    const adminWhatsApp = getAdminWhatsappNumber();
-    const adminWhatsappUrl = getAdminWhatsappUrl();
-    if (!adminWhatsApp || !adminWhatsappUrl) {
-      return ctx.reply(`⚠️ Kontak WhatsApp admin belum diset. Silakan hubungi ${getAdminTelegramUsername()} terlebih dahulu.`);
-    }
-
+    
+    // Nomor WhatsApp admin
+    const adminWhatsApp = '6289527159281'; // Format internasional tanpa +
+    
+    // Pesan otomatis yang akan dikirim ke WhatsApp
     const autoMessage = encodeURIComponent(
       `Hallo min aku dari bot mau menyampaikan sesuatu\n\n` +
       `ID Telegram: ${userId}\n` +
       `Nama: ${userName}`
     );
-
-    const whatsappUrl = `${adminWhatsappUrl}?text=${autoMessage}`;
-
+    
+    // URL WhatsApp dengan nomor dan pesan otomatis
+    const whatsappUrl = `https://wa.me/${adminWhatsApp}?text=${autoMessage}`;
+    
+    // Kirim pesan dengan tombol WhatsApp
     await ctx.reply(
       `📞 *HUBUNGI ADMIN*\n\n` +
       `Klik tombol di bawah untuk menghubungi admin via WhatsApp:\n\n` +
@@ -2832,15 +2769,28 @@ bot.action('hubungi_admin', async (ctx) => {
         parse_mode: 'Markdown',
         reply_markup: {
           inline_keyboard: [
-            [{ text: '📱 Buka WhatsApp (Pesan Otomatis)', url: whatsappUrl }],
-            [{ text: '📝 Kirim Pesan Manual', url: adminWhatsappUrl }],
-            [{ text: '🔙 Kembali', callback_data: 'send_main_menu' }]
+            [
+              {
+                text: '📱 Buka WhatsApp (Pesan Otomatis)',
+                url: whatsappUrl
+              }
+            ],
+            [
+              {
+                text: '📝 Kirim Pesan Manual',
+                url: `https://wa.me/${adminWhatsApp}`
+              }
+            ],
+            [
+              { text: '🔙 Kembali', callback_data: 'send_main_menu' }
+            ]
           ]
         }
       }
     );
-
+    
     logger.info(`User ${userId} membuka menu hubungi admin`);
+    
   } catch (error) {
     logger.error('❌ Error di tombol hubungi_admin:', error.message);
     await ctx.reply('⚠️ Terjadi kesalahan saat membuka WhatsApp. Silakan coba lagi.');
@@ -3772,8 +3722,7 @@ bot.action('topup_manual', async (ctx) => {
       `📲 *Top Up Saldo Manual via QRIS*\n\n` +
       `💬 Silakan transfer menggunakan QRIS di atas.\n\n` +
       `Setelah transfer, kirim bukti pembayaran ke admin:\n` +
-      `hubungi via WhatsApp: [Klik di sini](${getAdminWhatsappUrl() || '#'})\n` +
-      `atau Telegram: \`${getAdminTelegramUsername()}\`\n\n` +
+      `hubungi via WhatsApp: [Klik di sini](http://wa.me/6289612745096)\n\n` +
       `📝 *Kirim bukti pembayaran dan sertakan format pesan seperti ini:*\n` +
       `\`\`\`\nSaya sudah top up via QRIS min dan ini ID Telegram saya ${ctx.from.id}\n\`\`\`\n\n` +
       `_Pastikan nominal sesuai dengan saldo yang ingin ditambahkan._`;
@@ -3787,7 +3736,7 @@ bot.action('topup_manual', async (ctx) => {
         }
       );
     } else {
-      await ctx.reply(`⚠️ QRIS belum diunggah oleh admin. Silakan hubungi ${getAdminTelegramUsername()}.`);
+      await ctx.reply('⚠️ QRIS belum diunggah oleh admin. Silakan hubungi @MYCAN20.');
     }
   } catch (err) {
     logger.error('❌ Error di topup_manual:', err.message);
@@ -3840,57 +3789,37 @@ bot.action('cek_saldo_user', async (ctx) => {
 
 bot.action('jadi_reseller', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
-
   const userId = ctx.from.id;
   const terms = loadResellerTerms();
-  const waUrl = getAdminWhatsappUrl();
-  const telegramAdmin = getAdminTelegramUsername();
-  const username = ctx.from.username ? '@' + ctx.from.username : '-';
-  const fullName = (ctx.from.first_name || '') + (ctx.from.last_name ? ' ' + ctx.from.last_name : '');
 
-  const autoMessage = encodeURIComponent(
-    'Halo Admin, saya ingin daftar reseller VPN.\n\n' +
-    'ID Telegram: ' + userId + '\n' +
-    'Username: ' + username + '\n' +
-    'Nama: ' + (fullName || '-') + '\n' +
-    'Siap top up awal: Rp 18.000\n\n' +
-    'Mohon info langkah lanjutnya.'
-  );
+await ctx.reply(
+  `💼 *Bergabunglah Menjadi RESELLER Resmi Kami!*\n\n` +
+  `🔥 Dapatkan harga spesial 6K per akun!!, keuntungan menarik, dan akses penuh untuk membuat akun premium langsung dari bot ini!\n\n` +
+  `📩 Hubungi admin melalui [Klik di sini](http://wa.me/6289612745096) untuk mendaftar.\n\n` +
+  `📝 *Kirim pesan ke admin dengan format berikut:*\n` +
+  `\`Mau jadi reseller ${userId}\`\n\n` +
+  `🎯 *Keuntungan jadi reseller:*\n` +
+  `• Harga akun jauh lebih murah\n` +
+  `• Bisa buat akun premium kapan saja\n` +
+  `• Dapat dukungan langsung dari admin\n` +
+  `• Bonus dan promo menarik setiap bulan\n\n` +
+  `💰 *Syarat Bergabung:*\n` +
+  `> Deposit awal sebesar *Rp18.000* (langsung masuk ke saldo akun kamu)\n` +
+  `> Minimal top up *${formatRupiah(terms.min_topup)} per bulan*\n\n` +
+  `✨ Jadilah bagian dari komunitas reseller kami dan nikmati penghasilan tambahan dari setiap penjualan akun VPN!`,
+  { parse_mode: 'Markdown' }
+);
 
-  const waAutoUrl = waUrl ? (waUrl + '?text=' + autoMessage) : null;
-
-  const message =
-    '*PROGRAM RESELLER VPN*\n\n' +
-    'Naik level jadi reseller dan dapat harga akun lebih hemat untuk jual ulang.\n\n' +
-    '*Benefit Reseller:*\n' +
-    '- Harga akun lebih murah\n' +
-    '- Bisa buat akun kapan saja\n' +
-    '- Dukungan langsung dari admin\n' +
-    '- Akses promo dan bonus reseller\n\n' +
-    '*Syarat Bergabung:*\n' +
-    '> Top up awal: *Rp 18.000* (langsung masuk saldo)\n' +
-    '> Minimal top up bulanan: *' + formatRupiah(terms.min_topup) + '*\n\n' +
-    '*Data Anda:*\n' +
-    '- ID: ' + userId + '\n' +
-    '- Username: ' + username + '\n\n' +
-    (waUrl
-      ? 'Klik tombol di bawah untuk kirim format pendaftaran otomatis ke admin via WhatsApp.'
-      : 'Nomor WhatsApp admin belum diset. Silakan hubungi admin via Telegram: ' + telegramAdmin + '.');
-
-  const inlineKeyboard = [];
-  if (waAutoUrl) {
-    inlineKeyboard.push([{ text: 'Daftar Reseller (Otomatis)', url: waAutoUrl }]);
-    inlineKeyboard.push([{ text: 'Chat WhatsApp Admin', url: waUrl }]);
-  }
-  inlineKeyboard.push([{ text: 'Kontak Telegram Admin', url: 'https://t.me/' + telegramAdmin.replace(/^@/, '') }]);
-
-  await ctx.reply(message, {
-    parse_mode: 'Markdown',
-    reply_markup: { inline_keyboard: inlineKeyboard }
-  });
 });
 
 ///////
+bot.action('addserver_reseller', async (ctx) => {
+  await ctx.answerCbQuery().catch(()=>{});
+  userState[ctx.chat.id] = { step: 'reseller_domain' };
+  await ctx.reply('🌐 Masukkan domain server reseller:');
+});
+
+////////
 bot.action('tambah_saldo', async (ctx) => {
   const adminId = ctx.from.id;
 
@@ -4510,49 +4439,6 @@ if (!state || !state.step) return;
     return sendAdminMenu(ctx);
   }
 
-  if (state.step === 'admin_contact_whatsapp') {
-    const text = ctx.message.text.trim();
-    if (text.toLowerCase() === 'batal') {
-      delete userState[ctx.chat.id];
-      return ctx.reply('Pengaturan nomor WhatsApp dibatalkan.');
-    }
-
-    const normalized = text.replace(/\D/g, '');
-    if (!/^\d{10,16}$/.test(normalized)) {
-      return ctx.reply('Nomor tidak valid. Gunakan 10-16 digit angka, contoh: 6281234567890');
-    }
-
-    ADMIN_WHATSAPP = normalized;
-    const nextVars = loadVars();
-    nextVars.ADMIN_WHATSAPP = ADMIN_WHATSAPP;
-    saveVars(nextVars);
-
-    delete userState[ctx.chat.id];
-    await ctx.reply('✅ Nomor WhatsApp admin tersimpan: ' + ADMIN_WHATSAPP);
-    return sendAdminToolsMenu(ctx);
-  }
-
-  if (state.step === 'admin_contact_telegram') {
-    const text = ctx.message.text.trim();
-    if (text.toLowerCase() === 'batal') {
-      delete userState[ctx.chat.id];
-      return ctx.reply('Pengaturan username Telegram dibatalkan.');
-    }
-
-    const normalized = text.replace(/^@+/, '').trim();
-    if (!/^[a-zA-Z0-9_]{5,32}$/.test(normalized)) {
-      return ctx.reply('Username Telegram tidak valid. Gunakan 5-32 karakter (huruf, angka, underscore).');
-    }
-
-    ADMIN_TELEGRAM = normalized;
-    const nextVars = loadVars();
-    nextVars.ADMIN_TELEGRAM = ADMIN_TELEGRAM;
-    saveVars(nextVars);
-
-    delete userState[ctx.chat.id];
-    await ctx.reply('✅ Username Telegram admin tersimpan: @' + ADMIN_TELEGRAM);
-    return sendAdminToolsMenu(ctx);
-  }
   if (state.step === 'reseller_terms_input') {
     const text = ctx.message.text.trim();
     if (text.toLowerCase() === 'batal') {
@@ -4646,39 +4532,6 @@ if (!state || !state.step) return;
     delete userState[ctx.chat.id];
     await ctx.reply('✅ Bonus topup berhasil diperbarui.');
     return sendAdminSaldoMenu(ctx);
-  }
-
-  if (state.step === 'edit_auth_by_text') {
-    const input = ctx.message.text.trim();
-    if (input.toLowerCase() === 'batal') {
-      delete userState[ctx.chat.id];
-      return ctx.reply('Edit auth dibatalkan.');
-    }
-
-    const parts = input.split(/\s+/);
-    if (parts.length < 2 || !/^\d+$/.test(parts[0])) {
-      return ctx.reply('Format salah. Gunakan: <id_server> <auth_baru>. Contoh: 12 myNewAuth123');
-    }
-
-    const serverId = parseInt(parts[0], 10);
-    const authBaru = parts.slice(1).join(' ').trim();
-    if (!authBaru) {
-      return ctx.reply('Auth baru tidak boleh kosong.');
-    }
-
-    db.run('UPDATE Server SET auth = ? WHERE id = ?', [authBaru, serverId], function (err) {
-      if (err) {
-        logger.error('? Gagal update auth via text:', err.message);
-        return ctx.reply('? Gagal mengupdate auth server.');
-      }
-      if (this.changes === 0) {
-        return ctx.reply('?? Server tidak ditemukan. Cek lagi ID server.');
-      }
-
-      delete userState[ctx.chat.id];
-      ctx.reply('? Auth server ID ' + serverId + ' berhasil diubah menjadi: ' + authBaru);
-    });
-    return;
   }
 
   if (state.step === 'edit_total_batas_input') {
@@ -6250,37 +6103,36 @@ bot.action('editserver_auth', async (ctx) => {
     await ctx.answerCbQuery();
 
     const servers = await new Promise((resolve, reject) => {
-      db.all('SELECT id, nama_server, domain, auth FROM Server ORDER BY nama_server COLLATE NOCASE ASC', [], (err, servers) => {
+      db.all('SELECT id, nama_server FROM Server', [], (err, servers) => {
         if (err) {
-          logger.error('? Kesalahan saat mengambil daftar server:', err.message);
-          return reject('?? *PERHATIAN! Terjadi kesalahan saat mengambil daftar server.*');
+          logger.error('❌ Kesalahan saat mengambil daftar server:', err.message);
+          return reject('⚠️ *PERHATIAN! Terjadi kesalahan saat mengambil daftar server.*');
         }
         resolve(servers);
       });
     });
 
     if (servers.length === 0) {
-      return ctx.reply('?? *PERHATIAN! Tidak ada server yang tersedia untuk diedit.*', { parse_mode: 'Markdown' });
+      return ctx.reply('⚠️ *PERHATIAN! Tidak ada server yang tersedia untuk diedit.*', { parse_mode: 'Markdown' });
     }
 
-    const listText = servers
-      .map((server) => `? ID ${server.id} - ${server.nama_server} (${server.domain}) | auth saat ini: ${server.auth || '-'}`)
-      .join('\n');
+    const buttons = servers.map(server => ({
+      text: server.nama_server,
+      callback_data: `edit_auth_${server.id}`
+    }));
 
-    userState[ctx.chat.id] = { step: 'edit_auth_by_text' };
+    const inlineKeyboard = [];
+    for (let i = 0; i < buttons.length; i += 2) {
+      inlineKeyboard.push(buttons.slice(i, i + 2));
+    }
 
-    await ctx.reply(
-      `?? *Edit Auth via Ketik Pesan*\n\n` +
-      `${listText}\n\n` +
-      `Kirim format:\n` +
-      `\`<id_server> <auth_baru>\`\n` +
-      `Contoh: \`12 myNewAuth123\`\n\n` +
-      `Ketik *batal* untuk membatalkan.`,
-      { parse_mode: 'Markdown' }
-    );
+    await ctx.reply('🌐 *Silakan pilih server untuk mengedit auth:*', {
+      reply_markup: { inline_keyboard: inlineKeyboard },
+      parse_mode: 'Markdown'
+    });
   } catch (error) {
-    logger.error('? Kesalahan saat memulai proses edit auth server:', error);
-    await ctx.reply(`? *${error}*`, { parse_mode: 'Markdown' });
+    logger.error('❌ Kesalahan saat memulai proses edit auth server:', error);
+    await ctx.reply(`❌ *${error}*`, { parse_mode: 'Markdown' });
   }
 });
 
@@ -7383,7 +7235,7 @@ async function handleExpiredDeposit(deposit, uniqueCode) {
       `💰 Nominal: Rp ${deposit.originalAmount.toLocaleString('id-ID')}\n` +
       `💵 Total: Rp ${deposit.amount.toLocaleString('id-ID')}\n\n` +
       `Silakan buat permintaan top-up baru.`+
-      `Jika sudah terlanjur bayar diatas 5 menit dan saldo ga masuk hubungi admin lewat WA: ${getAdminWhatsappNumber() || '-'} atau Telegram: ${getAdminTelegramUsername()}`,
+      `Jika sudah terlanjur bayar diatas 5 menit dan saldo ga masuk hubungi admin lewat WA: 089612745096`,
       { parse_mode: 'Markdown' }
     );
     
@@ -8067,7 +7919,7 @@ app.listen(port, async () => {
           '❌ *TOP-UP OTOMATIS SEMENTARA TIDAK TERSEDIA*\n\n' +
           'Admin belum mengkonfigurasi sistem pembayaran.\n' +
           'Silakan hubungi admin untuk top-up manual via QRIS.\n\n' +
-          `📞 Hubungi: ${getAdminTelegramUsername()}\n\n` +
+          '📞 Hubungi: @MYCAN20\n\n' +
           '_Admin sudah mendapatkan notifikasi untuk memperbaiki sistem._',
           { parse_mode: 'Markdown' }
         );
@@ -8167,15 +8019,6 @@ const adminMessage =
     cleanupOldDeposits();
   }, 10000);
 });
-
-
-
-
-
-
-
-
-
 
 
 
