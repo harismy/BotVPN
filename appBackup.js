@@ -525,38 +525,34 @@ db.all("PRAGMA table_info(Server)", (err, rows) => {
     logger.error('Error checking Server schema:', err.message);
     return;
   }
-
   const cols = rows.map(r => r.name);
-
-  db.serialize(() => {
-    if (!cols.includes('support_zivpn')) {
-      db.run("ALTER TABLE Server ADD COLUMN support_zivpn INTEGER DEFAULT 0");
-    }
-    if (!cols.includes('support_udp_http')) {
-      db.run("ALTER TABLE Server ADD COLUMN support_udp_http INTEGER DEFAULT 0");
-    }
-    if (!cols.includes('sync_host')) {
-      db.run("ALTER TABLE Server ADD COLUMN sync_host TEXT");
-    }
-    if (!cols.includes('sync_port')) {
-      db.run("ALTER TABLE Server ADD COLUMN sync_port INTEGER DEFAULT 8789");
-    }
-    if (!cols.includes('sync_endpoint')) {
-      db.run("ALTER TABLE Server ADD COLUMN sync_endpoint TEXT DEFAULT '/internal/account-summary'");
-    }
-    if (!cols.includes('sync_enabled')) {
-      db.run("ALTER TABLE Server ADD COLUMN sync_enabled INTEGER DEFAULT 1");
-    }
-
-    // Jalankan normalisasi setelah migrasi kolom ter-queue
-    db.run("UPDATE Server SET support_zivpn = 0 WHERE support_zivpn IS NULL");
-    db.run("UPDATE Server SET support_udp_http = 0 WHERE support_udp_http IS NULL");
-    db.run("UPDATE Server SET support_zivpn = 1 WHERE service = 'zivpn' AND support_zivpn = 0");
-    db.run("UPDATE Server SET sync_port = 8789 WHERE sync_port IS NULL OR sync_port = 0");
-    db.run("UPDATE Server SET sync_endpoint = '/internal/account-summary' WHERE sync_endpoint IS NULL OR TRIM(sync_endpoint) = ''");
-    db.run("UPDATE Server SET sync_enabled = 1 WHERE sync_enabled IS NULL");
-  });
+  if (!cols.includes('support_zivpn')) {
+    db.run("ALTER TABLE Server ADD COLUMN support_zivpn INTEGER DEFAULT 0");
+  }
+  if (!cols.includes('support_udp_http')) {
+    db.run("ALTER TABLE Server ADD COLUMN support_udp_http INTEGER DEFAULT 0");
+  }
+  if (!cols.includes('sync_host')) {
+    db.run("ALTER TABLE Server ADD COLUMN sync_host TEXT");
+  }
+  if (!cols.includes('sync_port')) {
+    db.run("ALTER TABLE Server ADD COLUMN sync_port INTEGER DEFAULT 8789");
+  }
+  if (!cols.includes('sync_endpoint')) {
+    db.run("ALTER TABLE Server ADD COLUMN sync_endpoint TEXT DEFAULT '/internal/account-summary'");
+  }
+  if (!cols.includes('sync_enabled')) {
+    db.run("ALTER TABLE Server ADD COLUMN sync_enabled INTEGER DEFAULT 1");
+  }
 });
+
+db.run("UPDATE Server SET support_zivpn = 0 WHERE support_zivpn IS NULL");
+db.run("UPDATE Server SET support_udp_http = 0 WHERE support_udp_http IS NULL");
+db.run("UPDATE Server SET support_zivpn = 1 WHERE service = 'zivpn' AND support_zivpn = 0");
+db.run("UPDATE Server SET sync_port = 8789 WHERE sync_port IS NULL OR sync_port = 0");
+db.run("UPDATE Server SET sync_endpoint = '/internal/account-summary' WHERE sync_endpoint IS NULL OR TRIM(sync_endpoint) = ''");
+db.run("UPDATE Server SET sync_enabled = 1 WHERE sync_enabled IS NULL");
+
 db.run(`CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER UNIQUE,
@@ -655,13 +651,21 @@ function normalizeSyncEndpoint(rawEndpoint) {
 }
 
 async function fetchTunnelAccountSummary(server) {
-  const req = buildTunnelSyncRequest(server);
+  const host = normalizeSyncHost(server.sync_host || server.domain);
+  if (!host) throw new Error('domain/sync_host server belum diisi');
+
+  const token = String(server.auth || '').trim();
+  if (!token) throw new Error('auth token server kosong');
+
+  const port = Number(server.sync_port) || 8789;
+  const endpoint = normalizeSyncEndpoint(server.sync_endpoint);
+  const url = `http://${host}:${port}${endpoint}`;
 
   let response;
   try {
-    response = await axios.get(req.url, {
+    response = await axios.get(url, {
       timeout: 15000,
-      headers: { 'x-sync-token': req.token }
+      headers: { 'x-sync-token': token }
     });
   } catch (error) {
     if (error.response?.data?.message) {
@@ -682,88 +686,6 @@ async function fetchTunnelAccountSummary(server) {
   const total = Number(data.total || (ssh + vmess + vless + trojan));
 
   return { ssh, vmess, vless, trojan, total };
-}
-function buildTunnelSyncRequest(server, endpointOverride = null) {
-  const host = normalizeSyncHost(server.sync_host || server.domain);
-  if (!host) throw new Error('domain/sync_host server belum diisi');
-
-  const token = String(server.auth || '').trim();
-  if (!token) throw new Error('auth token server kosong');
-
-  const port = Number(server.sync_port) || 8789;
-  const summaryEndpoint = normalizeSyncEndpoint(server.sync_endpoint);
-  const endpoint = endpointOverride
-    ? normalizeSyncEndpoint(endpointOverride)
-    : summaryEndpoint;
-
-  return {
-    host,
-    token,
-    port,
-    summaryEndpoint,
-    endpoint,
-    url: `http://${host}:${port}${endpoint}`
-  };
-}
-
-function parseDateExpToTimestamp(dateExp) {
-  const value = String(dateExp || '').trim();
-  if (!value) return null;
-  const m = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!m) return null;
-  const y = Number(m[1]);
-  const mo = Number(m[2]) - 1;
-  const d = Number(m[3]);
-  return new Date(y, mo, d, 23, 59, 59, 999).getTime();
-}
-
-function calcRemainingDaysFromDateExp(dateExp) {
-  const value = String(dateExp || '').trim();
-  const m = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!m) return 0;
-
-  const y = Number(m[1]);
-  const mo = Number(m[2]) - 1;
-  const d = Number(m[3]);
-
-  const now = new Date();
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const expDay = new Date(y, mo, d);
-  const msPerDay = 24 * 60 * 60 * 1000;
-
-  const diffDays = Math.floor((expDay.getTime() - todayStart.getTime()) / msPerDay);
-  return Math.max(0, diffDays);
-}
-
-async function fetchTunnelAccountExpiryByUsername(server, username) {
-  try {
-    const req = buildTunnelSyncRequest(server);
-    const expiryEndpoint = req.summaryEndpoint.endsWith('/account-summary')
-      ? req.summaryEndpoint.replace(/account-summary$/, 'account-expiry')
-      : '/internal/account-expiry';
-
-    const response = await axios.get(`http://${req.host}:${req.port}${expiryEndpoint}`, {
-      timeout: 15000,
-      headers: { 'x-sync-token': req.token },
-      params: { username }
-    });
-
-    const data = response?.data || {};
-    if (!data.ok || !data.found) {
-      return { found: false };
-    }
-
-    return {
-      found: true,
-      service: String(data.service || '').toLowerCase(),
-      dateExp: String(data.date_exp || '').trim(),
-      expiresAt: parseDateExpToTimestamp(data.date_exp)
-    };
-  } catch (error) {
-    const msg = error?.response?.data?.message || error.message || 'request gagal';
-    logger.warn(`fetchTunnelAccountExpiryByUsername gagal: ${msg}`);
-    return { found: false };
-  }
 }
 
 async function syncServerUsageFromTunnel(trigger = 'manual', options = {}) {
@@ -3280,17 +3202,14 @@ bot.action('delete_my_account_select_server', async (ctx) => {
   const now = Date.now();
 
   db.all(
-    `SELECT s.id AS server_id,
-            COALESCE(NULLIF(s.nama_server, ''), s.domain, 'Server') AS server_name,
-            COALESCE(a.total_accounts, 0) AS total_accounts
-     FROM Server s
-     LEFT JOIN (
-       SELECT server_id, COUNT(*) AS total_accounts
-       FROM accounts
-       WHERE user_id = ?
-         AND (expires_at IS NULL OR expires_at > ?)
-       GROUP BY server_id
-     ) a ON a.server_id = s.id
+    `SELECT a.server_id,
+            COALESCE(NULLIF(a.server_name, ''), NULLIF(s.nama_server, ''), a.domain, s.domain, 'Server') AS server_name,
+            COUNT(*) AS total_accounts
+     FROM accounts a
+     LEFT JOIN Server s ON s.id = a.server_id
+     WHERE a.user_id = ?
+       AND (a.expires_at IS NULL OR a.expires_at > ?)
+     GROUP BY a.server_id, server_name
      ORDER BY server_name COLLATE NOCASE ASC`,
     [userId, now],
     async (err, rows) => {
@@ -3300,7 +3219,7 @@ bot.action('delete_my_account_select_server', async (ctx) => {
       }
 
       if (!rows || rows.length === 0) {
-        return ctx.reply('📭 Belum ada server tersedia.');
+        return ctx.reply('📭 Kamu tidak punya akun aktif yang bisa dihapus.');
       }
 
       const keyboard = rows.map((row) => ([{
@@ -3316,6 +3235,7 @@ bot.action('delete_my_account_select_server', async (ctx) => {
     }
   );
 });
+
 bot.action(/delete_my_account_server_(\d+)/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const userId = ctx.from.id;
@@ -3341,7 +3261,6 @@ bot.action(/delete_my_account_server_(\d+)/, async (ctx) => {
         return ctx.reply('📭 Tidak ada akun aktif di server ini.', {
           reply_markup: {
             inline_keyboard: [
-              [{ text: '✍️ Hapus akun yang tidak ada di daftar akun', callback_data: 'delete_my_account_manual_username_' + serverId }],
               [{ text: '🗂️ Pilih Server Lain', callback_data: 'delete_my_account_select_server' }],
               [{ text: '🔙 Kembali', callback_data: 'send_main_menu' }]
             ]
@@ -3356,7 +3275,6 @@ bot.action(/delete_my_account_server_(\d+)/, async (ctx) => {
           callback_data: `delete_my_account_pick_${row.id}`
         }];
       });
-      keyboard.push([{ text: '✍️ Hapus via Username', callback_data: 'delete_my_account_manual_username_' + serverId }]);
       keyboard.push([{ text: '🔙 Pilih Server', callback_data: 'delete_my_account_select_server' }]);
 
       await ctx.reply('👤 *Pilih akun yang ingin dihapus:*', {
@@ -3366,17 +3284,7 @@ bot.action(/delete_my_account_server_(\d+)/, async (ctx) => {
     }
   );
 });
-bot.action(/delete_my_account_manual_username_(\d+)/, async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  const serverId = Number(ctx.match[1]);
-  userState[ctx.chat.id] = { step: 'delete_my_account_username', serverId };
-  await ctx.reply(
-    'Kirim username akun yang ingin dihapus pada server ini.\n' +
-    'Pastikan huruf kecil dan besar pada username akun harus sama persis !! \n\n' +
-    'Ketik *batal* untuk membatalkan.',
-    { parse_mode: 'Markdown' }
-  );
-});
+
 bot.action(/delete_my_account_pick_(\d+)/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const userId = ctx.from.id;
@@ -4023,46 +3931,41 @@ bot.action('reseller_tools_info', async (ctx) => {
     );
 });
 
-// CEK SERVER - LIST SERVER
-bot.action('cek_server', async (ctx) => {
-  try {
-    await ctx.answerCbQuery().catch(() => {});
+// 📡 CEK SERVER – LIST SERVER
+bot.action("cek_server", async (ctx) => {
+    try {
+        db.all("SELECT * FROM Server ORDER BY id ASC", [], async (err, rows) => {
+            if (err) {
+                logger.error("❌ Gagal mengambil data server:", err.message);
+                return ctx.reply("⚠️ Terjadi kesalahan saat mengambil data server.");
+            }
 
-    db.all('SELECT * FROM Server ORDER BY id ASC', [], async (err, rows) => {
-      if (err) {
-        logger.error('Gagal mengambil data server:', err.message);
-        return ctx.reply('Terjadi kesalahan saat mengambil data server.');
-      }
+            if (!rows || rows.length === 0) {
+                return ctx.reply("⚠️ Belum ada server yang ditambahkan.");
+            }
 
-      if (!rows || rows.length === 0) {
-        return ctx.reply('Belum ada server yang ditambahkan.');
-      }
+            let message = "🌐 *DAFTAR SERVER TERSEDIA*\n\n";
 
-      let message = 'DAFTAR SERVER TERSEDIA\n\n';
+            rows.forEach((srv) => {
+                const domainSafe = srv.domain ? srv.domain.replace(/_/g, "\\_") : "-";
 
-      rows.forEach((srv, idx) => {
-        const total = Number(srv.total_create_akun || 0);
-        const batas = Number(srv.batas_create_akun || 0);
-        const sisa = Math.max(0, batas - total);
-        const status = sisa <= 0 ? 'Penuh' : 'Tersedia';
+                message +=
+`🔰 *Nama:* ${srv.nama_server || "-"}
+🌍 *Domain:* ${domainSafe}
+🔐 *IP Limit:* ${srv.iplimit || 0}
+──────────────────────\n`;
+            });
 
-        message +=
-          `${idx + 1}. ${srv.nama_server || '-'}\n` +
-          `- Domain: ${srv.domain || '-'}\n` +
-          `- Akun Terpakai: ${total}/${batas}\n` +
-          `- Sisa Akun: ${sisa}\n` +
-          `- Status: ${status}\n\n`;
-      });
-
-      await ctx.reply(message.trim());
-    });
-  } catch (error) {
-    logger.error('Error di cek_server:', error.message);
-    return ctx.reply('Terjadi kesalahan.');
-  }
+            await ctx.reply(message, { parse_mode: "Markdown" });
+        });
+    } catch (error) {
+        logger.error("❌ Error di cek_server:", error);
+        return ctx.reply("⚠️ Terjadi kesalahan.");
+    }
 });
 
-// === TUTORIAL PENGGUNAAN BOT ===
+
+// === 🎥 TUTORIAL PENGGUNAAN BOT ===
 bot.action('tutorial_bot', async (ctx) => {
   try {
     await ctx.reply(
@@ -4935,148 +4838,60 @@ if (!state || !state.step) return;
     return sendAdminMenu(ctx);
   }
 
-  if (state.step === 'delete_my_account_username') {
-    const input = ctx.message.text.trim();
-    if (input.toLowerCase() === 'batal') {
-      delete userState[ctx.chat.id];
-      return ctx.reply('Hapus akun berdasarkan username dibatalkan.');
-    }
-
-    const username = input;
-    const userId = ctx.from.id;
-    const serverId = Number(state.serverId);
-    const now = Date.now();
-
-    const dbGet = (sql, params = []) => new Promise((resolve, reject) => {
-      db.get(sql, params, (err, row) => (err ? reject(err) : resolve(row)));
-    });
-    const dbRun = (sql, params = []) => new Promise((resolve, reject) => {
-      db.run(sql, params, function onRun(err) {
-        if (err) return reject(err);
-        resolve(this);
-      });
-    });
-
-    const isDeleteFailed = (result) => {
-      const resultText = typeof result === 'string' ? result : JSON.stringify(result || {});
-      return /gagal|error|failed|tidak\s+ditemukan|not\s+found/i.test(resultText);
-    };
-
+  if (state.step === 'hc_link') {
+    const text = ctx.message.text.trim();
+    let parsed;
     try {
-      const serverRow = await dbGet(
-        `SELECT id, domain, auth, sync_host, sync_port, sync_endpoint, harga, nama_server
-         FROM Server
-         WHERE id = ?`,
-        [serverId]
-      );
-
-      if (!serverRow) {
-        return ctx.reply('Server tidak ditemukan.');
-      }
-
-      const localRow = await dbGet(
-        `SELECT a.*, COALESCE(s.harga, 0) AS harga
-         FROM accounts a
-         LEFT JOIN Server s ON s.id = a.server_id
-         WHERE a.user_id = ?
-           AND a.server_id = ?
-           AND LOWER(a.username) = LOWER(?)
-           AND (a.expires_at IS NULL OR a.expires_at > ?)
-         ORDER BY a.expires_at ASC, a.id ASC
-         LIMIT 1`,
-        [userId, serverId, username, now]
-      );
-
-      let deletedType = null;
-      let remoteInfo = { found: false };
-
-      if (localRow) {
-        const deleteFn = SELF_DELETE_TYPE_HANDLERS[localRow.type];
-        if (!deleteFn) {
-          return ctx.reply(`Layanan ${localRow.type} belum didukung untuk hapus mandiri.`);
-        }
-
-        const result = await deleteFn(localRow.username, 'none', 'none', 'none', localRow.server_id);
-        if (isDeleteFailed(result)) {
-          logger.error(`Gagal hapus akun by username ${localRow.username} (${localRow.type}): ${typeof result === 'string' ? result : JSON.stringify(result)}`);
-          return ctx.reply('Gagal: username tidak ditemukan di server yang dipilih.');
-        }
-
-        deletedType = String(localRow.type || '').toUpperCase();
+      if (text.startsWith('vmess://')) {
+        parsed = parseVmessLink(text);
+      } else if (text.startsWith('vless://')) {
+        parsed = parseVlessLink(text);
+      } else if (text.startsWith('trojan://')) {
+        parsed = parseTrojanLink(text);
       } else {
-        remoteInfo = await fetchTunnelAccountExpiryByUsername(serverRow, username);
-
-        if (remoteInfo.found && SELF_DELETE_TYPE_HANDLERS[remoteInfo.service]) {
-          const result = await SELF_DELETE_TYPE_HANDLERS[remoteInfo.service](username, 'none', 'none', 'none', serverId);
-          if (!isDeleteFailed(result)) {
-            deletedType = remoteInfo.service.toUpperCase();
-          }
-        }
-
-        if (!deletedType) {
-          const typeOrder = ['ssh', 'udp_http', 'zivpn', 'vmess', 'vless', 'trojan'];
-          for (const type of typeOrder) {
-            const fn = SELF_DELETE_TYPE_HANDLERS[type];
-            if (!fn) continue;
-
-            const result = await fn(username, 'none', 'none', 'none', serverId);
-            if (!isDeleteFailed(result)) {
-              deletedType = type.toUpperCase();
-              break;
-            }
-          }
-        }
-
-        if (!deletedType) {
-          return ctx.reply('Gagal: username tidak ditemukan di server yang dipilih.');
-        }
+        return ctx.reply('❌ Link tidak dikenal. Kirim link VMESS/VLESS/TROJAN yang valid.');
       }
-
-      const remainingDays = localRow
-        ? calcRemainingDays(localRow.expires_at)
-        : (remoteInfo.found ? calcRemainingDaysFromDateExp(remoteInfo.dateExp) : 0);
-
-      const serverPrice = Number(serverRow.harga || 0);
-      const refund = Math.max(0, remainingDays * serverPrice);
-
-      if (localRow) {
-        await dbRun('DELETE FROM accounts WHERE id = ? AND user_id = ?', [localRow.id, userId]);
-      } else {
-        await dbRun(
-          'DELETE FROM accounts WHERE user_id = ? AND server_id = ? AND LOWER(username) = LOWER(?)',
-          [userId, serverId, username]
-        );
-      }
-
-      if (refund > 0) {
-        await dbRun('INSERT OR IGNORE INTO users (user_id, saldo) VALUES (?, 0)', [userId]);
-        await dbRun('UPDATE users SET saldo = saldo + ? WHERE user_id = ?', [refund, userId]);
-        await dbRun(
-          'INSERT INTO transactions (user_id, amount, type, reference_id, timestamp) VALUES (?, ?, ?, ?, ?)',
-          [userId, refund, 'delete_refund', `delete_refund_${serverId}_${Date.now()}`, Date.now()]
-        );
-      }
-
-      delete userState[ctx.chat.id];
-      return ctx.reply(
-        `Akun berhasil dihapus.\n` +
-        `• Username: ${username}\n` +
-        `• Layanan: ${deletedType || '-'}\n` +
-        `• Server: ${localRow?.server_name || serverRow.nama_server || serverRow.domain || ('ID ' + serverId)}\n` +
-        `• Konversi ke saldo: Rp ${Number(refund).toLocaleString('id-ID')}`,
-        {
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: '🗂️ Hapus Akun Lain', callback_data: 'delete_my_account_select_server' }],
-              [{ text: '🔙 Menu Utama', callback_data: 'send_main_menu' }]
-            ]
-          }
-        }
-      );
     } catch (e) {
-      logger.error('Error hapus akun by username:', e.message);
-      return ctx.reply('Terjadi kesalahan saat menghapus akun.');
+      return ctx.reply('❌ Gagal membaca link. Pastikan link valid dan lengkap.');
     }
+
+    userState[ctx.chat.id] = { step: 'hc_bug', parsed };
+    return ctx.reply('Masukkan *BUG/Host* yang akan dipasang ke bagian address:', { parse_mode: 'Markdown' });
+  }
+
+  if (state.step === 'hc_bug') {
+    const bug = ctx.message.text.trim();
+    if (!bug) {
+      return ctx.reply('❌ BUG tidak boleh kosong. Masukkan BUG/Host.');
+    }
+
+    const json = buildHcJson(state.parsed, bug);
+    const jsonText = JSON.stringify(json, null, 2);
+    delete userState[ctx.chat.id];
+    return ctx.reply(
+      `Berikut JSON V2Ray Setting HC:\n<pre><code>${escapeHtmlLocal(jsonText)}</code></pre>`,
+      { parse_mode: 'HTML' }
+    );
+  }
+
+  if (state.step === 'bonus_set_10_40' || state.step === 'bonus_set_50_70' || state.step === 'bonus_set_70_100') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan bonus dibatalkan.');
+    }
+    if (!/^\d+$/.test(text)) {
+      return ctx.reply('Persen harus angka 0-100. Masukkan ulang:');
+    }
+    const percent = Math.max(0, Math.min(100, parseInt(text, 10)));
+    const current = loadTopupBonusSetting();
+    if (state.step === 'bonus_set_10_40') current.range_10_40 = percent;
+    if (state.step === 'bonus_set_50_70') current.range_50_70 = percent;
+    if (state.step === 'bonus_set_70_100') current.range_70_100 = percent;
+    saveTopupBonusSetting(current);
+    delete userState[ctx.chat.id];
+    await ctx.reply('✅ Bonus topup berhasil diperbarui.');
+    return sendAdminSaldoMenu(ctx);
   }
 
   if (state.step === 'edit_auth_by_text') {
@@ -8613,17 +8428,6 @@ const adminMessage =
     cleanupOldDeposits();
   }, 10000);
 });
-
-
-
-
-
-
-
-
-
-
-
 
 
 
