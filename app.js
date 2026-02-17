@@ -3256,6 +3256,12 @@ function calcRemainingDays(expiresAt) {
   return Math.ceil(diff / (24 * 60 * 60 * 1000));
 }
 
+function isStrongCreateUsername(username) {
+  const letterCount = (username.match(/[a-z]/g) || []).length;
+  const digitCount = (username.match(/[0-9]/g) || []).length;
+  return letterCount >= 4 && digitCount >= 4;
+}
+
 bot.action('delete_my_account_intro', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   await ctx.reply(
@@ -5491,7 +5497,7 @@ let msg;
 if (action === 'trial') {
 
   // 🔹 generate data trial
-  const username = `trial${Math.floor(Math.random() * 10000)}`;
+  const username = `trial${String(Math.floor(Math.random() * 10000)).padStart(4, '0')}`;
   const exp = '1';       // 1 hari
   const quota = '500';    // 1 GB (sesuaikan)
   const iplimit = '1';  // 1 IP
@@ -5706,6 +5712,9 @@ if (action === 'trial') {
     }
     const { type, action } = state;
     if (action === 'create') {
+      if (!isStrongCreateUsername(state.username)) {
+        return ctx.reply('? *Username create harus mengandung minimal 4 huruf dan 4 angka (contoh: haris1234).*', { parse_mode: 'Markdown' });
+      }
       if (type === 'ssh' || type === 'udp_http') {
         state.step = `password_${state.action}_${state.type}`;
         await ctx.reply('🔑 *Masukkan password:*', { parse_mode: 'Markdown' });
@@ -8622,6 +8631,9 @@ const adminMessage =
     cleanupOldDeposits();
   }, 10000);
 });
+
+
+
 
 
 
