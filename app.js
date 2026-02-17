@@ -3279,6 +3279,15 @@ bot.action('delete_my_account_select_server', async (ctx) => {
   const userId = ctx.from.id;
   const now = Date.now();
 
+  let isReseller = false;
+  try {
+    isReseller = await isUserReseller(userId);
+  } catch (e) {
+    logger.error('Error cek role reseller:', e.message);
+  }
+
+  const resellerFlag = isReseller ? 1 : 0;
+
   db.all(
     `SELECT s.id AS server_id,
             COALESCE(NULLIF(s.nama_server, ''), s.domain, 'Server') AS server_name,
@@ -3291,26 +3300,26 @@ bot.action('delete_my_account_select_server', async (ctx) => {
          AND (expires_at IS NULL OR expires_at > ?)
        GROUP BY server_id
      ) a ON a.server_id = s.id
+     WHERE COALESCE(s.is_reseller_only, 0) = ?
      ORDER BY server_name COLLATE NOCASE ASC`,
-    [userId, now],
+    [userId, now, resellerFlag],
     async (err, rows) => {
       if (err) {
-        logger.error('❌ Error ambil server akun user:', err.message);
-        return ctx.reply('❌ Terjadi kesalahan saat memuat daftar server akun.');
+        logger.error('Error ambil server akun user:', err.message);
+        return ctx.reply('Terjadi kesalahan saat memuat daftar server akun.');
       }
 
       if (!rows || rows.length === 0) {
-        return ctx.reply('📭 Belum ada server tersedia.');
+        return ctx.reply('Belum ada server tersedia untuk role akun kamu.');
       }
 
       const keyboard = rows.map((row) => ([{
         text: `${row.server_name} (${row.total_accounts} akun)`,
         callback_data: `delete_my_account_server_${row.server_id}`
       }]));
-      keyboard.push([{ text: '🔙 Kembali', callback_data: 'delete_my_account_intro' }]);
+      keyboard.push([{ text: 'Kembali', callback_data: 'delete_my_account_intro' }]);
 
-      await ctx.reply('🗑️ *Pilih server akun yang ingin dihapus:*', {
-        parse_mode: 'Markdown',
+      await ctx.reply('Pilih server akun yang ingin dihapus:', {
         reply_markup: { inline_keyboard: keyboard }
       });
     }
@@ -3356,7 +3365,7 @@ bot.action(/delete_my_account_server_(\d+)/, async (ctx) => {
           callback_data: `delete_my_account_pick_${row.id}`
         }];
       });
-      keyboard.push([{ text: '✍️ Hapus via Username', callback_data: 'delete_my_account_manual_username_' + serverId }]);
+      keyboard.push([{ text: '✍️ Hapus akun yang tidak ada di daftar', callback_data: 'delete_my_account_manual_username_' + serverId }]);
       keyboard.push([{ text: '🔙 Pilih Server', callback_data: 'delete_my_account_select_server' }]);
 
       await ctx.reply('👤 *Pilih akun yang ingin dihapus:*', {

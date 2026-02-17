@@ -1,10 +1,10 @@
-# BotVPN 1FORCR
-Bot Telegram untuk manajemen layanan VPN yang terintegrasi dengan API AutoScript Potato.  
+﻿# BotVPN 1FORCR
+Bot Telegram untuk manajemen layanan VPN yang terintegrasi dengan API AutoScript Potato.
 Referensi awal dari [arivpnstores](https://github.com/arivpnstores), based BOT: Fightertunnel.
 
 ---
 
-## Instalasi Otomatis
+## Instalasi Otomatis Bot
 Rekomendasi OS: Ubuntu 24 / Debian 12
 
 ```bash
@@ -13,80 +13,130 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 && sysctl -w net.ipv6.conf.default.di
 
 ---
 
-## Repo untuk install API auto cek total akun dan ngambil data username beserta sisa hari akun
-https://github.com/harismy/apiCekTotalUserPotato
-
----
-
 ## Bot Telegram
 [Menuju Bot Cihuyyyyy](https://t.me/BOT1FORCR_STORE_bot)
 
 ---
 
-## Fitur Utama
+## Fitur Bot (Aktual)
 
-### Untuk User
-- Pembelian akun otomatis: SSH, VMESS, VLESS, TROJAN, ZiVPN, dan UDP HTTP Custom
-- Trial akun
-- Deposit saldo + pembayaran QRIS otomatis
-- Top up manual via QRIS (bisa diaktif/nonaktifkan admin)
+### User
+- Buat akun: SSH/Ovpn, VMESS, VLESS, TROJAN, ZIVPN, UDP HTTP.
+- Trial akun harian (1x per user per hari).
+- Perpanjang akun semua layanan (termasuk UDP HTTP dan ZIVPN).
+- Lihat akun saya: akun aktif, semua akun, dan akun expired.
+- Hapus akun saya:
+  - pilih server sesuai role (user biasa hanya server user, reseller hanya server reseller),
+  - bisa hapus dari daftar akun atau hapus via username,
+  - sisa masa aktif dikonversi ke saldo.
+- Tools user: Perpanjang akun, Cek Server, V2Ray Setting HC.
+- Top up saldo:
+  - otomatis (QRIS API),
+  - manual QRIS (opsional, bisa diaktif/nonaktifkan admin),
+  - bonus top up per range nominal (opsional, bisa diaktif/nonaktifkan admin).
+- Menu jadi reseller dengan kontak admin dinamis (WA/Telegram dari pengaturan admin).
 
-### Untuk Admin
-- Dashboard admin berbasis menu (Server/Saldo/Reseller/Tools)
-- Manajemen user & saldo (tambah/hapus/cek saldo)
-- Manajemen server (add/edit/list/detail/hapus/reset)
-- Backup database manual + auto backup 24 jam
-- Statistik reseller lengkap: `/resellerstats` & `/allresellerstats`
-- Help admin dari menu atau `/helpadmin`
+### Reseller
+- Akses server reseller.
+- Menu lock/unlock akun.
+- Statistik reseller pribadi.
+- Evaluasi syarat reseller bulanan + notifikasi pengingat otomatis.
 
-### Untuk Reseller
-- Akses server khusus reseller
-- Statistik penjualan bulanan
-- Tools reseller (hapus/lock/unlock akun)
+### Admin
+- Dashboard admin: User, Server, Saldo, Reseller, Tools, Topup.
+- Manajemen user/saldo: tambah saldo, hapus saldo, cek user, hapus log.
+- Broadcast ke semua user.
+- Manajemen reseller: tambah/hapus/restore reseller, atur syarat, trigger cek syarat.
+- Manajemen server:
+  - tambah server user/reseller,
+  - atur support layanan (normal / ZIVPN / UDP HTTP),
+  - edit domain/auth/harga/quota/ip limit/batas create/total create,
+  - set server penuh,
+  - aktifkan kembali server penuh dengan input total + batas,
+  - detail/list/hapus server.
+- Kontrol top up: auto/manual/bonus (aktif/nonaktif + atur persentase bonus).
+- Upload QRIS dari menu admin.
+- Command penting: `/admin`, `/syncservernow`, `/checkpaymentconfig`, `/helpadmin`, `/resellerstats`, `/allresellerstats`.
+
+### Sistem dan Keandalan
+- Auto migrasi kolom/tabel SQLite saat bot start.
+- Menu `/start` tidak menumpuk (menu lama dibersihkan).
+- Pending deposit + cleanup deposit expired.
+- Logging error terstruktur untuk PM2.
 
 ---
 
-## Update Terbaru
-- UDP HTTP Custom sudah didukung penuh, termasuk output akun yang ringkas dan format siap copy.
-- Server sekarang punya flag `support_zivpn` dan `support_udp_http`, jadi bot hanya menampilkan server yang benar-benar mendukung layanannya.
-- Syarat reseller disederhanakan: sekarang hanya melihat total top up bulan berjalan, bukan jumlah akun.
-- Saat admin mengubah syarat reseller, semua reseller otomatis mendapat pemberitahuan. Ada reminder H-5 sebelum reset bulan.
-- Admin bisa trigger manual cek syarat reseller dan trigger backup langsung dari menu tools.
-- Top up manual bisa diaktifkan/nonaktifkan lewat menu admin, tombolnya ikut muncul/hilang di menu user.
-- Statistik reseller diperjelas: pendapatan dihitung dari transaksi akun (create/renew), top up dihitung dari transaksi deposit.
-- `/allresellerstats` kini menampilkan username Telegram, bukan hanya ID.
-- Trial tidak ikut dihitung di statistik (berdasarkan `reference_id`).
-- ZIVPN lebih ramah: jika username sudah ada akan diminta ulang, dan password dibuat random otomatis.
-- Konfigurasi API dirapikan: ORKUT username/token dan API key sekarang disimpan di `.vars.json`.
+## Sinkronisasi Server Tunnel (AutoScript Potato)
+
+API tunnel dipakai bot untuk:
+- sinkron total akun aktif ke `Server.total_create_akun`,
+- lookup `date_exp` akun berdasarkan username.
+
+Trigger sinkron:
+- Manual: `/syncservernow` atau tombol admin `Sync Server Sekarang`.
+- Otomatis: setiap 30 menit.
+
+Endpoint yang dipakai bot:
+- `GET /internal/account-summary`
+- `GET /internal/account-expiry?username=<USERNAME>`
+
+Auth endpoint:
+- Header `x-sync-token: <TOKEN>`
+
+---
+
+## Auto Install API Tunnel (SC Potato)
+Repo installer API:
+- https://github.com/harismy/apiCekTotalUserPotato
+
+Jalankan di VPS tunnel yang sudah terpasang SC Potato:
+
+```bash
+curl -fL --retry 5 --retry-delay 2 https://raw.githubusercontent.com/harismy/apiCekTotalUserPotato/main/setup-summary-api.sh -o /tmp/setup-summary-api.sh
+sed -i 's/\r$//' /tmp/setup-summary-api.sh
+chmod +x /tmp/setup-summary-api.sh
+bash /tmp/setup-summary-api.sh
+```
+
+### Cara pakai di bot setelah API terpasang
+1. Pastikan setiap server bot punya `domain` atau `sync_host` yang menuju VPS tunnel.
+2. Pastikan token bot (`Server.auth`) cocok dengan token valid di VPS tunnel (`servers.key`).
+3. Jalankan sinkron manual (`/syncservernow`) untuk uji awal.
+4. Cek hasil di menu `Cek Server` (terpakai/sisa/status).
+
+Troubleshooting:
+- `unauthorized`: token tidak cocok.
+- `ECONNREFUSED`: service API tunnel belum jalan atau port belum terbuka.
 
 ---
 
 ## Sistem Pembayaran (Top Up Otomatis)
 
 ### Data QRIS
-Gunakan tools berikut untuk extract data QRIS:  
-https://qreader.online/
+Gunakan tools berikut untuk extract data QRIS:
+- https://qreader.online/
 
 ### Setup API Cek Payment
 Input saat instalasi melalui `start` (disimpan ke `.vars.json`):
 - `ORKUT_USERNAME`
 - `ORKUT_TOKEN`
-- `Untuk api key bisa chat ke +6289612745096`
+- API key (hubungi admin penyedia API)
 
 Jika `ORKUT_USERNAME/ORKUT_TOKEN` belum diisi:
-- Menu top up otomatis akan nonaktif
-- Bot menampilkan notifikasi ke user
+- Menu top up otomatis nonaktif.
+- Bot memberi notifikasi ke user untuk top up manual.
 
 ---
 
 ## Database
 Database utama: `sellvpn.db`
 
-Auto-migrasi saat bot start:
-- Buat tabel `pending_deposits` bila belum ada
-- Tambah kolom `support_zivpn` dan `support_udp_http` di tabel `Server`
+Auto migrasi saat bot start mencakup:
+- tabel pending deposit,
+- kolom support layanan server,
+- kolom sinkronisasi server tunnel.
 
 ---
 
 ## Catatan
-Pastikan file disimpan UTF-8 agar emoji tampil normal.
+Simpan file dengan encoding UTF-8 agar teks dan simbol tampil normal.
