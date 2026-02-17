@@ -3316,7 +3316,14 @@ bot.action('delete_my_account_select_server', async (ctx) => {
       }
 
       if (!rows || rows.length === 0) {
-        return ctx.reply('Belum ada server tersedia untuk role akun kamu.');
+        return ctx.reply('Tidak ada akun aktif di server ini.', {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: 'Pilih Server Lain', callback_data: 'delete_my_account_select_server' }],
+              [{ text: 'Kembali', callback_data: 'send_main_menu' }]
+            ]
+          }
+        });
       }
 
       const keyboard = rows.map((row) => ([{
@@ -3355,9 +3362,7 @@ bot.action(/delete_my_account_server_(\d+)/, async (ctx) => {
       if (!rows || rows.length === 0) {
         return ctx.reply('📭 Tidak ada akun aktif di server ini.', {
           reply_markup: {
-            inline_keyboard: [
-              [{ text: '✍️ Hapus akun yang tidak ada di daftar akun', callback_data: 'delete_my_account_manual_username_' + serverId }],
-              [{ text: '🗂️ Pilih Server Lain', callback_data: 'delete_my_account_select_server' }],
+            inline_keyboard: [              [{ text: '🗂️ Pilih Server Lain', callback_data: 'delete_my_account_select_server' }],
               [{ text: '🔙 Kembali', callback_data: 'send_main_menu' }]
             ]
           }
@@ -3371,25 +3376,13 @@ bot.action(/delete_my_account_server_(\d+)/, async (ctx) => {
           callback_data: `delete_my_account_pick_${row.id}`
         }];
       });
-      keyboard.push([{ text: '✍️ Hapus akun yang tidak ada di daftar', callback_data: 'delete_my_account_manual_username_' + serverId }]);
-      keyboard.push([{ text: '🔙 Pilih Server', callback_data: 'delete_my_account_select_server' }]);
+      keyboard.push([{ text: 'Pilih Server', callback_data: 'delete_my_account_select_server' }]);
 
       await ctx.reply('👤 *Pilih akun yang ingin dihapus:*', {
         parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: keyboard }
       });
     }
-  );
-});
-bot.action(/delete_my_account_manual_username_(\d+)/, async (ctx) => {
-  await ctx.answerCbQuery().catch(() => {});
-  const serverId = Number(ctx.match[1]);
-  userState[ctx.chat.id] = { step: 'delete_my_account_username', serverId };
-  await ctx.reply(
-    'Kirim username akun yang ingin dihapus pada server ini.\n' +
-    'Pastikan huruf kecil dan besar pada username akun harus sama persis !! \n\n' +
-    'Ketik *batal* untuk membatalkan.',
-    { parse_mode: 'Markdown' }
   );
 });
 bot.action(/delete_my_account_pick_(\d+)/, async (ctx) => {
@@ -4950,150 +4943,6 @@ if (!state || !state.step) return;
     return sendAdminMenu(ctx);
   }
 
-  if (state.step === 'delete_my_account_username') {
-    const input = ctx.message.text.trim();
-    if (input.toLowerCase() === 'batal') {
-      delete userState[ctx.chat.id];
-      return ctx.reply('Hapus akun berdasarkan username dibatalkan.');
-    }
-
-    const username = input;
-    const userId = ctx.from.id;
-    const serverId = Number(state.serverId);
-    const now = Date.now();
-
-    const dbGet = (sql, params = []) => new Promise((resolve, reject) => {
-      db.get(sql, params, (err, row) => (err ? reject(err) : resolve(row)));
-    });
-    const dbRun = (sql, params = []) => new Promise((resolve, reject) => {
-      db.run(sql, params, function onRun(err) {
-        if (err) return reject(err);
-        resolve(this);
-      });
-    });
-
-    const isDeleteFailed = (result) => {
-      const resultText = typeof result === 'string' ? result : JSON.stringify(result || {});
-      return /gagal|error|failed|tidak\s+ditemukan|not\s+found/i.test(resultText);
-    };
-
-    try {
-      const serverRow = await dbGet(
-        `SELECT id, domain, auth, sync_host, sync_port, sync_endpoint, harga, nama_server
-         FROM Server
-         WHERE id = ?`,
-        [serverId]
-      );
-
-      if (!serverRow) {
-        return ctx.reply('Server tidak ditemukan.');
-      }
-
-      const localRow = await dbGet(
-        `SELECT a.*, COALESCE(s.harga, 0) AS harga
-         FROM accounts a
-         LEFT JOIN Server s ON s.id = a.server_id
-         WHERE a.user_id = ?
-           AND a.server_id = ?
-           AND LOWER(a.username) = LOWER(?)
-           AND (a.expires_at IS NULL OR a.expires_at > ?)
-         ORDER BY a.expires_at ASC, a.id ASC
-         LIMIT 1`,
-        [userId, serverId, username, now]
-      );
-
-      let deletedType = null;
-      let remoteInfo = { found: false };
-
-      if (localRow) {
-        const deleteFn = SELF_DELETE_TYPE_HANDLERS[localRow.type];
-        if (!deleteFn) {
-          return ctx.reply(`Layanan ${localRow.type} belum didukung untuk hapus mandiri.`);
-        }
-
-        const result = await deleteFn(localRow.username, 'none', 'none', 'none', localRow.server_id);
-        if (isDeleteFailed(result)) {
-          logger.error(`Gagal hapus akun by username ${localRow.username} (${localRow.type}): ${typeof result === 'string' ? result : JSON.stringify(result)}`);
-          return ctx.reply('Gagal: username tidak ditemukan di server yang dipilih.');
-        }
-
-        deletedType = String(localRow.type || '').toUpperCase();
-      } else {
-        remoteInfo = await fetchTunnelAccountExpiryByUsername(serverRow, username);
-
-        if (remoteInfo.found && SELF_DELETE_TYPE_HANDLERS[remoteInfo.service]) {
-          const result = await SELF_DELETE_TYPE_HANDLERS[remoteInfo.service](username, 'none', 'none', 'none', serverId);
-          if (!isDeleteFailed(result)) {
-            deletedType = remoteInfo.service.toUpperCase();
-          }
-        }
-
-        if (!deletedType) {
-          const typeOrder = ['ssh', 'udp_http', 'zivpn', 'vmess', 'vless', 'trojan'];
-          for (const type of typeOrder) {
-            const fn = SELF_DELETE_TYPE_HANDLERS[type];
-            if (!fn) continue;
-
-            const result = await fn(username, 'none', 'none', 'none', serverId);
-            if (!isDeleteFailed(result)) {
-              deletedType = type.toUpperCase();
-              break;
-            }
-          }
-        }
-
-        if (!deletedType) {
-          return ctx.reply('Gagal: username tidak ditemukan di server yang dipilih.');
-        }
-      }
-
-      const remainingDays = localRow
-        ? calcRemainingDays(localRow.expires_at)
-        : (remoteInfo.found ? calcRemainingDaysFromDateExp(remoteInfo.dateExp) : 0);
-
-      const serverPrice = Number(serverRow.harga || 0);
-      const refund = Math.max(0, remainingDays * serverPrice);
-
-      if (localRow) {
-        await dbRun('DELETE FROM accounts WHERE id = ? AND user_id = ?', [localRow.id, userId]);
-      } else {
-        await dbRun(
-          'DELETE FROM accounts WHERE user_id = ? AND server_id = ? AND LOWER(username) = LOWER(?)',
-          [userId, serverId, username]
-        );
-      }
-
-      if (refund > 0) {
-        await dbRun('INSERT OR IGNORE INTO users (user_id, saldo) VALUES (?, 0)', [userId]);
-        await dbRun('UPDATE users SET saldo = saldo + ? WHERE user_id = ?', [refund, userId]);
-        await dbRun(
-          'INSERT INTO transactions (user_id, amount, type, reference_id, timestamp) VALUES (?, ?, ?, ?, ?)',
-          [userId, refund, 'delete_refund', `delete_refund_${serverId}_${Date.now()}`, Date.now()]
-        );
-      }
-
-      delete userState[ctx.chat.id];
-      return ctx.reply(
-        `Akun berhasil dihapus.\n` +
-        `• Username: ${username}\n` +
-        `• Layanan: ${deletedType || '-'}\n` +
-        `• Server: ${localRow?.server_name || serverRow.nama_server || serverRow.domain || ('ID ' + serverId)}\n` +
-        `• Konversi ke saldo: Rp ${Number(refund).toLocaleString('id-ID')}`,
-        {
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: '🗂️ Hapus Akun Lain', callback_data: 'delete_my_account_select_server' }],
-              [{ text: '🔙 Menu Utama', callback_data: 'send_main_menu' }]
-            ]
-          }
-        }
-      );
-    } catch (e) {
-      logger.error('Error hapus akun by username:', e.message);
-      return ctx.reply('Terjadi kesalahan saat menghapus akun.');
-    }
-  }
-
   if (state.step === 'edit_auth_by_text') {
     const input = ctx.message.text.trim();
     if (input.toLowerCase() === 'batal') {
@@ -5713,7 +5562,7 @@ if (action === 'trial') {
     const { type, action } = state;
     if (action === 'create') {
       if (!isStrongCreateUsername(state.username)) {
-        return ctx.reply('? *Username create harus mengandung minimal 4 huruf dan 4 angka (contoh: haris1234).*', { parse_mode: 'Markdown' });
+        return ctx.reply(' *Username harus mengandung minimal 4 huruf dan 4 angka dengan huruf kecil semua.*', { parse_mode: 'Markdown' });
       }
       if (type === 'ssh' || type === 'udp_http') {
         state.step = `password_${state.action}_${state.type}`;
