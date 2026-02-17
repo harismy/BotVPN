@@ -13,6 +13,11 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 && sysctl -w net.ipv6.conf.default.di
 
 ---
 
+## Repo untuk install API auto cek total akun dan ngambil data username beserta sisa hari akun
+https://github.com/harismy/apiCekTotalUserPotato
+
+---
+
 ## Bot Telegram
 [Menuju Bot Cihuyyyyy](https://t.me/BOT1FORCR_STORE_bot)
 
