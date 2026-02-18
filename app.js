@@ -453,6 +453,33 @@ let ADMIN_USERNAME = '';
 const adminIds = ADMIN;
 logger.info('Bot initialized');
 
+async function notifyGroupAccountDeleted(payload) {
+  if (!GROUP_ID_NUM) return;
+
+  try {
+    const actorName = payload.actorUsername ? '@' + String(payload.actorUsername).replace(/^@/, '') : '-';
+    const deletedName = payload.deletedUsername ? '@' + String(payload.deletedUsername).replace(/^@/, '') : '-';
+    const text =
+      'NOTIFIKASI HAPUS AKUN\n\n' +
+      'Aksi: ' + (payload.action || 'delete') + '\n' +
+      'Pelaku ID: ' + String(payload.actorId || '-') + '\n' +
+      'Pelaku Username: ' + actorName + '\n' +
+      'Target User ID: ' + String(payload.targetUserId || '-') + '\n' +
+      'Username Akun: ' + String(payload.accountUsername || '-') + '\n' +
+      'Layanan: ' + String(payload.service || '-') + '\n' +
+      'Server: ' + String(payload.serverName || '-') + '\n' +
+      'Refund Saldo: Rp ' + Number(payload.refund || 0).toLocaleString('id-ID') + '\n' +
+      'Sisa Hari: ' + Number(payload.remainingDays || 0) + ' hari\n' +
+      'Waktu: ' + new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' }) + '\n' +
+      'Keterangan: ' + String(payload.note || '-');
+
+    await bot.telegram.sendMessage(GROUP_ID_NUM, text);
+  } catch (err) {
+    logger.warn('Gagal kirim notif hapus akun ke grup: ' + err.message);
+  }
+}
+
+
 (async () => {
   try {
     const adminId = Array.isArray(adminIds) ? adminIds[0] : adminIds;
@@ -1675,6 +1702,9 @@ async function sendMainMenu(ctx) {
       { text: '📞 Hubungi Admin', callback_data: 'hubungi_admin' }
     ],
     [
+      { text: '🔍 Cek Masa Aktif Akun Saya', callback_data: 'check_expiry_account' }
+    ],
+    [
      // { text: '📘 Tutorial Penggunaan Bot', callback_data: 'tutorial_bot' }
     ],
     [
@@ -2475,8 +2505,8 @@ bot.action('del_reseller_menu', async (ctx) => {
 async function sendAdminToolsMenu(ctx) {
   const keyboard = [
     [{ text: '📋 Help Admin', callback_data: 'helpadmin_menu' }],
-    [{ text: '📦 Backup Database', callback_data: 'backup_db' }],
-    [{ text: '⏱️ Trigger Backup Sekarang', callback_data: 'auto_backup_now' }],
+    [{ text: '💾 Restore Database', callback_data: 'restore_db_menu' }],
+    [{ text: 'Backup Database Sekarang', callback_data: 'auto_backup_now' }],
     [{ text: 'Sync Server Sekarang', callback_data: 'admin_sync_server_now' }],
     [{ text: '🔔 Notif Create (Bot)', callback_data: 'notif_settings_menu' }],
     [{ text: '📞 Kontak Admin', callback_data: 'admin_contact_settings_menu' }],
@@ -2705,6 +2735,40 @@ bot.action('notif_set_chat', async (ctx) => {
   await ctx.reply('Kirim *CHAT ID* tujuan notifikasi.\nKetik "batal" untuk membatalkan.', { parse_mode: 'Markdown' });
 });
 
+bot.action('restore_db_menu', async (ctx) => {
+  await ctx.answerCbQuery();
+  const adminId = ctx.from.id;
+  if (!adminIds.includes(adminId)) {
+    return ctx.reply('Anda tidak memiliki izin untuk mengakses menu ini.');
+  }
+
+  const keyboard = [
+    [{ text: 'Restore sellvpn.db', callback_data: 'restore_db_target_sellvpn' }],
+    [{ text: 'Restore ressel.db', callback_data: 'restore_db_target_ressel' }],
+    [{ text: 'Kembali', callback_data: 'admin_menu_tools' }]
+  ];
+
+  await ctx.reply('Pilih database yang ingin di-restore:', {
+    reply_markup: { inline_keyboard: keyboard }
+  });
+});
+
+bot.action(/restore_db_target_(sellvpn|ressel)/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const adminId = ctx.from.id;
+  if (!adminIds.includes(adminId)) {
+    return ctx.reply('Anda tidak memiliki izin untuk melakukan aksi ini.');
+  }
+
+  const target = ctx.match[1];
+  userState[ctx.chat.id] = { step: 'restore_db_upload', target };
+
+  await ctx.reply(
+    'Upload file backup untuk ' + target + '.db dalam format document.\n' +
+    'Ketik "batal" untuk membatalkan.'
+  );
+});
+
 
 bot.action('admin_contact_settings_menu', async (ctx) => {
   await ctx.answerCbQuery();
@@ -2841,7 +2905,7 @@ bot.action('auto_backup_now', async (ctx) => {
 
   for (const filePath of files) {
     if (fs.existsSync(filePath)) {
-      await sendAutoBackup(filePath);
+      await sendAutoBackup(filePath, adminId);
     } else {
       logger.warn(`Backup manual dilewati, file tidak ditemukan: ${filePath}`);
     }
@@ -3028,6 +3092,65 @@ bot.on('photo', async (ctx) => {
   delete userState[adminId];
 });
 
+bot.on('document', async (ctx) => {
+  const adminId = ctx.from.id;
+  const state = userState[adminId];
+  if (!state || state.step !== 'restore_db_upload') return;
+
+  if (!adminIds.includes(adminId)) {
+    return ctx.reply('Anda tidak memiliki izin untuk restore database.');
+  }
+
+  const target = state.target === 'sellvpn' ? 'sellvpn' : 'ressel';
+  const doc = ctx.message.document;
+  const originalName = String(doc.file_name || (target + '.db'));
+
+  try {
+    const uploadDir = path.join(__dirname, 'backup', 'restore_uploads');
+    fs.mkdirSync(uploadDir, { recursive: true });
+
+    const tempName = Date.now() + '_' + originalName.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const tempPath = path.join(uploadDir, tempName);
+    const fileLink = await ctx.telegram.getFileLink(doc.file_id);
+    const response = await axios.get(fileLink.href, { responseType: 'arraybuffer' });
+    fs.writeFileSync(tempPath, Buffer.from(response.data));
+
+    const livePath = target === 'sellvpn'
+      ? path.join(__dirname, 'sellvpn.db')
+      : path.join(__dirname, 'ressel.db');
+
+    const backupDir = path.join(__dirname, 'backup');
+    fs.mkdirSync(backupDir, { recursive: true });
+    const backupPath = path.join(backupDir, target + '.before_restore.' + Date.now() + '.db');
+
+    if (fs.existsSync(livePath)) {
+      fs.copyFileSync(livePath, backupPath);
+    }
+
+    if (target === 'sellvpn') {
+      await new Promise((resolve) => {
+        db.close(() => resolve());
+      });
+    }
+
+    fs.copyFileSync(tempPath, livePath);
+    fs.unlinkSync(tempPath);
+
+    delete userState[adminId];
+
+    if (target === 'sellvpn') {
+      await ctx.reply('Restore sellvpn.db berhasil. Bot akan restart otomatis untuk memuat database baru.');
+      setTimeout(() => process.exit(0), 1200);
+      return;
+    }
+
+    return ctx.reply('Restore ressel.db berhasil.');
+  } catch (err) {
+    logger.error('Gagal restore database:', err.message);
+    return ctx.reply('Gagal restore database. Pastikan file backup valid.');
+  }
+});
+
 // ✅ BUAT INI SATU SAJA (tempat yang sama dengan action lainnya)
 bot.action('topup_saldo', async (ctx) => {
   try {
@@ -3169,6 +3292,87 @@ bot.action('hubungi_admin', async (ctx) => {
     logger.error('❌ Error di tombol hubungi_admin:', error.message);
     await ctx.reply('⚠️ Terjadi kesalahan saat membuka WhatsApp. Silakan coba lagi.');
   }
+});
+
+
+bot.action('check_expiry_account', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const userId = ctx.from.id;
+
+  let isReseller = false;
+  try {
+    isReseller = await isUserReseller(userId);
+  } catch (e) {
+    logger.error('Error cek role reseller untuk cek masa aktif:', e.message);
+  }
+
+  const resellerFlag = isReseller ? 1 : 0;
+
+  db.all(
+    `SELECT MIN(id) AS id,
+            host AS server_name
+     FROM (
+       SELECT id,
+              LOWER(TRIM(COALESCE(NULLIF(sync_host, ''), NULLIF(domain, ''), ''))) AS host
+       FROM Server
+       WHERE COALESCE(is_reseller_only, 0) = ?
+     ) grouped
+     WHERE host <> ''
+     GROUP BY host
+     ORDER BY host COLLATE NOCASE ASC`,
+    [resellerFlag],
+    async (err, rows) => {
+      if (err) {
+        logger.error('Error ambil daftar server cek masa aktif:', err.message);
+        return ctx.reply('Terjadi kesalahan saat memuat daftar server.');
+      }
+
+      if (!rows || rows.length === 0) {
+        return ctx.reply('Belum ada server tersedia untuk role akun kamu.');
+      }
+
+      const keyboard = rows.map((row) => ([{
+        text: row.server_name,
+        callback_data: `check_expiry_server_${row.id}`
+      }]));
+
+      keyboard.push([{ text: 'Kembali', callback_data: 'send_main_menu' }]);
+
+      await ctx.reply(
+        'Akun kamu ada di server mana? untuk melihatnya kamu bisa cek di informasi akun kamu\n\n'+
+        'Pilih server untuk cek masa aktif akun:',
+         {
+        reply_markup: { inline_keyboard: keyboard }
+      });
+    }
+  );
+});
+
+bot.action(/check_expiry_server_(\d+)/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const serverId = Number(ctx.match[1]);
+
+  db.get('SELECT id, nama_server, domain FROM Server WHERE id = ?', [serverId], async (err, row) => {
+    if (err) {
+      logger.error('Error ambil server cek masa aktif:', err.message);
+      return ctx.reply('Terjadi kesalahan saat mengambil data server.');
+    }
+
+    if (!row) {
+      return ctx.reply('Server tidak ditemukan.');
+    }
+
+    userState[ctx.chat.id] = {
+      step: 'check_expiry_username',
+      serverId,
+      serverName: row.nama_server || row.domain || ('ID ' + serverId)
+    };
+
+    await ctx.reply(
+      'Masukkan username akun yang ingin dicek masa aktifnya.\n' +
+      'Ketik "batal" untuk membatalkan.'
+    );
+  });
 });
 
 db.run(`CREATE TABLE IF NOT EXISTS accounts (
@@ -3484,6 +3688,19 @@ bot.action(/delete_my_account_confirm_(\d+)/, async (ctx) => {
         [userId, refund, 'delete_refund', `delete_refund_${accountId}_${Date.now()}`, Date.now()]
       );
     }
+
+    await notifyGroupAccountDeleted({
+      action: 'self_delete',
+      actorId: ctx.from.id,
+      actorUsername: ctx.from.username || '',
+      targetUserId: userId,
+      accountUsername: row.username,
+      service: String(row.type || '-').toUpperCase(),
+      serverName: row.server_name || row.domain || '-',
+      refund,
+      remainingDays,
+      note: 'User hapus akun sendiri'
+    });
 
     await ctx.reply(
       `✅ Akun berhasil dihapus.\n` +
@@ -4831,6 +5048,66 @@ bot.on('text', async (ctx) => {
   const state = userState[ctx.chat.id];
 if (!state || !state.step) return;
 
+  if (state.step === 'restore_db_upload') {
+    const text = (ctx.message.text || '').trim().toLowerCase();
+    if (text === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Restore database dibatalkan.');
+    }
+    return ctx.reply('Silakan kirim file backup sebagai document, atau ketik "batal".');
+  }
+
+  if (state.step === 'check_expiry_username') {
+    const input = ctx.message.text.trim();
+    if (input.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Cek masa aktif dibatalkan.');
+    }
+
+    const username = input;
+    const serverId = Number(state.serverId);
+
+    db.get(
+      'SELECT id, domain, auth, sync_host, sync_port, sync_endpoint, nama_server FROM Server WHERE id = ?',
+      [serverId],
+      async (err, serverRow) => {
+        if (err) {
+          logger.error('Error cek masa aktif ambil server:', err.message);
+          return ctx.reply('Terjadi kesalahan saat mengambil server.');
+        }
+        if (!serverRow) {
+          return ctx.reply('Server tidak ditemukan.');
+        }
+
+        const info = await fetchTunnelAccountExpiryByUsername(serverRow, username);
+        if (!info.found) {
+          return ctx.reply('Akun tidak ditemukan di server ini atau API tidak merespons.');
+        }
+
+        const remainingDays = calcRemainingDaysFromDateExp(info.dateExp);
+        delete userState[ctx.chat.id];
+
+        await ctx.reply(
+          'HASIL CEK MASA AKTIF\n\n' +
+          'Server: ' + (state.serverName || serverRow.nama_server || serverRow.domain || '-') + '\n' +
+          'Username: ' + username + '\n' +
+          'Layanan: ' + String(info.service || '-').toUpperCase() + '\n' +
+          'Expired: ' + (info.dateExp || '-') + '\n' +
+          'Sisa Masa Aktif: ' + remainingDays + ' hari',
+          {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: 'Cek Lagi', callback_data: 'check_expiry_account' }],
+                [{ text: 'Menu Utama', callback_data: 'send_main_menu' }]
+              ]
+            }
+          }
+        );
+      }
+    );
+    return;
+  }
+
   if (state.step === 'notif_bot_token') {
     const text = ctx.message.text.trim();
     if (text.toLowerCase() === 'batal') {
@@ -5537,7 +5814,32 @@ if (action === 'trial') {
       }
 
       await ctx.reply(msg, { parse_mode: 'Markdown' });
-      logger.info(`✅ Akun ${type} berhasil dihapus oleh ${ctx.from.id}`);
+
+      const delResultText = String(msg || '').toLowerCase();
+      const deleteFailed = /gagal|error|failed|tidak\s+ditemukan|not\s+found/.test(delResultText);
+      if (!deleteFailed) {
+        const serverRow = await new Promise((resolve) => {
+          db.get('SELECT nama_server, domain FROM Server WHERE id = ?', [serverId], (e, r) => {
+            if (e) return resolve(null);
+            resolve(r || null);
+          });
+        });
+
+        await notifyGroupAccountDeleted({
+          action: 'admin_or_reseller_delete',
+          actorId: ctx.from.id,
+          actorUsername: ctx.from.username || '',
+          targetUserId: '-',
+          accountUsername: username,
+          service: String(type || '-').toUpperCase(),
+          serverName: (serverRow && (serverRow.nama_server || serverRow.domain)) || ('ID ' + serverId),
+          refund: 0,
+          remainingDays: 0,
+          note: 'Hapus akun via menu del reseller/admin'
+        });
+      }
+
+      logger.info(`? Akun ${type} berhasil dihapus oleh ${ctx.from.id}`);
     } catch (err) {
       logger.error('❌ Gagal hapus akun:', err.message);
       await ctx.reply('❌ *Terjadi kesalahan saat menghapus akun.*', { parse_mode: 'Markdown' });
@@ -8300,38 +8602,48 @@ if (!fs.existsSync(autoBackupDir)) fs.mkdirSync(autoBackupDir);
 
 // Fungsi kirim backup otomatis ke admin
 // Fungsi kirim backup otomatis ke admin
-async function sendAutoBackup(filePath) {
-    try {
-        // 🔥 PERBAIKAN: Cek apakah adminIds valid
-        if (!adminIds || adminIds.length === 0) {
-            logger.error("❌ Tidak ada admin ID yang dikonfigurasi");
-            return;
-        }
-        
-        // Gunakan admin ID pertama yang valid
-        const firstAdminId = adminIds[0];
-        
-        // Validasi sederhana
-        if (!firstAdminId || isNaN(firstAdminId)) {
-            logger.error("❌ Admin ID tidak valid:", firstAdminId);
-            return;
-        }
-        
-        await bot.telegram.sendDocument(
-            firstAdminId,
-            { source: filePath },
-            { caption: "🗄️ Backup otomatis database (setiap 24 jam)" }
-        );
+function getNormalizedAdminIds() {
+  if (Array.isArray(adminIds)) {
+    return adminIds
+      .map((v) => Number(v))
+      .filter((v) => Number.isFinite(v) && v > 0);
+  }
 
-        logger.info("📤 Backup otomatis terkirim ke admin");
-    } catch (err) {
-        // 🔥 PERBAIKAN: Tampilkan error spesifik
-        logger.error("❌ Gagal kirim backup otomatis:", {
-            error: err.message,
-            adminId: adminIds ? adminIds[0] : 'none',
-            code: err.response?.error_code
-        });
+  if (typeof adminIds === 'string') {
+    return adminIds
+      .split(/[,\n\s]+/)
+      .map((v) => Number(v.trim()))
+      .filter((v) => Number.isFinite(v) && v > 0);
+  }
+
+  const single = Number(adminIds);
+  return Number.isFinite(single) && single > 0 ? [single] : [];
+}
+
+async function sendAutoBackup(filePath, preferredAdminId = null) {
+  try {
+    const admins = getNormalizedAdminIds();
+    if (admins.length === 0) {
+      logger.error('Tidak ada admin ID valid yang dikonfigurasi');
+      return;
     }
+
+    const targetAdminId = Number(preferredAdminId) > 0 ? Number(preferredAdminId) : admins[0];
+
+    await bot.telegram.sendDocument(
+      targetAdminId,
+      { source: filePath },
+      { caption: 'Backup otomatis database (setiap 24 jam)' }
+    );
+
+    logger.info('Backup otomatis terkirim ke admin: ' + targetAdminId);
+  } catch (err) {
+    logger.error('Gagal kirim backup otomatis:', {
+      error: err.message,
+      adminId: Number(preferredAdminId) > 0 ? Number(preferredAdminId) : 'none',
+      code: err.response?.error_code
+    });
+  }
 }
 
 // Tambahkan error handler untuk bot

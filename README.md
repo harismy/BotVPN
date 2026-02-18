@@ -1,4 +1,4 @@
-﻿# BotVPN 1FORCR
+# BotVPN 1FORCR
 Bot Telegram untuk manajemen layanan VPN yang terintegrasi dengan API AutoScript Potato.
 Referensi awal dari [arivpnstores](https://github.com/arivpnstores), based BOT: Fightertunnel.
 
@@ -27,8 +27,12 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 && sysctl -w net.ipv6.conf.default.di
 - Lihat akun saya: akun aktif, semua akun, dan akun expired.
 - Hapus akun saya:
   - pilih server sesuai role (user biasa hanya server user, reseller hanya server reseller),
-  - bisa hapus dari daftar akun atau hapus via username,
+  - hapus akun dari daftar akun aktif milik sendiri,
   - sisa masa aktif dikonversi ke saldo.
+- Cek masa aktif akun saya:
+  - pilih server lalu input username,
+  - bot cek ke API tunnel dan menampilkan layanan, tanggal expired, dan sisa hari aktif,
+  - daftar server dedup per hostname (hostname yang sama tidak dobel).
 - Tools user: Perpanjang akun, Cek Server, V2Ray Setting HC.
 - Top up saldo:
   - otomatis (QRIS API),
@@ -44,6 +48,9 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 && sysctl -w net.ipv6.conf.default.di
 
 ### Admin
 - Dashboard admin: User, Server, Saldo, Reseller, Tools, Topup.
+- Tools admin:
+  - Backup Database Sekarang,
+  - Restore Database (upload backup untuk `sellvpn.db` / `ressel.db`).
 - Manajemen user/saldo: tambah saldo, hapus saldo, cek user, hapus log.
 - Broadcast ke semua user.
 - Manajemen reseller: tambah/hapus/restore reseller, atur syarat, trigger cek syarat.
@@ -64,6 +71,15 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 && sysctl -w net.ipv6.conf.default.di
 - Pending deposit + cleanup deposit expired.
 - Logging error terstruktur untuk PM2.
 
+---
+
+## Update Terbaru
+- Notifikasi ke grup saat akun dihapus (self delete dan menu delete reseller/admin).
+- Fitur hapus akun manual by username pada menu `Hapus Akun Saya` dihapus demi keamanan.
+- Menu user baru: `Cek Masa Aktif Akun Saya`.
+- Pemilihan server cek masa aktif sudah dedup per hostname agar tidak dobel.
+- Tools admin ditambah restore database via upload file backup.
+- Trigger backup di Tools admin diarahkan ke `Backup Database Sekarang` untuk kirim backup langsung ke admin yang menekan tombol.
 ---
 
 ## Sinkronisasi Server Tunnel (AutoScript Potato)
@@ -140,3 +156,4 @@ Auto migrasi saat bot start mencakup:
 
 ## Catatan
 Simpan file dengan encoding UTF-8 agar teks dan simbol tampil normal.
+
