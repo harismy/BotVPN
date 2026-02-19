@@ -1,4 +1,4 @@
-﻿const axios = require('axios');
+const axios = require('axios');
 const { exec } = require('child_process');
 const sqlite3 = require('sqlite3').verbose();
 const db = new sqlite3.Database('./sellvpn.db');

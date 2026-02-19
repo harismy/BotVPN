@@ -106,6 +106,49 @@ function formatRupiah(amount) {
   return `Rp ${Number(amount || 0).toLocaleString('id-ID')}`;
 }
 
+function getDayRange(dayOffset = 0) {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() + dayOffset, 0, 0, 0, 0);
+  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + dayOffset + 1, 0, 0, 0, 0);
+  return { start: start.getTime(), end: end.getTime() };
+}
+
+function getIncomeStatsByRange(startTs, endTs) {
+  const accountTypes = ['ssh', 'vmess', 'vless', 'trojan', 'shadowsocks', 'zivpn', 'udp_http'];
+  const placeholders = accountTypes.map(() => '?').join(',');
+  const accountParams = [startTs, endTs, ...accountTypes];
+  const topupParams = [startTs, endTs];
+
+  return new Promise((resolve, reject) => {
+    db.get(
+      `SELECT COUNT(*) as count, COALESCE(SUM(amount), 0) as total
+       FROM transactions
+       WHERE timestamp >= ? AND timestamp < ?
+         AND type IN (${placeholders})
+         AND (reference_id IS NULL OR reference_id NOT LIKE 'account-trial-%')`,
+      accountParams,
+      (accountErr, accountRow) => {
+        if (accountErr) return reject(accountErr);
+        db.get(
+          `SELECT COALESCE(SUM(amount), 0) as total
+           FROM transactions
+           WHERE timestamp >= ? AND timestamp < ?
+             AND type = 'deposit'`,
+          topupParams,
+          (topupErr, topupRow) => {
+            if (topupErr) return reject(topupErr);
+            resolve({
+              accountCount: Number(accountRow?.count || 0),
+              accountIncome: Number(accountRow?.total || 0),
+              topupIncome: Number(topupRow?.total || 0)
+            });
+          }
+        );
+      }
+    );
+  });
+}
+
 function escapeHtmlLocal(text) {
   if (!text && text !== 0) return '';
   return String(text)
@@ -1847,6 +1890,34 @@ bot.command('hapuslog', async (ctx) => {
   }
 });
 
+bot.command('restartserver', async (ctx) => {
+  const userId = ctx.from?.id;
+  if (!adminIds.includes(userId)) {
+    return ctx.reply('Tidak ada izin!');
+  }
+
+  const rawTarget = (ctx.message?.text || '').split(' ').slice(1).join(' ').trim();
+  const defaultTarget = process.env.pm_id || process.env.name || 'all';
+  const target = rawTarget || String(defaultTarget);
+
+  if (!/^[a-zA-Z0-9_.-]+$/.test(target)) {
+    return ctx.reply('Target restart tidak valid. Gunakan nama app PM2 atau id numerik.');
+  }
+
+  await ctx.reply('Menjalankan restart PM2: ' + target);
+
+  exec('pm2 restart ' + target, (error, stdout, stderr) => {
+    if (error) {
+      logger.error('Gagal restart PM2 via Telegram: ' + error.message);
+      return ctx.reply('Gagal restart PM2: ' + error.message);
+    }
+
+    const output = [stdout, stderr].filter(Boolean).join('\n').trim();
+    const safeOutput = output ? output.slice(0, 1200) : 'OK';
+    return ctx.reply('Restart PM2 berhasil.\n' + safeOutput);
+  });
+});
+
 async function sendHelpAdmin(ctx) {
   const userId = ctx.from?.id;
   if (!adminIds.includes(userId)) {
@@ -1873,7 +1944,7 @@ async function sendHelpAdmin(ctx) {
 15. /hapuslog - Menghapus log bot.
 16. /allresellerstats - Ambil data statistik pembuatan semua reseller
 17. /resellerstats - Ambil data statistik saya
-18. /checkpaymentconfig - Ngecek konfigurasi file api-payment-outkut.js
+18. /checkpaymentconfig - Ngecek konfigurasi file api-payment-outkut.js\n19. /restartserver [target] - Restart app PM2 dari Telegram
 
 Gunakan perintah ini dengan format yang benar untuk menghindari kesalahan.
 `;
@@ -2453,6 +2524,7 @@ async function sendAdminSaldoMenu(ctx) {
       { text: '🖼️ Upload QRIS', callback_data: 'upload_qris' }
     ],
     [{ text: '🎁 Bonus Topup', callback_data: 'bonus_topup_menu' }],
+    [{ text: 'Pendapatan Hari Ini & Kemarin', callback_data: 'admin_income_summary' }],
     [{ text: autoLabel, callback_data: 'toggle_topup_auto' }],
     [{ text: manualLabel, callback_data: 'toggle_topup_manual' }],
     [{ text: '🔙 Kembali', callback_data: 'admin_menu' }]
@@ -2630,6 +2702,39 @@ bot.action('manage_server_activate', async (ctx) => {
 bot.action('admin_menu_saldo', async (ctx) => {
   await ctx.answerCbQuery();
   await sendAdminSaldoMenu(ctx);
+});
+
+bot.action('admin_income_summary', async (ctx) => {
+  await ctx.answerCbQuery();
+  const adminId = ctx.from.id;
+  if (!adminIds.includes(adminId)) {
+    return ctx.reply('Anda tidak memiliki izin untuk mengakses menu ini.');
+  }
+
+  try {
+    const todayRange = getDayRange(0);
+    const yesterdayRange = getDayRange(-1);
+    const [todayStats, yesterdayStats] = await Promise.all([
+      getIncomeStatsByRange(todayRange.start, todayRange.end),
+      getIncomeStatsByRange(yesterdayRange.start, yesterdayRange.end)
+    ]);
+
+    const message =
+      '*INFORMASI PENDAPATAN*\n\n' +
+      '*Hari Ini*\n' +
+      '- Pendapatan akun: ' + formatRupiah(todayStats.accountIncome) + '\n' +
+      '- Jumlah akun terjual: ' + todayStats.accountCount + '\n' +
+      '- Topup masuk: ' + formatRupiah(todayStats.topupIncome) + '\n\n' +
+      '*Kemarin*\n' +
+      '- Pendapatan akun: ' + formatRupiah(yesterdayStats.accountIncome) + '\n' +
+      '- Jumlah akun terjual: ' + yesterdayStats.accountCount + '\n' +
+      '- Topup masuk: ' + formatRupiah(yesterdayStats.topupIncome);
+
+    await ctx.reply(message, { parse_mode: 'Markdown' });
+  } catch (error) {
+    logger.error('Gagal mengambil informasi pendapatan admin:', error.message);
+    await ctx.reply('Gagal mengambil informasi pendapatan. Coba lagi.');
+  }
 });
 
 bot.action('bonus_topup_menu', async (ctx) => {
@@ -8792,62 +8897,3 @@ const adminMessage =
     cleanupOldDeposits();
   }, 10000);
 });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
