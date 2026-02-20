@@ -395,6 +395,23 @@ function upsertAccountRecord(payload) {
   );
 }
 
+function getAccountExistingExpiry(userId, type, username, serverId) {
+  return new Promise((resolve) => {
+    db.get(
+      'SELECT expires_at FROM accounts WHERE user_id = ? AND type = ? AND username = ? AND server_id = ?',
+      [userId, type, username, serverId],
+      (err, row) => {
+        if (err) {
+          logger.error('Gagal ambil expires_at akun:', err.message);
+          return resolve(null);
+        }
+        const exp = Number(row?.expires_at || 0);
+        resolve(Number.isFinite(exp) && exp > 0 ? exp : null);
+      }
+    );
+  });
+}
+
 function cleanupExpiredAccounts() {
   const now = Date.now();
   const cutoff = now - (3 * 24 * 60 * 60 * 1000);
@@ -710,6 +727,36 @@ const dbRunAsync = (sql, params = []) => new Promise((resolve, reject) => {
     resolve(this);
   });
 });
+
+async function chargeAccountTransactionAtomic(userId, amount, type, action = 'other') {
+  const referenceId = `account-${action}-${type}-${userId}-${Date.now()}`;
+
+  try {
+    await dbRunAsync('BEGIN IMMEDIATE TRANSACTION');
+
+    const updateResult = await dbRunAsync(
+      'UPDATE users SET saldo = saldo - ? WHERE user_id = ? AND saldo >= ?',
+      [amount, userId, amount]
+    );
+
+    if (!updateResult || Number(updateResult.changes || 0) === 0) {
+      throw new Error('SALDO_NOT_ENOUGH_OR_USER_NOT_FOUND');
+    }
+
+    await dbRunAsync(
+      'INSERT INTO transactions (user_id, amount, type, reference_id, timestamp) VALUES (?, ?, ?, ?, ?)',
+      [userId, amount, type, referenceId, Date.now()]
+    );
+
+    await dbRunAsync('COMMIT');
+    return { ok: true, referenceId };
+  } catch (error) {
+    try {
+      await dbRunAsync('ROLLBACK');
+    } catch (_) {}
+    return { ok: false, error: error?.message || 'UNKNOWN' };
+  }
+}
 
 function normalizeSyncHost(rawHost) {
   const value = String(rawHost || '').trim();
@@ -3575,7 +3622,9 @@ bot.action('delete_my_account_intro', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   await ctx.reply(
     '⚠️ *Hapus Akun Saya*\n\n' +
-    'Jika akun masih tersisa masa aktif (misal 20 hari), sisa masa aktif akan dikonversi menjadi saldo bot.\n\n' +
+    'Penghapusan hanya bisa jika sisa masa aktif minimal 2 hari.\n' +
+    'Akun baru bisa dihapus setelah aktif minimal 24 jam.\n' +
+    'Konversi saldo dihitung full sesuai sisa hari.\n\n' +
     'Lanjut pilih server akun yang ingin dihapus.',
     {
       parse_mode: 'Markdown',
@@ -3715,23 +3764,27 @@ bot.action(/delete_my_account_pick_(\d+)/, async (ctx) => {
       }
 
       const remainingDays = calcRemainingDays(row.expires_at);
+      const accountAgeMs = Date.now() - Number(row.created_at || 0);
+      const lockDelete24h = !Number.isFinite(accountAgeMs) || accountAgeMs < (24 * 60 * 60 * 1000);
       const refund = Math.max(0, remainingDays * Number(row.harga || 0));
       const serverLabel = row.server_name || row.domain || '-';
 
       await ctx.reply(
-        `⚠️ <b>Konfirmasi Hapus Akun</b>\n\n` +
-        `• <b>Username:</b> ${escapeHtml(row.username || '-')}\n` +
-        `• <b>Layanan:</b> ${escapeHtml(String(row.type || '-').toUpperCase())}\n` +
-        `• <b>Server:</b> ${escapeHtml(serverLabel)}\n` +
-        `• <b>Sisa hari:</b> ${remainingDays} hari\n` +
-        `• <b>Konversi saldo:</b> Rp ${Number(refund).toLocaleString('id-ID')}\n\n` +
-        `Akun akan dihapus permanen dari server.`,
+        'Konfirmasi Hapus Akun\n\n' +
+        `- <b>Username:</b> ${escapeHtml(row.username || '-')}\n` +
+        `- <b>Layanan:</b> ${escapeHtml(String(row.type || '-').toUpperCase())}\n` +
+        `- <b>Server:</b> ${escapeHtml(serverLabel)}\n` +
+        `- <b>Sisa hari:</b> ${remainingDays} hari\n` +
+        `- <b>Konversi saldo:</b> Rp ${Number(refund).toLocaleString('id-ID')}\n\n` +
+        ((remainingDays < 2 || lockDelete24h)
+          ? `Akun ini belum bisa dihapus.${remainingDays < 2 ? ' Minimal sisa masa aktif 2 hari.' : ''}${lockDelete24h ? ' Akun harus aktif minimal 24 jam.' : ''}`
+          : 'Akun akan dihapus permanen dari server.'),
         {
           parse_mode: 'HTML',
           reply_markup: {
             inline_keyboard: [
-              [{ text: '✅ Ya, Hapus Akun Ini', callback_data: `delete_my_account_confirm_${row.id}` }],
-              [{ text: '❌ Batal', callback_data: 'delete_my_account_select_server' }]
+              ...((remainingDays >= 2 && !lockDelete24h) ? [[{ text: 'Ya, Hapus Akun Ini', callback_data: `delete_my_account_confirm_${row.id}` }]] : []),
+              [{ text: 'Batal', callback_data: 'delete_my_account_select_server' }]
             ]
           }
         }
@@ -3781,6 +3834,13 @@ bot.action(/delete_my_account_confirm_(\d+)/, async (ctx) => {
     }
 
     const remainingDays = calcRemainingDays(row.expires_at);
+    if (remainingDays < 2) {
+      return ctx.reply('Akun belum bisa dihapus. Minimal sisa masa aktif 2 hari.');
+    }
+    const accountAgeMs = Date.now() - Number(row.created_at || 0);
+    if (!Number.isFinite(accountAgeMs) || accountAgeMs < (24 * 60 * 60 * 1000)) {
+      return ctx.reply('Akun belum bisa dihapus. Akun harus aktif minimal 24 jam.');
+    }
     const refund = Math.max(0, remainingDays * Number(row.harga || 0));
 
     await dbRun('DELETE FROM accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
@@ -3867,22 +3927,29 @@ async function sendAccountList(ctx, isExpired, limit = 10) {
     const items = rows.map((row, idx) => {
       const expText = row.expires_at ? formatDateId(new Date(row.expires_at)) : '-';
       const linkLines = [];
-      if (row.link_tls) linkLines.push(`• <b>Link TLS</b>: <code>${escapeHtmlLocal(row.link_tls)}</code>`);
-      if (row.link_none) linkLines.push(`• <b>Link NTLS</b>: <code>${escapeHtmlLocal(row.link_none)}</code>`);
-      if (row.link_grpc) linkLines.push(`• <b>Link GRPC</b>: <code>${escapeHtmlLocal(row.link_grpc)}</code>`);
+      if (row.link_tls) linkLines.push(`- <b>Link TLS</b>: <code>${escapeHtmlLocal(row.link_tls)}</code>`);
+      if (row.link_none) linkLines.push(`- <b>Link NTLS</b>: <code>${escapeHtmlLocal(row.link_none)}</code>`);
+      if (row.link_grpc) linkLines.push(`- <b>Link GRPC</b>: <code>${escapeHtmlLocal(row.link_grpc)}</code>`);
+
+      const isZivpn = String(row.type || '').toLowerCase() === 'zivpn';
+      const accountLabel = isZivpn ? 'UDP Password' : 'Username';
+      const passwordLine = (!isZivpn && row.password)
+        ? `- <b>Password:</b> ${escapeHtmlLocal(row.password)}\n`
+        : '';
+
       return (
         `#${idx + 1}\n` +
-        `• <b>Layanan:</b> ${escapeHtmlLocal(row.type).toUpperCase()}\n` +
-        `• <b>Username:</b> ${escapeHtmlLocal(row.username)}\n` +
-        (row.password ? `• <b>Password:</b> ${escapeHtmlLocal(row.password)}\n` : '') +
-        `• <b>Server:</b> ${escapeHtmlLocal(row.server_name || row.domain || '-')}\n` +
-        `• <b>Domain:</b> ${escapeHtmlLocal(row.domain || '-')}\n` +
-        `• <b>Expired:</b> ${escapeHtmlLocal(expText)}` +
+        `- <b>Layanan:</b> ${escapeHtmlLocal(row.type).toUpperCase()}\n` +
+        `- <b>${accountLabel}:</b> ${escapeHtmlLocal(row.username)}\n` +
+        passwordLine +
+        `- <b>Server:</b> ${escapeHtmlLocal(row.server_name || row.domain || '-')}\n` +
+        `- <b>Domain:</b> ${escapeHtmlLocal(row.domain || '-')}\n` +
+        `- <b>Expired:</b> ${escapeHtmlLocal(expText)}` +
         (linkLines.length ? `\n${linkLines.join('\n')}` : '')
       );
     }).join('\n\n');
 
-    await ctx.reply(`📂 <b>${isExpired ? 'Akun Expired' : 'Akun Aktif'}</b>\n\n${items}`, { parse_mode: 'HTML' });
+    await ctx.reply(`<b>${isExpired ? 'Akun Expired' : 'Akun Aktif'}</b>\n\n${items}`, { parse_mode: 'HTML' });
   });
 }
 
@@ -6104,11 +6171,27 @@ if (exp > 365) {
 //SALDO DATABES
 // setelah bikin akun (create/renew), kita cek hasilnya
 const msgLower = String(msg).toLowerCase();
-if (type === 'zivpn' && action === 'create' && msgLower.includes('username sudah ada')) {
+const isDuplicateUsername =
+  action === 'create' &&
+  (
+    msgLower.includes('username sudah ada') ||
+    msgLower.includes('username already exists') ||
+    msgLower.includes('username exists') ||
+    msgLower.includes('duplicate username') ||
+    msgLower.includes('exists, try another name') ||
+    (msgLower.includes('exists') && msgLower.includes('try another name'))
+  );
+
+if (isDuplicateUsername) {
   state.step = `username_${action}_${type}`;
   delete state.username;
   delete state.exp;
-  await ctx.reply('❌ username sudah ada mohon ulangi dengan username yang unik\n\nMasukkan username baru:', { parse_mode: 'Markdown' });
+  await ctx.reply(
+    'Username yang kamu masukkan sudah dipakai di server.\n' +
+    'Silakan gunakan username lain yang unik.\n\n' +
+    'Masukkan username baru:',
+    { parse_mode: 'Markdown' }
+  );
   return;
 }
 const isErrorMsg = msg.includes('?') || msg.includes('❌') || msgLower.includes('sudah ada') || msgLower.includes('exists') || msgLower.includes('already exists');
@@ -6116,29 +6199,34 @@ if (isErrorMsg) {
   logger.error(`🔄 Rollback saldo user ${ctx.from.id}, type: ${type}, server: ${serverId}, respon: ${msg}`);
   return ctx.reply(msg, { parse_mode: 'Markdown' });
 }
-// kalau sampai sini artinya tidak ada ❌, transaksi sukses
-if (action === 'create') {
-  await recordAccountTransaction(ctx.from.id, type, totalHarga, action);
-} else if (action === 'renew') {
-  await recordAccountTransaction(ctx.from.id, type, totalHarga, action);
+// kalau sampai sini artinya tidak ada error, lanjut finalisasi saldo + transaksi (atomic)
+const chargeResult = await chargeAccountTransactionAtomic(ctx.from.id, totalHarga, type, action);
+if (!chargeResult.ok) {
+  logger.error(`Finalisasi transaksi gagal untuk user ${ctx.from.id}, type: ${type}, server: ${serverId}, err: ${chargeResult.error}`);
+  if (chargeResult.error === 'SALDO_NOT_ENOUGH_OR_USER_NOT_FOUND') {
+    return ctx.reply('? Saldo tidak cukup (kemungkinan sudah terpakai transaksi lain). Silakan cek saldo Anda lalu coba lagi.', { parse_mode: 'Markdown' });
+  }
+  return ctx.reply('? Terjadi kesalahan saat finalisasi transaksi. Silakan coba lagi.', { parse_mode: 'Markdown' });
 }
-logger.info(`✅ Transaksi sukses untuk user ${ctx.from.id}, type: ${type}, server: ${serverId}`);
 
-db.run('UPDATE users SET saldo = saldo - ? WHERE user_id = ?', [totalHarga, ctx.from.id], (err) => {
-  if (err) {
-    logger.error('⚠️ Kesalahan saat mengurangi saldo pengguna:', err.message);
-    return ctx.reply('❌ *Terjadi kesalahan saat mengurangi saldo pengguna.*', { parse_mode: 'Markdown' });
-  }
-});
+logger.info(`? Transaksi sukses untuk user ${ctx.from.id}, type: ${type}, server: ${serverId}, ref: ${chargeResult.referenceId}`);
 
-db.run('UPDATE Server SET total_create_akun = total_create_akun + 1 WHERE id = ?', [serverId], (err) => {
-  if (err) {
-    logger.error('⚠️ Kesalahan saat menambahkan total_create_akun:', err.message);
-  }
-});
+if (action === 'create') {
+  db.run('UPDATE Server SET total_create_akun = total_create_akun + 1 WHERE id = ?', [serverId], (err) => {
+    if (err) {
+      logger.error('Kesalahan saat menambahkan total_create_akun:', err.message);
+    }
+  });
+}
 
 const expDays = Number(exp) || 0;
-const expiresAt = expDays > 0 ? (Date.now() + expDays * 24 * 60 * 60 * 1000) : null;
+let expiresAt = expDays > 0 ? (Date.now() + expDays * 24 * 60 * 60 * 1000) : null;
+
+if (action === 'renew' && expDays > 0) {
+  const existingExpiry = await getAccountExistingExpiry(ctx.from.id, type, username, serverId);
+  const baseTs = Math.max(Date.now(), Number(existingExpiry || 0));
+  expiresAt = baseTs + expDays * 24 * 60 * 60 * 1000;
+}
 const passwordToStore = (type === 'zivpn') ? usedPassword : password;
 const linkPayload = (type === 'vmess' || type === 'vless' || type === 'trojan')
   ? extractAccountLinksFromMessage(msg)
