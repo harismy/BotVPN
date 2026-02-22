@@ -347,8 +347,27 @@ function getAdminTelegramUsername() {
 function upsertAccountRecord(payload) {
   const now = Date.now();
   db.get(
-    'SELECT id FROM accounts WHERE user_id = ? AND type = ? AND username = ? AND server_id = ?',
-    [payload.userId, payload.type, payload.username, payload.serverId],
+    `SELECT id FROM accounts
+      WHERE user_id = ?
+        AND type = ?
+        AND username = ?
+        AND (
+          server_id = ?
+          OR (
+            ? <> ''
+            AND LOWER(TRIM(COALESCE(domain, ''))) = LOWER(TRIM(?))
+          )
+        )
+      ORDER BY id DESC
+      LIMIT 1`,
+    [
+      payload.userId,
+      payload.type,
+      payload.username,
+      payload.serverId,
+      String(payload.domain || '').trim(),
+      String(payload.domain || '').trim()
+    ],
     (err, row) => {
       if (err) {
         logger.error('Gagal cek akun:', err.message);
@@ -356,9 +375,10 @@ function upsertAccountRecord(payload) {
       }
       if (row) {
         db.run(
-          'UPDATE accounts SET password = ?, server_name = ?, domain = ?, link_tls = ?, link_none = ?, link_grpc = ?, link_uptls = ?, link_upntls = ?, expires_at = ? WHERE id = ?',
+          'UPDATE accounts SET password = ?, server_id = ?, server_name = ?, domain = ?, link_tls = ?, link_none = ?, link_grpc = ?, link_uptls = ?, link_upntls = ?, expires_at = ? WHERE id = ?',
           [
             payload.password || null,
+            payload.serverId,
             payload.serverName || null,
             payload.domain || null,
             payload.link_tls || null,
@@ -395,11 +415,23 @@ function upsertAccountRecord(payload) {
   );
 }
 
-function getAccountExistingExpiry(userId, type, username, serverId) {
+function getAccountExistingExpiry(userId, type, username, serverId, domain = '') {
   return new Promise((resolve) => {
     db.get(
-      'SELECT expires_at FROM accounts WHERE user_id = ? AND type = ? AND username = ? AND server_id = ?',
-      [userId, type, username, serverId],
+      `SELECT expires_at FROM accounts
+        WHERE user_id = ?
+          AND type = ?
+          AND username = ?
+          AND (
+            server_id = ?
+            OR (
+              ? <> ''
+              AND LOWER(TRIM(COALESCE(domain, ''))) = LOWER(TRIM(?))
+            )
+          )
+        ORDER BY expires_at DESC
+        LIMIT 1`,
+      [userId, type, username, serverId, String(domain || '').trim(), String(domain || '').trim()],
       (err, row) => {
         if (err) {
           logger.error('Gagal ambil expires_at akun:', err.message);
@@ -419,6 +451,76 @@ function cleanupExpiredAccounts() {
     if (err) {
       logger.error('Gagal cleanup accounts expired:', err.message);
     }
+  });
+}
+
+function migrateAccountServerByDomain() {
+  return new Promise((resolve) => {
+    db.all(
+      `SELECT a.id, a.domain
+       FROM accounts a
+       WHERE (a.server_id IS NULL OR a.server_id = 0)
+         AND a.domain IS NOT NULL
+         AND TRIM(a.domain) <> ''`,
+      [],
+      (err, rows) => {
+        if (err) {
+          logger.error('Gagal membaca accounts untuk migrasi server_id:', err.message);
+          return resolve({ updated: 0, total: 0 });
+        }
+
+        if (!rows || rows.length === 0) {
+          return resolve({ updated: 0, total: 0 });
+        }
+
+        let updated = 0;
+        let processed = 0;
+
+        const done = () => {
+          if (processed >= rows.length) {
+            return resolve({ updated, total: rows.length });
+          }
+        };
+
+        rows.forEach((row) => {
+          const domain = String(row.domain || '').trim();
+          db.get(
+            `SELECT id, COALESCE(NULLIF(nama_server, ''), domain) AS server_label
+             FROM Server
+             WHERE LOWER(TRIM(COALESCE(domain, ''))) = LOWER(TRIM(?))
+             ORDER BY id DESC
+             LIMIT 1`,
+            [domain],
+            (mapErr, serverRow) => {
+              if (mapErr) {
+                logger.error('Gagal mapping domain ke server saat migrasi:', mapErr.message);
+                processed += 1;
+                return done();
+              }
+
+              if (!serverRow) {
+                processed += 1;
+                return done();
+              }
+
+              db.run(
+                'UPDATE accounts SET server_id = ?, server_name = COALESCE(server_name, ?), domain = ? WHERE id = ?',
+                [serverRow.id, serverRow.server_label || domain, domain, row.id],
+                function(updateErr) {
+                  if (updateErr) {
+                    logger.error('Gagal update accounts saat migrasi server_id:', updateErr.message);
+                  } else if (this && this.changes > 0) {
+                    updated += this.changes;
+                  }
+                  processed += 1;
+                  done();
+                }
+              );
+            }
+          );
+        });
+      }
+    );
   });
 }
 
@@ -580,6 +682,7 @@ db.run(`CREATE TABLE IF NOT EXISTS Server (
   domain TEXT,
   auth TEXT,
   harga INTEGER,
+  harga_reseller INTEGER,
   nama_server TEXT,
   quota INTEGER,
   iplimit INTEGER,
@@ -621,6 +724,9 @@ db.all("PRAGMA table_info(Server)", (err, rows) => {
     }
     if (!cols.includes('support_udp_http')) {
       db.run("ALTER TABLE Server ADD COLUMN support_udp_http INTEGER DEFAULT 0");
+    }
+    if (!cols.includes('harga_reseller')) {
+      db.run("ALTER TABLE Server ADD COLUMN harga_reseller INTEGER");
     }
     if (!cols.includes('sync_host')) {
       db.run("ALTER TABLE Server ADD COLUMN sync_host TEXT");
@@ -710,6 +816,31 @@ db.run(`CREATE TABLE IF NOT EXISTS transactions (
         }
       });
     });
+  }
+});
+
+db.run(`CREATE TABLE IF NOT EXISTS broadcast_polls (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  question TEXT NOT NULL,
+  options_json TEXT NOT NULL,
+  created_by INTEGER,
+  created_at INTEGER,
+  is_active INTEGER DEFAULT 1
+)`, (err) => {
+  if (err) {
+    logger.error('Kesalahan membuat tabel broadcast_polls:', err.message);
+  }
+});
+
+db.run(`CREATE TABLE IF NOT EXISTS broadcast_poll_votes (
+  poll_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  option_index INTEGER NOT NULL,
+  voted_at INTEGER,
+  PRIMARY KEY (poll_id, user_id)
+)`, (err) => {
+  if (err) {
+    logger.error('Kesalahan membuat tabel broadcast_poll_votes:', err.message);
   }
 });
 
@@ -979,6 +1110,38 @@ async function syncServerUsageFromTunnel(trigger = 'manual', options = {}) {
 }
 
 // Tambah di section command, setelah command 'admin'
+bot.command('edithargareseller', async (ctx) => {
+  const userId = ctx.from.id;
+  if (!isAdmin(userId)) {
+    return ctx.reply('Anda tidak memiliki izin untuk menggunakan perintah ini.');
+  }
+
+  const args = ctx.message.text.split(' ');
+  if (args.length !== 3) {
+    return ctx.reply('Format salah. Gunakan: /edithargareseller <domain> <harga>');
+  }
+
+  const [domain, hargaReseller] = args.slice(1);
+  if (!/^\d+$/.test(hargaReseller)) {
+    return ctx.reply('harga reseller harus berupa angka.');
+  }
+
+  db.run(
+    'UPDATE Server SET harga_reseller = ? WHERE domain = ?',
+    [parseInt(hargaReseller, 10), domain],
+    function(err) {
+      if (err) {
+        logger.error('Error saat update harga reseller:', err.message);
+        return ctx.reply('Terjadi kesalahan saat update harga reseller.');
+      }
+      if (this.changes === 0) {
+        return ctx.reply('Server dengan domain tersebut tidak ditemukan.');
+      }
+      return ctx.reply(`Harga reseller untuk ${domain} berhasil diupdate ke Rp ${Number(hargaReseller).toLocaleString('id-ID')}`);
+    }
+  );
+});
+
 bot.command('checkpaymentconfig', async (ctx) => {
   const userId = ctx.message.from.id;
   
@@ -2029,6 +2192,254 @@ bot.command('addserver_reseller', async (ctx) => {
   }
 });
 //////////
+async function broadcastMessageToAllUsers(message) {
+  return new Promise((resolve) => {
+    db.all('SELECT user_id FROM users', [], async (err, rows) => {
+      if (err) {
+        logger.error('Kesalahan saat mengambil daftar pengguna:', err.message);
+        return resolve({ ok: 0, fail: 0, error: err.message });
+      }
+
+      let ok = 0;
+      let fail = 0;
+
+      for (const row of rows || []) {
+        try {
+          await bot.telegram.sendMessage(row.user_id, message);
+          ok++;
+        } catch (e) {
+          fail++;
+          logger.warn('Gagal kirim broadcast ke ' + row.user_id + ': ' + (e.message || e));
+        }
+      }
+
+      resolve({ ok, fail });
+    });
+  });
+}
+
+function buildBroadcastPollText(question, options, counts, totalVotes, userChoiceIndex = -1) {
+  const lines = ['*Polling Broadcast*', '', question, ''];
+  for (let i = 0; i < options.length; i++) {
+    const count = Number(counts[i] || 0);
+    const pct = totalVotes > 0 ? ((count / totalVotes) * 100).toFixed(1) : '0.0';
+    const me = userChoiceIndex === i ? ' (pilihan kamu)' : '';
+    lines.push((i + 1) + '. ' + options[i] + ' -> ' + count + ' vote (' + pct + '%)' + me);
+  }
+  lines.push('');
+  lines.push('Total vote: ' + totalVotes);
+  return lines.join('\n');
+}
+
+function buildBroadcastPollKeyboard(pollId, options) {
+  const rows = options.map((opt, idx) => ([{ text: opt, callback_data: 'bpv_' + pollId + '_' + idx }]));
+  rows.push([{ text: 'Refresh Hasil', callback_data: 'bpr_' + pollId }]);
+  return { inline_keyboard: rows };
+}
+
+async function createBroadcastPoll(question, options, createdBy) {
+  const now = Date.now();
+  const result = await dbRunAsync(
+    'INSERT INTO broadcast_polls (question, options_json, created_by, created_at, is_active) VALUES (?, ?, ?, ?, 1)',
+    [question, JSON.stringify(options), Number(createdBy || 0), now]
+  );
+  return result.lastID;
+}
+
+async function getBroadcastPollById(pollId) {
+  const rows = await dbAllAsync(
+    'SELECT id, question, options_json, is_active FROM broadcast_polls WHERE id = ? LIMIT 1',
+    [pollId]
+  );
+  const row = rows[0];
+  if (!row) return null;
+  let options = [];
+  try {
+    const parsed = JSON.parse(row.options_json || '[]');
+    options = Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    options = [];
+  }
+  return {
+    id: Number(row.id),
+    question: String(row.question || ''),
+    isActive: Number(row.is_active || 0) === 1,
+    options
+  };
+}
+
+async function getBroadcastPollStats(pollId, optionCount) {
+  const rows = await dbAllAsync(
+    'SELECT option_index, COUNT(*) as c FROM broadcast_poll_votes WHERE poll_id = ? GROUP BY option_index',
+    [pollId]
+  );
+  const counts = new Array(optionCount).fill(0);
+  let total = 0;
+  for (const row of rows) {
+    const idx = Number(row.option_index);
+    const c = Number(row.c || 0);
+    if (idx >= 0 && idx < optionCount) {
+      counts[idx] = c;
+      total += c;
+    }
+  }
+  return { counts, total };
+}
+
+async function getUserBroadcastPollChoice(pollId, userId) {
+  const rows = await dbAllAsync(
+    'SELECT option_index FROM broadcast_poll_votes WHERE poll_id = ? AND user_id = ? LIMIT 1',
+    [pollId, userId]
+  );
+  if (!rows[0]) return -1;
+  return Number(rows[0].option_index);
+}
+
+async function upsertBroadcastPollVote(pollId, userId, optionIndex) {
+  const now = Date.now();
+  await dbRunAsync('DELETE FROM broadcast_poll_votes WHERE poll_id = ? AND user_id = ?', [pollId, userId]);
+  await dbRunAsync(
+    'INSERT INTO broadcast_poll_votes (poll_id, user_id, option_index, voted_at) VALUES (?, ?, ?, ?)',
+    [pollId, userId, optionIndex, now]
+  );
+}
+
+const BROADCAST_POLL_RETENTION_DAYS = 7;
+
+async function cleanupOldBroadcastPolls(retentionDays = BROADCAST_POLL_RETENTION_DAYS) {
+  try {
+    const threshold = Date.now() - (Math.max(1, Number(retentionDays) || 7) * 24 * 60 * 60 * 1000);
+    const oldRows = await dbAllAsync(
+      'SELECT id FROM broadcast_polls WHERE COALESCE(created_at, 0) > 0 AND created_at < ?',
+      [threshold]
+    );
+    if (!oldRows.length) return 0;
+
+    const ids = oldRows.map(r => Number(r.id)).filter(Number.isFinite);
+    if (!ids.length) return 0;
+
+    await dbRunAsync('BEGIN IMMEDIATE TRANSACTION');
+    for (const id of ids) {
+      await dbRunAsync('DELETE FROM broadcast_poll_votes WHERE poll_id = ?', [id]);
+      await dbRunAsync('DELETE FROM broadcast_polls WHERE id = ?', [id]);
+    }
+    await dbRunAsync('COMMIT');
+
+    logger.info('Cleanup polling broadcast: ' + ids.length + ' polling lama dihapus');
+    return ids.length;
+  } catch (err) {
+    try { await dbRunAsync('ROLLBACK'); } catch (_) {}
+    logger.error('Gagal cleanup polling broadcast:', err.message);
+    return 0;
+  }
+}
+
+async function broadcastPollToAllUsers(question, options, createdBy = 0) {
+  const pollId = await createBroadcastPoll(question, options, createdBy);
+  const stats = await getBroadcastPollStats(pollId, options.length);
+  const text = buildBroadcastPollText(question, options, stats.counts, stats.total, -1);
+  const keyboard = buildBroadcastPollKeyboard(pollId, options);
+
+  return new Promise((resolve) => {
+    db.all('SELECT user_id FROM users', [], async (err, rows) => {
+      if (err) {
+        logger.error('Kesalahan saat mengambil daftar pengguna untuk polling:', err.message);
+        return resolve({ ok: 0, fail: 0, pollId, error: err.message });
+      }
+
+      let ok = 0;
+      let fail = 0;
+
+      for (const row of rows || []) {
+        try {
+          await bot.telegram.sendMessage(row.user_id, text, { parse_mode: 'Markdown', reply_markup: keyboard });
+          ok++;
+        } catch (e) {
+          fail++;
+          logger.warn('Gagal kirim poll ke ' + row.user_id + ': ' + (e.message || e));
+        }
+      }
+
+      resolve({ ok, fail, pollId });
+    });
+  });
+}
+
+//////////
+bot.action(/bpv_(\d+)_(\d+)/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const pollId = Number(ctx.match[1]);
+  const optionIndex = Number(ctx.match[2]);
+  const userId = Number(ctx.from.id);
+
+  try {
+    const poll = await getBroadcastPollById(pollId);
+    if (!poll || !poll.isActive) {
+      return ctx.reply('Polling tidak ditemukan atau sudah ditutup.');
+    }
+
+    if (!Number.isInteger(optionIndex) || optionIndex < 0 || optionIndex >= poll.options.length) {
+      return ctx.reply('Opsi polling tidak valid.');
+    }
+
+    await upsertBroadcastPollVote(pollId, userId, optionIndex);
+    const stats = await getBroadcastPollStats(pollId, poll.options.length);
+    const myChoice = await getUserBroadcastPollChoice(pollId, userId);
+    const text = buildBroadcastPollText(poll.question, poll.options, stats.counts, stats.total, myChoice);
+    const keyboard = buildBroadcastPollKeyboard(pollId, poll.options);
+
+    await ctx.editMessageText(text, { parse_mode: 'Markdown', reply_markup: keyboard });
+  } catch (e) {
+    const errText = String(
+      e?.response?.description ||
+      e?.description ||
+      e?.message ||
+      e
+    );
+
+    if (/message is not modified/i.test(errText)) {
+      return ctx.answerCbQuery('Belum ada perubahan hasil.', { show_alert: false }).catch(() => {});
+    }
+
+    logger.error('Error vote broadcast poll: ' + errText);
+    await ctx.reply('Terjadi kesalahan saat menyimpan vote.');
+  }
+});
+
+bot.action(/bpr_(\d+)/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const pollId = Number(ctx.match[1]);
+  const userId = Number(ctx.from.id);
+
+  try {
+    const poll = await getBroadcastPollById(pollId);
+    if (!poll || !poll.isActive) {
+      return ctx.reply('Polling tidak ditemukan atau sudah ditutup.');
+    }
+
+    const stats = await getBroadcastPollStats(pollId, poll.options.length);
+    const myChoice = await getUserBroadcastPollChoice(pollId, userId);
+    const text = buildBroadcastPollText(poll.question, poll.options, stats.counts, stats.total, myChoice);
+    const keyboard = buildBroadcastPollKeyboard(pollId, poll.options);
+
+    await ctx.editMessageText(text, { parse_mode: 'Markdown', reply_markup: keyboard });
+  } catch (e) {
+    const errText = String(
+      e?.response?.description ||
+      e?.description ||
+      e?.message ||
+      e
+    );
+
+    if (/message is not modified/i.test(errText)) {
+      return ctx.answerCbQuery('Belum ada perubahan hasil.', { show_alert: false }).catch(() => {});
+    }
+
+    logger.error('Error refresh broadcast poll: ' + errText);
+    await ctx.reply('Terjadi kesalahan saat refresh hasil polling.');
+  }
+});
+
 bot.command('broadcast', async (ctx) => {
   const userId = ctx.message.from.id;
   logger.info(`Broadcast command received from user_id: ${userId}`);
@@ -2068,7 +2479,53 @@ bot.command('broadcast', async (ctx) => {
   });
 });
 
-//command addserver biasa potato
+
+
+bot.command('broadcastpoll', async (ctx) => {
+  const userId = ctx.message.from.id;
+  if (!adminIds.includes(userId)) {
+    return ctx.reply('Anda tidak memiliki izin untuk menggunakan perintah ini.');
+  }
+
+  const rawText = (ctx.message.text || '').replace(/^\/broadcastpoll(?:@\w+)?\s*/i, '').trim();
+  const sourceText = ctx.message.reply_to_message
+    ? ((ctx.message.reply_to_message.text || ctx.message.reply_to_message.caption || '').trim())
+    : rawText;
+
+  if (!sourceText) {
+    return ctx.reply(
+      'Format: /broadcastpoll Pertanyaan | Opsi A | Opsi B [| Opsi C ...]\n' +
+      'Minimal 2 opsi, maksimal 10 opsi.'
+    );
+  }
+
+  const parts = sourceText.split('|').map((x) => x.trim()).filter(Boolean);
+  if (parts.length < 3) {
+    return ctx.reply('Format salah. Minimal: Pertanyaan | Opsi A | Opsi B');
+  }
+
+  const question = parts[0];
+  const options = parts.slice(1, 11);
+
+  if (question.length < 5) {
+    return ctx.reply('Pertanyaan terlalu pendek. Minimal 5 karakter.');
+  }
+
+  if (options.length < 2) {
+    return ctx.reply('Opsi polling minimal 2 pilihan.');
+  }
+
+  const pollResult = await broadcastPollToAllUsers(question, options, userId);
+
+  return ctx.reply(
+    'Polling siaran selesai.\n' +
+    '- Berhasil: ' + pollResult.ok + '\n' +
+    '- Gagal: ' + pollResult.fail + '\n' +
+    '- ID Polling: ' + pollResult.pollId + '\n\n' +
+    'Hasil polling ini bersifat global (gabungan semua user).'
+  );
+});
+//command addserver biasa potato//command addserver biasa potato
 bot.command('addserver', async (ctx) => {
   const userId = ctx.message.from.id;
   if (!adminIds.includes(userId)) {
@@ -2528,8 +2985,11 @@ async function sendAdminServerMenu(ctx) {
       { text: '🛠️ Kelola Server', callback_data: 'admin_manage_server' }
     ],
     [
-      { text: '💲 Edit Harga', callback_data: 'editserver_harga' },
-      { text: '📝 Edit Nama', callback_data: 'nama_server_edit' }
+      { text: 'Edit Harga User', callback_data: 'editserver_harga' },
+      { text: 'Edit Harga Reseller', callback_data: 'editserver_harga_reseller' }
+    ],
+    [
+      { text: 'Edit Nama', callback_data: 'nama_server_edit' }
     ],
     [
       { text: '🌐 Edit Domain', callback_data: 'editserver_domain' },
@@ -2624,6 +3084,8 @@ bot.action('del_reseller_menu', async (ctx) => {
 async function sendAdminToolsMenu(ctx) {
   const keyboard = [
     [{ text: '📋 Help Admin', callback_data: 'helpadmin_menu' }],
+    [{ text: '📣 Broadcast Kirim Pesan', callback_data: 'admin_broadcast_menu' }],
+    [{ text: 'Broadcast Polling', callback_data: 'admin_broadcast_poll_menu' }],
     [{ text: '💾 Restore Database', callback_data: 'restore_db_menu' }],
     [{ text: 'Backup Database Sekarang', callback_data: 'auto_backup_now' }],
     [{ text: 'Sync Server Sekarang', callback_data: 'admin_sync_server_now' }],
@@ -2664,7 +3126,7 @@ bot.action('admin_manage_server', async (ctx) => {
 
 bot.action('manage_edit_total_batas', async (ctx) => {
   await ctx.answerCbQuery();
-  db.all('SELECT id, nama_server FROM Server', [], async (err, servers) => {
+  db.all('SELECT id, nama_server FROM Server ORDER BY nama_server COLLATE NOCASE ASC', [], async (err, servers) => {
     if (err) {
       logger.error('❌ Kesalahan saat mengambil daftar server:', err.message);
       return ctx.reply('❌ Terjadi kesalahan saat mengambil daftar server.');
@@ -2692,7 +3154,7 @@ bot.action('manage_edit_total_batas', async (ctx) => {
 
 bot.action('manage_server_full', async (ctx) => {
   await ctx.answerCbQuery();
-  db.all('SELECT id, nama_server FROM Server', [], async (err, servers) => {
+  db.all('SELECT id, nama_server FROM Server ORDER BY nama_server COLLATE NOCASE ASC', [], async (err, servers) => {
     if (err) {
       logger.error('❌ Kesalahan saat mengambil daftar server:', err.message);
       return ctx.reply('❌ Terjadi kesalahan saat mengambil daftar server.');
@@ -2720,7 +3182,7 @@ bot.action('manage_server_full', async (ctx) => {
 
 bot.action('manage_server_activate', async (ctx) => {
   await ctx.answerCbQuery();
-  db.all('SELECT id, nama_server FROM Server', [], async (err, servers) => {
+  db.all('SELECT id, nama_server FROM Server ORDER BY nama_server COLLATE NOCASE ASC', [], async (err, servers) => {
     if (err) {
       logger.error('❌ Kesalahan saat mengambil daftar server:', err.message);
       return ctx.reply('❌ Terjadi kesalahan saat mengambil daftar server.');
@@ -3002,6 +3464,7 @@ bot.action('admin_menu_reseller', async (ctx) => {
 
 bot.action('admin_menu_tools', async (ctx) => {
   await ctx.answerCbQuery();
+  delete userState[ctx.chat.id];
   await sendAdminToolsMenu(ctx);
 });
 
@@ -3010,6 +3473,76 @@ bot.action('helpadmin_menu', async (ctx) => {
   await sendHelpAdmin(ctx);
 });
 
+
+bot.action('admin_broadcast_menu', async (ctx) => {
+  await ctx.answerCbQuery();
+  const adminId = ctx.from.id;
+  if (!adminIds.includes(adminId)) {
+    return ctx.reply('Anda tidak memiliki izin untuk menggunakan fitur ini.');
+  }
+
+  userState[ctx.chat.id] = { step: 'admin_broadcast_message' };
+  return ctx.reply('Masukkan pesan yang ingin disiarkan.\n\nKetik "batal" untuk membatalkan.');
+});
+
+bot.action('admin_broadcast_poll_menu', async (ctx) => {
+  await ctx.answerCbQuery();
+  const adminId = ctx.from.id;
+  if (!adminIds.includes(adminId)) {
+    return ctx.reply('Anda tidak memiliki izin untuk menggunakan fitur ini.');
+  }
+
+  userState[ctx.chat.id] = { step: 'admin_broadcast_poll_only_input' };
+  return ctx.reply(
+    'Masukkan polling dengan format:\n' +
+    'Pertanyaan | Opsi A | Opsi B [| Opsi C ...]\n\n' +
+    'Contoh:\n' +
+    'Server favorit minggu ini? | SG1 | SG2 | ID1\n\n' +
+    'Ketik "batal" untuk membatalkan.'
+  );
+});
+
+bot.action('admin_broadcast_add_poll_yes', async (ctx) => {
+  await ctx.answerCbQuery();
+  const state = userState[ctx.chat.id];
+  if (!state || state.step !== 'admin_broadcast_choose_poll') {
+    return ctx.reply('Sesi broadcast tidak ditemukan. Ulangi dari menu tools.');
+  }
+
+  state.step = 'admin_broadcast_poll_input';
+  return ctx.reply(
+    'Masukkan polling dengan format:\n' +
+    'Pertanyaan | Opsi A | Opsi B [| Opsi C ...]\n\n' +
+    'Contoh:\n' +
+    'Server favorit minggu ini? | SG1 | SG2 | ID1\n\n' +
+    'Ketik "batal" untuk membatalkan.'
+  );
+});
+
+bot.action('admin_broadcast_add_poll_no', async (ctx) => {
+  await ctx.answerCbQuery();
+  const state = userState[ctx.chat.id];
+  if (!state || state.step !== 'admin_broadcast_choose_poll') {
+    return ctx.reply('Sesi broadcast tidak ditemukan. Ulangi dari menu tools.');
+  }
+
+  const msg = String(state.message || '').trim();
+  if (!msg) {
+    delete userState[ctx.chat.id];
+    return ctx.reply('Pesan broadcast kosong. Ulangi dari menu tools.');
+  }
+
+  const result = await broadcastMessageToAllUsers(msg);
+  delete userState[ctx.chat.id];
+
+  await ctx.reply(
+    'Broadcast selesai.\n' +
+    '- Berhasil: ' + result.ok + '\n' +
+    '- Gagal: ' + result.fail
+  );
+
+  return sendAdminToolsMenu(ctx);
+});
 bot.action('reseller_terms_trigger', async (ctx) => {
   await ctx.answerCbQuery();
   const adminId = ctx.from.id;
@@ -3458,8 +3991,6 @@ bot.action('check_expiry_account', async (ctx) => {
     logger.error('Error cek role reseller untuk cek masa aktif:', e.message);
   }
 
-  const resellerFlag = isReseller ? 1 : 0;
-
   db.all(
     `SELECT MIN(id) AS id,
             host AS server_name
@@ -3467,12 +3998,12 @@ bot.action('check_expiry_account', async (ctx) => {
        SELECT id,
               LOWER(TRIM(COALESCE(NULLIF(sync_host, ''), NULLIF(domain, ''), ''))) AS host
        FROM Server
-       WHERE COALESCE(is_reseller_only, 0) = ?
+       WHERE (COALESCE(is_reseller_only, 0) = 0 OR ? = 1)
      ) grouped
      WHERE host <> ''
      GROUP BY host
      ORDER BY host COLLATE NOCASE ASC`,
-    [resellerFlag],
+    [isReseller ? 1 : 0],
     async (err, rows) => {
       if (err) {
         logger.error('Error ambil daftar server cek masa aktif:', err.message);
@@ -3548,6 +4079,13 @@ db.run(`CREATE TABLE IF NOT EXISTS accounts (
     logger.error('Kesalahan membuat tabel accounts:', err.message);
   } else {
     logger.info('Accounts table created or already exists');
+    migrateAccountServerByDomain()
+      .then((res) => {
+        if (res && res.updated > 0) {
+          logger.info('Migrasi accounts server_id selesai: ' + res.updated + '/' + res.total + ' data diperbarui');
+        }
+      })
+      .catch((e) => logger.error('Error migrasi accounts server_id:', e.message));
   }
 });
 
@@ -3612,6 +4150,13 @@ function calcRemainingDays(expiresAt) {
   return Math.ceil(diff / (24 * 60 * 60 * 1000));
 }
 
+function getEffectiveServerPrice(serverRow, isReseller) {
+  const hargaUser = Number(serverRow?.harga || 0);
+  const hargaReseller = Number(serverRow?.harga_reseller || 0);
+  if (isReseller && hargaReseller > 0) return hargaReseller;
+  return hargaUser;
+}
+
 function isStrongCreateUsername(username) {
   const letterCount = (username.match(/[a-z]/g) || []).length;
   const digitCount = (username.match(/[0-9]/g) || []).length;
@@ -3650,23 +4195,36 @@ bot.action('delete_my_account_select_server', async (ctx) => {
     logger.error('Error cek role reseller:', e.message);
   }
 
-  const resellerFlag = isReseller ? 1 : 0;
-
   db.all(
     `SELECT s.id AS server_id,
             COALESCE(NULLIF(s.nama_server, ''), s.domain, 'Server') AS server_name,
-            COALESCE(a.total_accounts, 0) AS total_accounts
+            (
+              SELECT COUNT(*)
+              FROM accounts a
+              WHERE a.user_id = ?
+                AND (a.expires_at IS NULL OR a.expires_at > ?)
+                AND (
+                  a.server_id = s.id
+                  OR (
+                    TRIM(COALESCE(s.domain, '')) <> ''
+                    AND LOWER(TRIM(COALESCE(a.domain, ''))) = LOWER(TRIM(COALESCE(s.domain, '')))
+                    AND (
+                      (UPPER(COALESCE(s.nama_server, '')) LIKE '%1IP%' AND UPPER(COALESCE(a.server_name, '')) LIKE '%1IP%')
+                      OR (UPPER(COALESCE(s.nama_server, '')) LIKE '%2IP%' AND UPPER(COALESCE(a.server_name, '')) LIKE '%2IP%')
+                      OR (
+                        UPPER(COALESCE(s.nama_server, '')) NOT LIKE '%1IP%'
+                        AND UPPER(COALESCE(s.nama_server, '')) NOT LIKE '%2IP%'
+                        AND UPPER(COALESCE(a.server_name, '')) NOT LIKE '%1IP%'
+                        AND UPPER(COALESCE(a.server_name, '')) NOT LIKE '%2IP%'
+                      )
+                    )
+                  )
+                )
+            ) AS total_accounts
      FROM Server s
-     LEFT JOIN (
-       SELECT server_id, COUNT(*) AS total_accounts
-       FROM accounts
-       WHERE user_id = ?
-         AND (expires_at IS NULL OR expires_at > ?)
-       GROUP BY server_id
-     ) a ON a.server_id = s.id
-     WHERE COALESCE(s.is_reseller_only, 0) = ?
+     WHERE (COALESCE(s.is_reseller_only, 0) = 0 OR ? = 1)
      ORDER BY server_name COLLATE NOCASE ASC`,
-    [userId, now, resellerFlag],
+    [userId, now, isReseller ? 1 : 0],
     async (err, rows) => {
       if (err) {
         logger.error('Error ambil server akun user:', err.message);
@@ -3707,21 +4265,40 @@ bot.action(/delete_my_account_server_(\d+)/, async (ctx) => {
             COALESCE(s.harga, 0) AS harga
      FROM accounts a
      LEFT JOIN Server s ON s.id = a.server_id
-     WHERE a.user_id = ? AND a.server_id = ?
+     LEFT JOIN Server ss ON ss.id = ?
+     WHERE a.user_id = ?
+       AND (
+         a.server_id = ?
+         OR (
+           TRIM(COALESCE(ss.domain, '')) <> ''
+           AND LOWER(TRIM(COALESCE(a.domain, ''))) = LOWER(TRIM(COALESCE(ss.domain, '')))
+           AND (
+             (UPPER(COALESCE(ss.nama_server, '')) LIKE '%1IP%' AND UPPER(COALESCE(a.server_name, '')) LIKE '%1IP%')
+             OR (UPPER(COALESCE(ss.nama_server, '')) LIKE '%2IP%' AND UPPER(COALESCE(a.server_name, '')) LIKE '%2IP%')
+             OR (
+               UPPER(COALESCE(ss.nama_server, '')) NOT LIKE '%1IP%'
+               AND UPPER(COALESCE(ss.nama_server, '')) NOT LIKE '%2IP%'
+               AND UPPER(COALESCE(a.server_name, '')) NOT LIKE '%1IP%'
+               AND UPPER(COALESCE(a.server_name, '')) NOT LIKE '%2IP%'
+             )
+           )
+         )
+       )
        AND (a.expires_at IS NULL OR a.expires_at > ?)
      ORDER BY a.expires_at ASC, a.id ASC`,
-    [userId, serverId, now],
+    [serverId, userId, serverId, now],
     async (err, rows) => {
       if (err) {
-        logger.error('❌ Error ambil akun berdasarkan server:', err.message);
-        return ctx.reply('❌ Terjadi kesalahan saat memuat akun server.');
+        logger.error('Error ambil akun berdasarkan server:', err.message);
+        return ctx.reply('Terjadi kesalahan saat memuat akun server.');
       }
 
       if (!rows || rows.length === 0) {
-        return ctx.reply('📭 Tidak ada akun aktif di server ini.', {
+        return ctx.reply('Tidak ada akun aktif yang terhubung ke server ini di data bot.', {
           reply_markup: {
-            inline_keyboard: [              [{ text: '🗂️ Pilih Server Lain', callback_data: 'delete_my_account_select_server' }],
-              [{ text: '🔙 Kembali', callback_data: 'send_main_menu' }]
+            inline_keyboard: [
+              [{ text: 'Pilih Server Lain', callback_data: 'delete_my_account_select_server' }],
+              [{ text: 'Kembali', callback_data: 'send_main_menu' }]
             ]
           }
         });
@@ -3736,8 +4313,7 @@ bot.action(/delete_my_account_server_(\d+)/, async (ctx) => {
       });
       keyboard.push([{ text: 'Pilih Server', callback_data: 'delete_my_account_select_server' }]);
 
-      await ctx.reply('👤 *Pilih akun yang ingin dihapus:*', {
-        parse_mode: 'Markdown',
+      await ctx.reply('Pilih akun yang ingin dihapus:', {
         reply_markup: { inline_keyboard: keyboard }
       });
     }
@@ -3747,9 +4323,10 @@ bot.action(/delete_my_account_pick_(\d+)/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const userId = ctx.from.id;
   const accountId = Number(ctx.match[1]);
+  const isReseller = await isUserReseller(userId).catch(() => false);
 
   db.get(
-    `SELECT a.*, COALESCE(s.harga, 0) AS harga
+    `SELECT a.*, COALESCE(s.harga, 0) AS harga, COALESCE(s.harga_reseller, 0) AS harga_reseller
      FROM accounts a
      LEFT JOIN Server s ON s.id = a.server_id
      WHERE a.id = ? AND a.user_id = ?`,
@@ -3766,7 +4343,7 @@ bot.action(/delete_my_account_pick_(\d+)/, async (ctx) => {
       const remainingDays = calcRemainingDays(row.expires_at);
       const accountAgeMs = Date.now() - Number(row.created_at || 0);
       const lockDelete24h = !Number.isFinite(accountAgeMs) || accountAgeMs < (24 * 60 * 60 * 1000);
-      const refund = Math.max(0, remainingDays * Number(row.harga || 0));
+      const refund = Math.max(0, remainingDays * getEffectiveServerPrice(row, isReseller));
       const serverLabel = row.server_name || row.domain || '-';
 
       await ctx.reply(
@@ -3797,6 +4374,7 @@ bot.action(/delete_my_account_confirm_(\d+)/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const userId = ctx.from.id;
   const accountId = Number(ctx.match[1]);
+  const isReseller = await isUserReseller(userId).catch(() => false);
 
   const dbGet = (sql, params = []) => new Promise((resolve, reject) => {
     db.get(sql, params, (err, row) => (err ? reject(err) : resolve(row)));
@@ -3810,7 +4388,7 @@ bot.action(/delete_my_account_confirm_(\d+)/, async (ctx) => {
 
   try {
     const row = await dbGet(
-      `SELECT a.*, COALESCE(s.harga, 0) AS harga
+      `SELECT a.*, COALESCE(s.harga, 0) AS harga, COALESCE(s.harga_reseller, 0) AS harga_reseller
        FROM accounts a
        LEFT JOIN Server s ON s.id = a.server_id
        WHERE a.id = ? AND a.user_id = ?`,
@@ -3841,7 +4419,7 @@ bot.action(/delete_my_account_confirm_(\d+)/, async (ctx) => {
     if (!Number.isFinite(accountAgeMs) || accountAgeMs < (24 * 60 * 60 * 1000)) {
       return ctx.reply('Akun belum bisa dihapus. Akun harus aktif minimal 24 jam.');
     }
-    const refund = Math.max(0, remainingDays * Number(row.harga || 0));
+    const refund = Math.max(0, remainingDays * getEffectiveServerPrice(row, isReseller));
 
     await dbRun('DELETE FROM accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
 
@@ -4425,7 +5003,7 @@ bot.action('cek_server', async (ctx) => {
   try {
     await ctx.answerCbQuery().catch(() => {});
 
-    db.all('SELECT * FROM Server ORDER BY id ASC', [], async (err, rows) => {
+    db.all('SELECT * FROM Server ORDER BY nama_server COLLATE NOCASE ASC', [], async (err, rows) => {
       if (err) {
         logger.error('Gagal mengambil data server:', err.message);
         return ctx.reply('Terjadi kesalahan saat mengambil data server.');
@@ -5034,15 +5612,14 @@ try {
   if (type === 'udp_http') {
     filters.push('support_udp_http = 1');
   }
-  if (isR) {
-    // 🔥 RESELLER: HANYA server reseller
-    filters.push('is_reseller_only = 1');
-  } else {
-    // 🔹 USER BIASA: HANYA server non-reseller
+  if (!isR) {
+    // user biasa hanya bisa lihat server publik/non-reseller
     filters.push('(is_reseller_only = 0 OR is_reseller_only IS NULL)');
   }
 
-  const query = `SELECT * FROM Server WHERE ${filters.join(' AND ')} ORDER BY nama_server COLLATE NOCASE ASC`;
+ 
+  const whereClause = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+  const query = `SELECT * FROM Server ${whereClause} ORDER BY nama_server COLLATE NOCASE ASC`;
 
 db.all(query, params, (err, servers) => {
   if (err) {
@@ -5082,7 +5659,8 @@ db.all(query, params, (err, servers) => {
     keyboard.push([{ text: '🔙 Kembali ke Menu Utama', callback_data: 'sendMainMenu' }]);
 
 const serverList = currentServers.map(server => {
-  const hargaPer30Hari = server.harga * 30;
+  const hargaPerHari = getEffectiveServerPrice(server, isR);
+  const hargaPer30Hari = hargaPerHari * 30;
   const isFull = server.total_create_akun >= server.batas_create_akun;
 
   return (
@@ -5090,7 +5668,7 @@ const serverList = currentServers.map(server => {
   🟦 *${server.nama_server.toUpperCase()}*
 ╚══════════════════════╝
 🛜 *Domain:* \`${server.domain}\`
-💳 *Harga/Hari:* Rp${server.harga.toLocaleString()}
+💳 *Harga/Hari:* Rp${hargaPerHari.toLocaleString()}
 📆 *Harga/Bulan:* Rp${hargaPer30Hari.toLocaleString()}
 📡 *Quota:* ${server.quota} GB
 🔐 *IP Limit:* ${server.iplimit} IP
@@ -5220,6 +5798,114 @@ bot.on('text', async (ctx) => {
   const state = userState[ctx.chat.id];
 if (!state || !state.step) return;
 
+  if (state.step === 'admin_broadcast_poll_only_input') {
+    const text = (ctx.message.text || '').trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      await ctx.reply('Broadcast polling dibatalkan.');
+      return ctx.reply('Selesai.', { reply_markup: { inline_keyboard: [[{ text: 'Kembali ke menu tools', callback_data: 'admin_menu_tools' }]] } });
+    }
+
+    const parts = text.split('|').map((x) => x.trim()).filter(Boolean);
+    if (parts.length < 3) {
+      return ctx.reply('Format salah. Gunakan: Pertanyaan | Opsi A | Opsi B');
+    }
+
+    const question = parts[0];
+    const options = parts.slice(1, 11);
+
+    if (question.length < 5) {
+      return ctx.reply('Pertanyaan polling terlalu pendek. Minimal 5 karakter.');
+    }
+
+    if (options.length < 2) {
+      return ctx.reply('Polling minimal punya 2 opsi.');
+    }
+
+    const pollResult = await broadcastPollToAllUsers(question, options, Number(ctx.from.id || 0));
+
+    delete userState[ctx.chat.id];
+
+    await ctx.reply(
+      'Broadcast polling selesai.\n\n' +
+      '- Berhasil: ' + pollResult.ok + '\n' +
+      '- Gagal: ' + pollResult.fail + '\n' +
+      '- ID Polling: ' + pollResult.pollId + '\n\n' +
+      'Hasil polling bersifat global (gabungan semua user).'
+    );
+
+    return ctx.reply('Selesai.', { reply_markup: { inline_keyboard: [[{ text: 'Kembali ke menu tools', callback_data: 'admin_menu_tools' }]] } });
+  }
+
+  if (state.step === 'admin_broadcast_message') {
+    const text = (ctx.message.text || '').trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      await ctx.reply('Broadcast dibatalkan.');
+      return ctx.reply('Selesai.', { reply_markup: { inline_keyboard: [[{ text: 'Kembali ke menu tools', callback_data: 'admin_menu_tools' }]] } });
+    }
+
+    if (text.length < 3) {
+      return ctx.reply('Pesan terlalu pendek. Minimal 3 karakter.');
+    }
+
+    const result = await broadcastMessageToAllUsers(text);
+    delete userState[ctx.chat.id];
+
+    await ctx.reply(
+      'Broadcast selesai.\n' +
+      '- Berhasil: ' + result.ok + '\n' +
+      '- Gagal: ' + result.fail
+    );
+
+    return ctx.reply('Selesai.', { reply_markup: { inline_keyboard: [[{ text: 'Kembali ke menu tools', callback_data: 'admin_menu_tools' }]] } });
+  }
+
+  if (state.step === 'admin_broadcast_poll_input') {
+    const text = (ctx.message.text || '').trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      await ctx.reply('Broadcast dibatalkan.');
+      return ctx.reply('Selesai.', { reply_markup: { inline_keyboard: [[{ text: 'Kembali ke menu tools', callback_data: 'admin_menu_tools' }]] } });
+    }
+
+    const parts = text.split('|').map((s) => s.trim()).filter(Boolean);
+    if (parts.length < 3) {
+      return ctx.reply('Format salah. Gunakan: Pertanyaan | Opsi A | Opsi B');
+    }
+
+    const question = parts[0];
+    const options = parts.slice(1, 11);
+
+    if (question.length < 5) {
+      return ctx.reply('Pertanyaan polling terlalu pendek. Minimal 5 karakter.');
+    }
+
+    if (options.length < 2) {
+      return ctx.reply('Polling minimal punya 2 opsi.');
+    }
+
+    const message = String(state.message || '').trim();
+    const msgResult = await broadcastMessageToAllUsers(message);
+    const pollResult = await broadcastPollToAllUsers(question, options, Number(ctx.from.id || 0));
+
+    delete userState[ctx.chat.id];
+
+    await ctx.reply(
+      'Broadcast + polling selesai.\n\n' +
+      'Pesan:\n' +
+      '- Berhasil: ' + msgResult.ok + '\n' +
+      '- Gagal: ' + msgResult.fail + '\n\n' +
+      'Polling:\n' +
+      '- Berhasil: ' + pollResult.ok + '\n' +
+      '- Gagal: ' + pollResult.fail + '\n' +
+      '- ID Polling: ' + pollResult.pollId + '\n\n' +
+      'Hasil polling bersifat global (gabungan semua user).'
+    );
+
+    return ctx.reply('Selesai.', { reply_markup: { inline_keyboard: [[{ text: 'Kembali ke menu tools', callback_data: 'admin_menu_tools' }]] } });
+  }
+
   if (state.step === 'restore_db_upload') {
     const text = (ctx.message.text || '').trim().toLowerCase();
     if (text === 'batal') {
@@ -5227,6 +5913,41 @@ if (!state || !state.step) return;
       return ctx.reply('Restore database dibatalkan.');
     }
     return ctx.reply('Silakan kirim file backup sebagai document, atau ketik "batal".');
+  }
+
+  if (
+    state.step === 'bonus_set_10_40' ||
+    state.step === 'bonus_set_50_70' ||
+    state.step === 'bonus_set_70_100'
+  ) {
+    const text = (ctx.message.text || '').trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan bonus dibatalkan.');
+    }
+
+    const percent = Number(text.replace(',', '.'));
+    if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
+      return ctx.reply('Persen tidak valid. Masukkan angka 0 sampai 100.');
+    }
+
+    const current = loadTopupBonusSetting();
+    if (state.step === 'bonus_set_10_40') {
+      current.range_10_40 = percent;
+    } else if (state.step === 'bonus_set_50_70') {
+      current.range_50_70 = percent;
+    } else {
+      current.range_70_100 = percent;
+    }
+    const saved = saveTopupBonusSetting(current);
+
+    delete userState[ctx.chat.id];
+    return ctx.reply(
+      'Bonus topup berhasil diperbarui.\n\n' +
+      '10-40rb: ' + saved.range_10_40 + '%\n' +
+      '50-70rb: ' + saved.range_50_70 + '%\n' +
+      '70-100rb+: ' + saved.range_70_100 + '%'
+    );
   }
 
   if (state.step === 'check_expiry_username') {
@@ -6102,7 +6823,7 @@ if (exp > 365) {
       let usedPassword = password || '';
       let msg;
 
-      db.get('SELECT harga FROM Server WHERE id = ?', [serverId], async (err, server) => {
+      db.get('SELECT harga, harga_reseller FROM Server WHERE id = ?', [serverId], async (err, server) => {
         if (err) {
           logger.error('⚠️ Error fetching server price:', err.message);
           return ctx.reply('❌ *Terjadi kesalahan saat mengambil harga server.*', { parse_mode: 'Markdown' });
@@ -6112,7 +6833,8 @@ if (exp > 365) {
           return ctx.reply('❌ *Server tidak ditemukan.*', { parse_mode: 'Markdown' });
         }
 
-        const harga = server.harga;
+        const isResellerUser = await isUserReseller(ctx.from.id).catch(() => false);
+        const harga = getEffectiveServerPrice(server, isResellerUser);
         const totalHarga = harga * state.exp; 
         db.get('SELECT saldo FROM users WHERE user_id = ?', [ctx.from.id], async (err, user) => {
           if (err) {
@@ -6223,7 +6945,7 @@ const expDays = Number(exp) || 0;
 let expiresAt = expDays > 0 ? (Date.now() + expDays * 24 * 60 * 60 * 1000) : null;
 
 if (action === 'renew' && expDays > 0) {
-  const existingExpiry = await getAccountExistingExpiry(ctx.from.id, type, username, serverId);
+  const existingExpiry = await getAccountExistingExpiry(ctx.from.id, type, username, serverId, state.serverDomain);
   const baseTs = Math.max(Date.now(), Number(existingExpiry || 0));
   expiresAt = baseTs + expDays * 24 * 60 * 60 * 1000;
 }
@@ -6569,7 +7291,7 @@ bot.action('detailserver', async (ctx) => {
     await ctx.answerCbQuery();
     
     const servers = await new Promise((resolve, reject) => {
-      db.all('SELECT * FROM Server ORDER BY domain COLLATE NOCASE ASC', [], (err, servers) => {
+      db.all('SELECT * FROM Server ORDER BY nama_server COLLATE NOCASE ASC', [], (err, servers) => {
         if (err) {
           logger.error('⚠️ Kesalahan saat mengambil detail server:', err.message);
           return reject('⚠️ *PERHATIAN! Terjadi kesalahan saat mengambil detail server.*');
@@ -6693,7 +7415,7 @@ bot.action('deleteserver', async (ctx) => {
     logger.info('🗑️ Proses hapus server dimulai');
     await ctx.answerCbQuery();
     
-    db.all('SELECT * FROM Server', [], (err, servers) => {
+    db.all('SELECT * FROM Server ORDER BY nama_server COLLATE NOCASE ASC', [], (err, servers) => {
       if (err) {
         logger.error('⚠️ Kesalahan saat mengambil daftar server:', err.message);
         return ctx.reply('⚠️ *PERHATIAN! Terjadi kesalahan saat mengambil daftar server.*', { parse_mode: 'Markdown' });
@@ -6891,7 +7613,7 @@ bot.action('editserver_limit_ip', async (ctx) => {
     await ctx.answerCbQuery();
 
     const servers = await new Promise((resolve, reject) => {
-      db.all('SELECT id, nama_server FROM Server', [], (err, servers) => {
+      db.all('SELECT id, nama_server FROM Server ORDER BY nama_server COLLATE NOCASE ASC', [], (err, servers) => {
         if (err) {
           logger.error('❌ Kesalahan saat mengambil daftar server:', err.message);
           return reject('⚠️ *PERHATIAN! Terjadi kesalahan saat mengambil daftar server.*');
@@ -6929,7 +7651,7 @@ bot.action('editserver_batas_create_akun', async (ctx) => {
     await ctx.answerCbQuery();
 
     const servers = await new Promise((resolve, reject) => {
-      db.all('SELECT id, nama_server FROM Server', [], (err, servers) => {
+      db.all('SELECT id, nama_server FROM Server ORDER BY nama_server COLLATE NOCASE ASC', [], (err, servers) => {
         if (err) {
           logger.error('❌ Kesalahan saat mengambil daftar server:', err.message);
           return reject('⚠️ *PERHATIAN! Terjadi kesalahan saat mengambil daftar server.*');
@@ -6967,7 +7689,7 @@ bot.action('editserver_total_create_akun', async (ctx) => {
     await ctx.answerCbQuery();
 
     const servers = await new Promise((resolve, reject) => {
-      db.all('SELECT id, nama_server FROM Server', [], (err, servers) => {
+      db.all('SELECT id, nama_server FROM Server ORDER BY nama_server COLLATE NOCASE ASC', [], (err, servers) => {
         if (err) {
           logger.error('❌ Kesalahan saat mengambil daftar server:', err.message);
           return reject('⚠️ *PERHATIAN! Terjadi kesalahan saat mengambil daftar server.*');
@@ -7005,7 +7727,7 @@ bot.action('editserver_quota', async (ctx) => {
     await ctx.answerCbQuery();
 
     const servers = await new Promise((resolve, reject) => {
-      db.all('SELECT id, nama_server FROM Server', [], (err, servers) => {
+      db.all('SELECT id, nama_server FROM Server ORDER BY nama_server COLLATE NOCASE ASC', [], (err, servers) => {
         if (err) {
           logger.error('❌ Kesalahan saat mengambil daftar server:', err.message);
           return reject('⚠️ *PERHATIAN! Terjadi kesalahan saat mengambil daftar server.*');
@@ -7083,7 +7805,7 @@ bot.action('editserver_harga', async (ctx) => {
     await ctx.answerCbQuery();
 
     const servers = await new Promise((resolve, reject) => {
-      db.all('SELECT id, nama_server FROM Server', [], (err, servers) => {
+      db.all('SELECT id, nama_server FROM Server ORDER BY nama_server COLLATE NOCASE ASC', [], (err, servers) => {
         if (err) {
           logger.error('❌ Kesalahan saat mengambil daftar server:', err.message);
           return reject('⚠️ *PERHATIAN! Terjadi kesalahan saat mengambil daftar server.*');
@@ -7116,13 +7838,53 @@ bot.action('editserver_harga', async (ctx) => {
   }
 });
 
+
+bot.action('editserver_harga_reseller', async (ctx) => {
+  try {
+    logger.info('Edit server harga reseller process started');
+    await ctx.answerCbQuery();
+
+    const servers = await new Promise((resolve, reject) => {
+      db.all('SELECT id, nama_server FROM Server ORDER BY nama_server COLLATE NOCASE ASC', [], (err, servers) => {
+        if (err) {
+          logger.error('Kesalahan saat mengambil daftar server:', err.message);
+          return reject('PERHATIAN! Terjadi kesalahan saat mengambil daftar server.');
+        }
+        resolve(servers);
+      });
+    });
+
+    if (servers.length === 0) {
+      return ctx.reply('PERHATIAN! Tidak ada server yang tersedia untuk diedit.', { parse_mode: 'Markdown' });
+    }
+
+    const buttons = servers.map(server => ({
+      text: server.nama_server,
+      callback_data: 'edit_harga_reseller_' + server.id
+    }));
+
+    const inlineKeyboard = [];
+    for (let i = 0; i < buttons.length; i += 2) {
+      inlineKeyboard.push(buttons.slice(i, i + 2));
+    }
+
+    await ctx.reply('Silakan pilih server untuk mengedit harga reseller:', {
+      reply_markup: { inline_keyboard: inlineKeyboard },
+      parse_mode: 'Markdown'
+    });
+  } catch (error) {
+    logger.error('Kesalahan saat memulai proses edit harga reseller server:', error);
+    await ctx.reply(String(error), { parse_mode: 'Markdown' });
+  }
+});
+
 bot.action('editserver_domain', async (ctx) => {
   try {
     logger.info('Edit server domain process started');
     await ctx.answerCbQuery();
 
     const servers = await new Promise((resolve, reject) => {
-      db.all('SELECT id, nama_server FROM Server', [], (err, servers) => {
+      db.all('SELECT id, nama_server FROM Server ORDER BY nama_server COLLATE NOCASE ASC', [], (err, servers) => {
         if (err) {
           logger.error('❌ Kesalahan saat mengambil daftar server:', err.message);
           return reject('⚠️ *PERHATIAN! Terjadi kesalahan saat mengambil daftar server.*');
@@ -7161,7 +7923,7 @@ bot.action('nama_server_edit', async (ctx) => {
     await ctx.answerCbQuery();
 
     const servers = await new Promise((resolve, reject) => {
-      db.all('SELECT id, nama_server FROM Server', [], (err, servers) => {
+      db.all('SELECT id, nama_server FROM Server ORDER BY nama_server COLLATE NOCASE ASC', [], (err, servers) => {
         if (err) {
           logger.error('❌ Kesalahan saat mengambil daftar server:', err.message);
           return reject('⚠️ *PERHATIAN! Terjadi kesalahan saat mengambil daftar server.*');
@@ -7204,6 +7966,17 @@ bot.action(/edit_harga_(\d+)/, async (ctx) => {
     parse_mode: 'Markdown'
   });
 });
+bot.action(/edit_harga_reseller_(\d+)/, async (ctx) => {
+  const serverId = ctx.match[1];
+  logger.info('User ' + ctx.from.id + ' memilih untuk mengedit harga reseller server dengan ID: ' + serverId);
+  userState[ctx.chat.id] = { step: 'edit_harga_reseller', serverId: serverId };
+
+  await ctx.reply('Silakan masukkan harga reseller server baru:', {
+    reply_markup: { inline_keyboard: keyboard_nomor_simple() },
+    parse_mode: 'Markdown'
+  });
+});
+
 bot.action(/add_saldo_(\d+)/, async (ctx) => {
   const userId = ctx.match[1];
   logger.info(`User ${ctx.from.id} memilih untuk menambahkan saldo user dengan ID: ${userId}`);
@@ -7452,6 +8225,9 @@ bot.on('callback_query', async (ctx) => {
       case 'edit_harga':
         await handleEditHarga(ctx, userStateData, data);
         break;
+      case 'edit_harga_reseller':
+        await handleEditHargaReseller(ctx, userStateData, data);
+        break;
       case 'edit_nama':
         await handleEditNama(ctx, userStateData, data);
         break;
@@ -7663,6 +8439,48 @@ async function handleEditHarga(ctx, userStateData, data) {
 
   userStateData.amount = currentAmount;
   const newMessage = `💰 *Silakan masukkan harga server baru:*\n\nJumlah saat ini: *Rp ${currentAmount}*`;
+  if (newMessage !== ctx.callbackQuery.message.text) {
+    await ctx.editMessageText(newMessage, {
+      reply_markup: { inline_keyboard: keyboard_nomor_simple() },
+      parse_mode: 'Markdown'
+    });
+  }
+}
+
+async function handleEditHargaReseller(ctx, userStateData, data) {
+  let currentAmount = userStateData.amount || '';
+
+  if (data === 'delete') {
+    currentAmount = currentAmount.slice(0, -1);
+  } else if (data === 'confirm') {
+    if (currentAmount.length === 0) {
+      return await ctx.answerCbQuery('Jumlah tidak boleh kosong.', { show_alert: true });
+    }
+    const hargaBaru = parseFloat(currentAmount);
+    if (isNaN(hargaBaru) || hargaBaru <= 0) {
+      return ctx.reply('Harga reseller tidak valid. Masukkan angka yang valid.', { parse_mode: 'Markdown' });
+    }
+    try {
+      await updateServerField(userStateData.serverId, hargaBaru, 'UPDATE Server SET harga_reseller = ? WHERE id = ?');
+      ctx.reply('Harga reseller server berhasil diupdate.\n\nDetail Server:\n- Harga Reseller Baru: Rp ' + hargaBaru, { parse_mode: 'Markdown' });
+    } catch (err) {
+      ctx.reply('Terjadi kesalahan saat mengupdate harga reseller server.', { parse_mode: 'Markdown' });
+    }
+    delete userState[ctx.chat.id];
+    return;
+  } else {
+    if (!/^\d+$/.test(data)) {
+      return await ctx.answerCbQuery('Hanya angka yang diperbolehkan.', { show_alert: true });
+    }
+    if (currentAmount.length < 12) {
+      currentAmount += data;
+    } else {
+      return await ctx.answerCbQuery('Jumlah maksimal adalah 12 digit.', { show_alert: true });
+    }
+  }
+
+  userStateData.amount = currentAmount;
+  const newMessage = 'Silakan masukkan harga reseller server baru:\n\nJumlah saat ini: Rp ' + currentAmount;
   if (newMessage !== ctx.callbackQuery.message.text) {
     await ctx.editMessageText(newMessage, {
       reply_markup: { inline_keyboard: keyboard_nomor_simple() },
@@ -8288,6 +9106,9 @@ async function getUserBalance(userId) {
 
 // ✅ JALANKAN CLEANUP SETIAP 5 MENIT
 setInterval(cleanupOldDeposits, 5 * 60 * 1000);
+// Cleanup polling broadcast lama setiap 12 jam
+setInterval(cleanupOldBroadcastPolls, 12 * 60 * 60 * 1000);
+
 
 // ✅ FUNGSI CLEANUP PROCESSED TRANSACTIONS
 function cleanupProcessedTransactions() {
@@ -8983,5 +9804,18 @@ const adminMessage =
   setTimeout(() => {
     logger.info('🚀 Running initial cleanup...');
     cleanupOldDeposits();
+    cleanupOldBroadcastPolls();
   }, 10000);
 });
+
+
+
+
+
+
+
+
+
+
+
+
