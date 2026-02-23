@@ -1014,6 +1014,52 @@ async function fetchTunnelAccountExpiryByUsername(server, username) {
   }
 }
 
+function formatDateYmdLocal(dateObj = new Date()) {
+  const y = dateObj.getFullYear();
+  const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const d = String(dateObj.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+async function fetchTunnelExpirySummaryByDate(server, dateYmd) {
+  const req = buildTunnelSyncRequest(server);
+  const expirySummaryEndpoint = req.summaryEndpoint.endsWith('/account-summary')
+    ? req.summaryEndpoint.replace(/account-summary$/, 'expiry-summary')
+    : '/internal/expiry-summary';
+
+  let response;
+  try {
+    response = await axios.get(`http://${req.host}:${req.port}${expirySummaryEndpoint}`, {
+      timeout: 15000,
+      headers: { 'x-sync-token': req.token },
+      params: { date: dateYmd }
+    });
+  } catch (error) {
+    if (error.response?.data?.message) {
+      throw new Error(`API expiry-summary gagal: ${error.response.data.message}`);
+    }
+    throw new Error(error.message || 'request gagal');
+  }
+
+  const data = response?.data || {};
+  if (!data.ok) {
+    throw new Error(`API expiry-summary gagal: ${data.message || 'unknown error'}`);
+  }
+
+  const ssh = Number(data.ssh || 0);
+  const vmess = Number(data.vmess || 0);
+  const vless = Number(data.vless || 0);
+  const trojan = Number(data.trojan || 0);
+  const totalExpired = Number(
+    data.total_expired ??
+    data.total ??
+    data.expired_total ??
+    (ssh + vmess + vless + trojan)
+  );
+
+  return { date: dateYmd, ssh, vmess, vless, trojan, totalExpired };
+}
+
 async function syncServerUsageFromTunnel(trigger = 'manual', options = {}) {
   const targetServerId = options.serverId ? Number(options.serverId) : null;
   const force = options.force === true;
@@ -5013,22 +5059,104 @@ bot.action('cek_server', async (ctx) => {
         return ctx.reply('Belum ada server yang ditambahkan.');
       }
 
-      let message = 'DAFTAR SERVER TERSEDIA\n\n';
+      const todayYmd = formatDateYmdLocal(new Date());
+      const tomorrowDate = new Date();
+      tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+      const tomorrowYmd = formatDateYmdLocal(tomorrowDate);
 
-      rows.forEach((srv, idx) => {
-        const total = Number(srv.total_create_akun || 0);
-        const batas = Number(srv.batas_create_akun || 0);
-        const sisa = Math.max(0, batas - total);
-        const status = sisa <= 0 ? 'Penuh' : 'Tersedia';
+      const groupMap = new Map();
+      for (const srv of rows) {
+        const key = normalizeSyncHost(srv.sync_host || srv.domain) || ('id-' + srv.id);
+        if (!groupMap.has(key)) groupMap.set(key, []);
+        groupMap.get(key).push(srv);
+      }
 
-        message +=
-          `${idx + 1}. ${srv.nama_server || '-'}\n` +
-          `- Domain: ${srv.domain || '-'}\n` +
-          `- Akun Terpakai: ${total}/${batas}\n` +
-          `- Sisa Akun: ${sisa}\n` +
-          `- Status: ${status}\n\n`;
+      const forecastByGroup = new Map();
+      for (const [key, groupServers] of groupMap.entries()) {
+        const primary = groupServers[0];
+        const syncAuth = String(groupServers.find((s) => String(s.auth || '').trim())?.auth || '').trim();
+        const syncPort = Number(groupServers.find((s) => Number(s.sync_port) > 0)?.sync_port || primary.sync_port) || 8789;
+        const syncEndpoint = normalizeSyncEndpoint(groupServers.find((s) => String(s.sync_endpoint || '').trim())?.sync_endpoint || primary.sync_endpoint);
+        const requestServer = { ...primary, auth: syncAuth || primary.auth, sync_port: syncPort, sync_endpoint: syncEndpoint };
+
+        try {
+          const expiry = await fetchTunnelExpirySummaryByDate(requestServer, todayYmd);
+          forecastByGroup.set(key, { ok: true, releaseTomorrow: Number(expiry.totalExpired || 0) });
+        } catch (syncErr) {
+          forecastByGroup.set(key, { ok: false, message: syncErr.message });
+        }
+      }
+
+      let totalSisaSekarang = 0;
+      let totalPrediksiBesok = 0;
+      let totalKapasitas = 0;
+      let totalTerpakai = 0;
+      let serverUnlimited = 0;
+      let serverPrediksiGagal = 0;
+
+      const lines = [];
+      const grouped = Array.from(groupMap.entries()).map(([groupKey, groupServers]) => ({
+        groupKey,
+        primary: groupServers[0],
+        groupServers
+      }));
+
+      grouped.forEach((item, idx) => {
+        const { groupKey, primary, groupServers } = item;
+        const total = Number(primary.total_create_akun || 0);
+        const positiveBatas = groupServers
+          .map((s) => Number(s.batas_create_akun || 0))
+          .filter((v) => Number.isFinite(v) && v > 0);
+        const batas = positiveBatas.length > 0 ? Math.max(...positiveBatas) : 0;
+        const sisa = batas > 0 ? Math.max(0, batas - total) : 0;
+        const status = batas > 0 && sisa <= 0 ? 'Penuh' : 'Tersedia';
+        const forecast = forecastByGroup.get(groupKey);
+
+        let prediksiBesok = '-';
+        let prediksiBesokNum = null;
+
+        if (batas <= 0) {
+          prediksiBesok = 'Unlimited';
+          serverUnlimited += 1;
+        } else if (forecast?.ok) {
+          prediksiBesokNum = Math.max(0, sisa + Number(forecast.releaseTomorrow || 0));
+          prediksiBesok = String(prediksiBesokNum);
+        } else {
+          prediksiBesok = '- (gagal ambil data expiry)';
+          serverPrediksiGagal += 1;
+        }
+
+        if (batas > 0) {
+          totalSisaSekarang += sisa;
+          totalKapasitas += batas;
+          totalTerpakai += total;
+          if (prediksiBesokNum !== null) totalPrediksiBesok += prediksiBesokNum;
+        }
+
+        lines.push(
+          `${idx + 1}. ${primary.nama_server || '-'}`,
+          `- Domain: ${normalizeSyncHost(primary.sync_host || primary.domain) || '-'}`,
+          `- Akun Terpakai: ${total}/${batas > 0 ? batas : 'Unlimited'}`,
+          `- Sisa Akun Saat Ini: ${batas > 0 ? sisa : 'Unlimited'}`,
+          `- Prediksi Tersedia Besok: ${prediksiBesok}`,
+          `- Status: ${status}`,
+          `- Group Server: ${groupServers.length} baris server`,
+          ''
+        );
       });
 
+      let message =
+        `DAFTAR SERVER TERSEDIA\n\n` +
+        `Prediksi slot besok (${tomorrowYmd}) dihitung dari akun yang expired hari ini (${todayYmd}).\n\n` +
+        `RINGKASAN TOTAL\n` +
+        `- Total akun terpakai saat ini: ${totalTerpakai}/${totalKapasitas}\n` +
+        `- Total sisa akun saat ini: ${totalSisaSekarang}\n` +
+        `- Total prediksi tersedia besok: ${totalPrediksiBesok}` +
+        `${serverUnlimited > 0 ? ` (+ ${serverUnlimited} server unlimited)` : ''}` +
+        `\n` +
+        `${serverPrediksiGagal > 0 ? `- Catatan: ${serverPrediksiGagal} server gagal ambil data expiry\n` : ''}` +
+        `\n` +
+        lines.join('\n');
       await ctx.reply(message.trim());
     });
   } catch (error) {
@@ -9597,16 +9725,16 @@ schedule.scheduleJob('reseller_monthly_warning', resellerWarningRule, async () =
 
 const serverSyncRule = new schedule.RecurrenceRule();
 serverSyncRule.tz = 'Asia/Jakarta';
-serverSyncRule.minute = [0, 30];
+serverSyncRule.minute = [0, 10, 20, 30, 40, 50];
 
-schedule.scheduleJob('server_usage_sync_30m', serverSyncRule, async () => {
+schedule.scheduleJob('server_usage_sync_10m', serverSyncRule, async () => {
   try {
-    const result = await syncServerUsageFromTunnel('every_30m');
+    const result = await syncServerUsageFromTunnel('every_10m');
     logger.info(
-      `[SyncServer:every_30m] selesai. dicek=${result.checked}, berhasil=${result.updated}, gagal=${result.failed}, dilewati=${result.skipped}`
+      `[SyncServer:every_10m] selesai. dicek=${result.checked}, berhasil=${result.updated}, gagal=${result.failed}, dilewati=${result.skipped}`
     );
   } catch (err) {
-    logger.error(`[SyncServer:every_30m] gagal: ${err.message}`);
+    logger.error(`[SyncServer:every_10m] gagal: ${err.message}`);
   }
 });
 const dbFile = path.join(__dirname, "sellvpn.db");
@@ -9614,7 +9742,6 @@ const autoBackupDir = path.join(__dirname, "auto_backup");
 
 if (!fs.existsSync(autoBackupDir)) fs.mkdirSync(autoBackupDir);
 
-// Fungsi kirim backup otomatis ke admin
 // Fungsi kirim backup otomatis ke admin
 function getNormalizedAdminIds() {
   if (Array.isArray(adminIds)) {
@@ -9807,15 +9934,3 @@ const adminMessage =
     cleanupOldBroadcastPolls();
   }, 10000);
 });
-
-
-
-
-
-
-
-
-
-
-
-
