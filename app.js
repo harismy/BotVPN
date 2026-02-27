@@ -5926,6 +5926,67 @@ bot.on('text', async (ctx) => {
   const state = userState[ctx.chat.id];
 if (!state || !state.step) return;
 
+  if (state.step === 'edit_domain_pick_server') {
+    const text = (ctx.message.text || '').trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Edit domain dibatalkan.');
+    }
+
+    const serverId = Number(text);
+    if (!Number.isFinite(serverId) || serverId <= 0) {
+      return ctx.reply('ID server tidak valid. Masukkan angka ID server yang benar.');
+    }
+
+    return db.get('SELECT id, nama_server, domain FROM Server WHERE id = ?', [serverId], async (err, row) => {
+      if (err) {
+        logger.error('Error ambil server untuk edit domain:', err.message);
+        return ctx.reply('Terjadi kesalahan saat membaca data server.');
+      }
+      if (!row) {
+        return ctx.reply('Server dengan ID tersebut tidak ditemukan. Coba lagi.');
+      }
+
+      userState[ctx.chat.id] = {
+        step: 'edit_domain_input_value',
+        serverId: row.id
+      };
+
+      return ctx.reply(
+        'Server terpilih: ' + (row.nama_server || '-') + '\n' +
+        'Domain saat ini: ' + (row.domain || '-') + '\n\n' +
+        'Ketik domain baru untuk server ini.\n' +
+        'Ketik batal untuk membatalkan.'
+      );
+    });
+  }
+
+  if (state.step === 'edit_domain_input_value') {
+    const text = (ctx.message.text || '').trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Edit domain dibatalkan.');
+    }
+
+    if (!/^[a-zA-Z0-9.-]+$/.test(text)) {
+      return ctx.reply('Domain tidak valid. Gunakan hanya huruf, angka, titik, dan tanda minus.');
+    }
+
+    return db.run('UPDATE Server SET domain = ? WHERE id = ?', [text, state.serverId], function(err) {
+      if (err) {
+        logger.error('Error update domain server:', err.message);
+        return ctx.reply('Terjadi kesalahan saat mengubah domain server.');
+      }
+
+      if (this.changes === 0) {
+        return ctx.reply('Server tidak ditemukan atau domain tidak berubah.');
+      }
+
+      delete userState[ctx.chat.id];
+      return ctx.reply('Domain server berhasil diubah menjadi: ' + text);
+    });
+  }
+
   if (state.step === 'admin_broadcast_poll_only_input') {
     const text = (ctx.message.text || '').trim();
     if (text.toLowerCase() === 'batal') {
@@ -8011,37 +8072,34 @@ bot.action('editserver_domain', async (ctx) => {
     logger.info('Edit server domain process started');
     await ctx.answerCbQuery();
 
-    const servers = await new Promise((resolve, reject) => {
-      db.all('SELECT id, nama_server FROM Server ORDER BY nama_server COLLATE NOCASE ASC', [], (err, servers) => {
-        if (err) {
-          logger.error('❌ Kesalahan saat mengambil daftar server:', err.message);
-          return reject('⚠️ *PERHATIAN! Terjadi kesalahan saat mengambil daftar server.*');
-        }
-        resolve(servers);
-      });
-    });
+    db.all('SELECT id, nama_server, domain FROM Server ORDER BY nama_server COLLATE NOCASE ASC', [], async (err, servers) => {
+      if (err) {
+        logger.error('Kesalahan saat mengambil daftar server:', err.message);
+        return ctx.reply('Terjadi kesalahan saat mengambil daftar server.');
+      }
 
-    if (servers.length === 0) {
-      return ctx.reply('⚠️ *PERHATIAN! Tidak ada server yang tersedia untuk diedit.*', { parse_mode: 'Markdown' });
-    }
+      if (!servers || servers.length === 0) {
+        return ctx.reply('Tidak ada server yang tersedia untuk diedit.');
+      }
 
-    const buttons = servers.map(server => ({
-      text: server.nama_server,
-      callback_data: `edit_domain_${server.id}`
-    }));
+      userState[ctx.chat.id] = {
+        step: 'edit_domain_pick_server'
+      };
 
-    const inlineKeyboard = [];
-    for (let i = 0; i < buttons.length; i += 2) {
-      inlineKeyboard.push(buttons.slice(i, i + 2));
-    }
+      const listText = servers
+        .map((server) => '- ID ' + server.id + ': ' + (server.nama_server || '-') + ' (' + (server.domain || '-') + ')')
+        .join('\n');
 
-    await ctx.reply('🌐 *Silakan pilih server untuk mengedit domain:*', {
-      reply_markup: { inline_keyboard: inlineKeyboard },
-      parse_mode: 'Markdown'
+      await ctx.reply(
+        'Edit domain server.\n\n' +
+        'Daftar server:\n' + listText + '\n\n' +
+        'Ketik ID server yang ingin diedit.\n' +
+        'Ketik batal untuk membatalkan.'
+      );
     });
   } catch (error) {
-    logger.error('❌ Kesalahan saat memulai proses edit domain server:', error);
-    await ctx.reply(`❌ *${error}*`, { parse_mode: 'Markdown' });
+    logger.error('Kesalahan saat memulai proses edit domain server:', error);
+    await ctx.reply('Terjadi kesalahan saat memulai edit domain server.');
   }
 });
 
