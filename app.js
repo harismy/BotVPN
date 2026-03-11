@@ -316,6 +316,12 @@ const MERCHANT_ID = vars.MERCHANT_ID;
 const API_KEY = vars.API_KEY;
 const RAJASERVER_API_KEY = vars.RAJASERVER_API_KEY;
 const GROUP_ID = vars.GROUP_ID;
+const BW_NOTIF_GROUP_ID = vars.BW_NOTIF_GROUP_ID;
+let BW_REPORT_INTERVAL_MINUTES = Number(vars.BW_REPORT_INTERVAL_MINUTES || 180);
+if (!Number.isFinite(BW_REPORT_INTERVAL_MINUTES) || BW_REPORT_INTERVAL_MINUTES < 5) {
+  BW_REPORT_INTERVAL_MINUTES = 180;
+}
+if (BW_REPORT_INTERVAL_MINUTES > 1440) BW_REPORT_INTERVAL_MINUTES = 1440;
 let NOTIF_BOT_TOKEN = vars.NOTIF_BOT_TOKEN || '';
 let NOTIF_CHAT_ID = vars.NOTIF_CHAT_ID || '';
 let ADMIN_WHATSAPP = String(vars.ADMIN_WHATSAPP || vars.CONTACT_WA || '').replace(/\D/g, '');
@@ -575,6 +581,7 @@ async function sendNonResellerCreateNotification(payload) {
 
 // =================== PERBAIKAN GROUP_ID ===================
 let GROUP_ID_NUM = null;
+let BW_NOTIF_GROUP_ID_NUM = null;
 
 try {
   // Debug: log asli dari config
@@ -608,6 +615,21 @@ try {
   }
 } catch (e) {
   logger.error(`❌ Error processing GROUP_ID:`, e.message);
+}
+
+try {
+  if (BW_NOTIF_GROUP_ID !== undefined && BW_NOTIF_GROUP_ID !== null && BW_NOTIF_GROUP_ID !== '') {
+    const bwGroupStr = String(BW_NOTIF_GROUP_ID).trim().replace(/['"]/g, '');
+    const convertedBw = Number(bwGroupStr);
+    if (!Number.isNaN(convertedBw)) {
+      BW_NOTIF_GROUP_ID_NUM = convertedBw;
+      logger.info(`✅ BW_NOTIF_GROUP_ID valid: ${BW_NOTIF_GROUP_ID_NUM}`);
+    } else {
+      logger.warn(`⚠️ BW_NOTIF_GROUP_ID tidak valid: "${BW_NOTIF_GROUP_ID}"`);
+    }
+  }
+} catch (e) {
+  logger.warn(`⚠️ Error processing BW_NOTIF_GROUP_ID: ${e.message}`);
 }
 
 const bot = new Telegraf(BOT_TOKEN);
@@ -683,6 +705,10 @@ db.run(`CREATE TABLE IF NOT EXISTS Server (
   auth TEXT,
   harga INTEGER,
   harga_reseller INTEGER,
+  harga_1ip INTEGER DEFAULT 0,
+  harga_2ip INTEGER DEFAULT 0,
+  harga_reseller_1ip INTEGER DEFAULT 0,
+  harga_reseller_2ip INTEGER DEFAULT 0,
   nama_server TEXT,
   quota INTEGER,
   iplimit INTEGER,
@@ -691,7 +717,19 @@ db.run(`CREATE TABLE IF NOT EXISTS Server (
   is_reseller_only INTEGER DEFAULT 0,
   support_zivpn INTEGER DEFAULT 0,
   support_udp_http INTEGER DEFAULT 0,
-  service TEXT DEFAULT 'ssh'
+  service TEXT DEFAULT 'ssh',
+  sync_host TEXT,
+  sync_port INTEGER DEFAULT 8789,
+  sync_endpoint TEXT DEFAULT '/internal/account-summary',
+  sync_enabled INTEGER DEFAULT 1,
+  bandwidth_limit_tb REAL DEFAULT 0,
+  bandwidth_user_daily_gb REAL DEFAULT 8,
+  bandwidth_daily_gb REAL DEFAULT 0,
+  bandwidth_monthly_used_tb REAL DEFAULT 0,
+  bandwidth_remaining_tb REAL DEFAULT 0,
+  bandwidth_estimated_capacity INTEGER DEFAULT 0,
+  bandwidth_last_sync_at INTEGER DEFAULT 0,
+  bandwidth_alert_last_notified_at INTEGER DEFAULT 0
 )`, (err) => {
   if (err) {
     logger.error('Kesalahan membuat tabel Server:', err.message);
@@ -728,6 +766,18 @@ db.all("PRAGMA table_info(Server)", (err, rows) => {
     if (!cols.includes('harga_reseller')) {
       db.run("ALTER TABLE Server ADD COLUMN harga_reseller INTEGER");
     }
+    if (!cols.includes('harga_1ip')) {
+      db.run("ALTER TABLE Server ADD COLUMN harga_1ip INTEGER DEFAULT 0");
+    }
+    if (!cols.includes('harga_2ip')) {
+      db.run("ALTER TABLE Server ADD COLUMN harga_2ip INTEGER DEFAULT 0");
+    }
+    if (!cols.includes('harga_reseller_1ip')) {
+      db.run("ALTER TABLE Server ADD COLUMN harga_reseller_1ip INTEGER DEFAULT 0");
+    }
+    if (!cols.includes('harga_reseller_2ip')) {
+      db.run("ALTER TABLE Server ADD COLUMN harga_reseller_2ip INTEGER DEFAULT 0");
+    }
     if (!cols.includes('sync_host')) {
       db.run("ALTER TABLE Server ADD COLUMN sync_host TEXT");
     }
@@ -740,14 +790,50 @@ db.all("PRAGMA table_info(Server)", (err, rows) => {
     if (!cols.includes('sync_enabled')) {
       db.run("ALTER TABLE Server ADD COLUMN sync_enabled INTEGER DEFAULT 1");
     }
+    if (!cols.includes('bandwidth_limit_tb')) {
+      db.run("ALTER TABLE Server ADD COLUMN bandwidth_limit_tb REAL DEFAULT 0");
+    }
+    if (!cols.includes('bandwidth_user_daily_gb')) {
+      db.run("ALTER TABLE Server ADD COLUMN bandwidth_user_daily_gb REAL DEFAULT 8");
+    }
+    if (!cols.includes('bandwidth_daily_gb')) {
+      db.run("ALTER TABLE Server ADD COLUMN bandwidth_daily_gb REAL DEFAULT 0");
+    }
+    if (!cols.includes('bandwidth_monthly_used_tb')) {
+      db.run("ALTER TABLE Server ADD COLUMN bandwidth_monthly_used_tb REAL DEFAULT 0");
+    }
+    if (!cols.includes('bandwidth_remaining_tb')) {
+      db.run("ALTER TABLE Server ADD COLUMN bandwidth_remaining_tb REAL DEFAULT 0");
+    }
+    if (!cols.includes('bandwidth_estimated_capacity')) {
+      db.run("ALTER TABLE Server ADD COLUMN bandwidth_estimated_capacity INTEGER DEFAULT 0");
+    }
+    if (!cols.includes('bandwidth_last_sync_at')) {
+      db.run("ALTER TABLE Server ADD COLUMN bandwidth_last_sync_at INTEGER DEFAULT 0");
+    }
+    if (!cols.includes('bandwidth_alert_last_notified_at')) {
+      db.run("ALTER TABLE Server ADD COLUMN bandwidth_alert_last_notified_at INTEGER DEFAULT 0");
+    }
 
     // Jalankan normalisasi setelah migrasi kolom ter-queue
     db.run("UPDATE Server SET support_zivpn = 0 WHERE support_zivpn IS NULL");
     db.run("UPDATE Server SET support_udp_http = 0 WHERE support_udp_http IS NULL");
     db.run("UPDATE Server SET support_zivpn = 1 WHERE service = 'zivpn' AND support_zivpn = 0");
+    db.run("UPDATE Server SET harga_1ip = COALESCE(harga_1ip, harga)");
+    db.run("UPDATE Server SET harga_2ip = COALESCE(harga_2ip, harga)");
+    db.run("UPDATE Server SET harga_reseller_1ip = COALESCE(harga_reseller_1ip, harga_reseller)");
+    db.run("UPDATE Server SET harga_reseller_2ip = COALESCE(harga_reseller_2ip, harga_reseller)");
     db.run("UPDATE Server SET sync_port = 8789 WHERE sync_port IS NULL OR sync_port = 0");
     db.run("UPDATE Server SET sync_endpoint = '/internal/account-summary' WHERE sync_endpoint IS NULL OR TRIM(sync_endpoint) = ''");
     db.run("UPDATE Server SET sync_enabled = 1 WHERE sync_enabled IS NULL");
+    db.run("UPDATE Server SET bandwidth_limit_tb = 0 WHERE bandwidth_limit_tb IS NULL");
+    db.run("UPDATE Server SET bandwidth_user_daily_gb = 8 WHERE bandwidth_user_daily_gb IS NULL OR bandwidth_user_daily_gb <= 0");
+    db.run("UPDATE Server SET bandwidth_daily_gb = 0 WHERE bandwidth_daily_gb IS NULL");
+    db.run("UPDATE Server SET bandwidth_monthly_used_tb = 0 WHERE bandwidth_monthly_used_tb IS NULL");
+    db.run("UPDATE Server SET bandwidth_remaining_tb = 0 WHERE bandwidth_remaining_tb IS NULL");
+    db.run("UPDATE Server SET bandwidth_estimated_capacity = 0 WHERE bandwidth_estimated_capacity IS NULL");
+    db.run("UPDATE Server SET bandwidth_last_sync_at = 0 WHERE bandwidth_last_sync_at IS NULL");
+    db.run("UPDATE Server SET bandwidth_alert_last_notified_at = 0 WHERE bandwidth_alert_last_notified_at IS NULL");
   });
 });
 db.run(`CREATE TABLE IF NOT EXISTS users (
@@ -859,7 +945,7 @@ const dbRunAsync = (sql, params = []) => new Promise((resolve, reject) => {
   });
 });
 
-async function chargeAccountTransactionAtomic(userId, amount, type, action = 'other') {
+async function reserveAccountChargeAtomic(userId, amount, type, action = 'other') {
   const referenceId = `account-${action}-${type}-${userId}-${Date.now()}`;
 
   try {
@@ -876,11 +962,44 @@ async function chargeAccountTransactionAtomic(userId, amount, type, action = 'ot
 
     await dbRunAsync(
       'INSERT INTO transactions (user_id, amount, type, reference_id, timestamp) VALUES (?, ?, ?, ?, ?)',
-      [userId, amount, type, referenceId, Date.now()]
+      [userId, amount, 'account_pending', referenceId, Date.now()]
     );
 
     await dbRunAsync('COMMIT');
     return { ok: true, referenceId };
+  } catch (error) {
+    try {
+      await dbRunAsync('ROLLBACK');
+    } catch (_) {}
+    return { ok: false, error: error?.message || 'UNKNOWN' };
+  }
+}
+
+async function finalizeReservedAccountCharge(referenceId, finalType) {
+  try {
+    const result = await dbRunAsync(
+      'UPDATE transactions SET type = ? WHERE reference_id = ? AND type = ?',
+      [finalType, referenceId, 'account_pending']
+    );
+    if (!result || Number(result.changes || 0) === 0) {
+      throw new Error('PENDING_TRANSACTION_NOT_FOUND');
+    }
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error?.message || 'UNKNOWN' };
+  }
+}
+
+async function cancelReservedAccountCharge(userId, amount, referenceId) {
+  try {
+    await dbRunAsync('BEGIN IMMEDIATE TRANSACTION');
+    await dbRunAsync('UPDATE users SET saldo = saldo + ? WHERE user_id = ?', [amount, userId]);
+    await dbRunAsync(
+      'UPDATE transactions SET type = ? WHERE reference_id = ? AND type = ?',
+      ['account_canceled', referenceId, 'account_pending']
+    );
+    await dbRunAsync('COMMIT');
+    return { ok: true };
   } catch (error) {
     try {
       await dbRunAsync('ROLLBACK');
@@ -1060,6 +1179,450 @@ async function fetchTunnelExpirySummaryByDate(server, dateYmd) {
   return { date: dateYmd, ssh, vmess, vless, trojan, totalExpired };
 }
 
+async function fetchTunnelVnstatDailySummary(server) {
+  const req = buildTunnelSyncRequest(server);
+  const vnstatEndpoint = req.summaryEndpoint.endsWith('/account-summary')
+    ? req.summaryEndpoint.replace(/account-summary$/, 'vnstat-daily')
+    : '/internal/vnstat-daily';
+
+  let response;
+  try {
+    response = await axios.get(`http://${req.host}:${req.port}${vnstatEndpoint}`, {
+      timeout: 20000,
+      headers: { 'x-sync-token': req.token }
+    });
+  } catch (error) {
+    if (error.response?.data?.message) {
+      throw new Error(`API vnstat-daily gagal: ${error.response.data.message}`);
+    }
+    throw new Error(error.message || 'request gagal');
+  }
+
+  const data = response?.data || {};
+  if (!data.ok) {
+    throw new Error(`API vnstat-daily gagal: ${data.message || 'unknown error'}`);
+  }
+
+  const totalGb = Number(data.total_gb || data.totalGb || 0);
+  const monthTotalTb = Number(
+    data.month_total_tb ??
+    data.monthTotalTb ??
+    (Number(data.month_total_gb || 0) / 1024)
+  );
+
+  return {
+    date: String(data.date || '').trim(),
+    totalGb: Number.isFinite(totalGb) ? totalGb : 0,
+    monthTotalTb: Number.isFinite(monthTotalTb) ? monthTotalTb : 0
+  };
+}
+
+function normalizeMigrationType(rawType) {
+  const value = String(rawType || '').trim().toLowerCase();
+  if (value === 'udp' || value === 'udp_http' || value === 'zivpn') return 'zivpn';
+  if (value === 'ssh' || value === 'vmess' || value === 'vless' || value === 'trojan') return value;
+  return '';
+}
+
+function isSupportedMigrationType(type) {
+  const t = normalizeMigrationType(type);
+  return t === 'ssh' || t === 'zivpn';
+}
+
+async function fetchTunnelExportAccounts(server, accountType, limit) {
+  const req = buildTunnelSyncRequest(server);
+  const exportEndpoint = req.summaryEndpoint.endsWith('/account-summary')
+    ? req.summaryEndpoint.replace(/account-summary$/, 'export-accounts')
+    : '/internal/export-accounts';
+
+  let response;
+  try {
+    response = await axios.get(`http://${req.host}:${req.port}${exportEndpoint}`, {
+      timeout: 30000,
+      headers: { 'x-sync-token': req.token },
+      params: { type: accountType, limit }
+    });
+  } catch (error) {
+    if (error.response?.data?.message) {
+      throw new Error(`API export-accounts gagal: ${error.response.data.message}`);
+    }
+    throw new Error(error.message || 'request gagal');
+  }
+
+  const data = response?.data || {};
+  if (!data.ok) {
+    throw new Error(`API export-accounts gagal: ${data.message || 'unknown error'}`);
+  }
+
+  return {
+    type: String(data.type || accountType).toLowerCase(),
+    exported: Number(data.exported || 0),
+    accounts: Array.isArray(data.accounts) ? data.accounts : []
+  };
+}
+
+async function importTunnelAccounts(server, accountType, accounts) {
+  const req = buildTunnelSyncRequest(server);
+  const importEndpoint = req.summaryEndpoint.endsWith('/account-summary')
+    ? req.summaryEndpoint.replace(/account-summary$/, 'import-accounts')
+    : '/internal/import-accounts';
+
+  let response;
+  try {
+    response = await axios.post(
+      `http://${req.host}:${req.port}${importEndpoint}`,
+      { type: accountType, accounts },
+      {
+        timeout: 60000,
+        headers: { 'x-sync-token': req.token }
+      }
+    );
+  } catch (error) {
+    if (error.response?.data?.message) {
+      throw new Error(`API import-accounts gagal: ${error.response.data.message}`);
+    }
+    throw new Error(error.message || 'request gagal');
+  }
+
+  const data = response?.data || {};
+  if (!data.ok) {
+    throw new Error(`API import-accounts gagal: ${data.message || 'unknown error'}`);
+  }
+
+  return {
+    imported: Number(data.imported || 0),
+    skipped: Number(data.skipped || 0),
+    usernames: Array.isArray(data.usernames) ? data.usernames : [],
+    type: String(data.type || accountType).toLowerCase()
+  };
+}
+
+async function deleteTunnelAccounts(server, accountType, usernames) {
+  const req = buildTunnelSyncRequest(server);
+  const deleteEndpoint = req.summaryEndpoint.endsWith('/account-summary')
+    ? req.summaryEndpoint.replace(/account-summary$/, 'delete-accounts')
+    : '/internal/delete-accounts';
+
+  let response;
+  try {
+    response = await axios.post(
+      `http://${req.host}:${req.port}${deleteEndpoint}`,
+      { type: accountType, usernames },
+      {
+        timeout: 45000,
+        headers: { 'x-sync-token': req.token }
+      }
+    );
+  } catch (error) {
+    if (error.response?.data?.message) {
+      throw new Error(`API delete-accounts gagal: ${error.response.data.message}`);
+    }
+    throw new Error(error.message || 'request gagal');
+  }
+
+  const data = response?.data || {};
+  if (!data.ok) {
+    throw new Error(`API delete-accounts gagal: ${data.message || 'unknown error'}`);
+  }
+
+  return {
+    deleted: Number(data.deleted || 0),
+    type: String(data.type || accountType).toLowerCase()
+  };
+}
+
+async function deleteAllTunnelAccounts(server, accountType) {
+  const req = buildTunnelSyncRequest(server);
+  const endpoint = req.summaryEndpoint.endsWith('/account-summary')
+    ? req.summaryEndpoint.replace(/account-summary$/, 'delete-all-accounts')
+    : '/internal/delete-all-accounts';
+
+  let response;
+  try {
+    response = await axios.post(
+      `http://${req.host}:${req.port}${endpoint}`,
+      { type: accountType },
+      {
+        timeout: 60000,
+        headers: { 'x-sync-token': req.token }
+      }
+    );
+  } catch (error) {
+    if (error.response?.data?.message) {
+      throw new Error(`API delete-all-accounts gagal: ${error.response.data.message}`);
+    }
+    throw new Error(error.message || 'request gagal');
+  }
+
+  const data = response?.data || {};
+  if (!data.ok) {
+    throw new Error(`API delete-all-accounts gagal: ${data.message || 'unknown error'}`);
+  }
+
+  return {
+    type: String(data.type || accountType).toLowerCase(),
+    deletedDb: Number(data.deleted_db || data.deleted || 0),
+    deletedZivpn: Number(data.deleted_zivpn || 0)
+  };
+}
+
+async function migrateTunnelAccountsBetweenServers(sourceServer, targetServer, type, limit) {
+  const normalizedType = normalizeMigrationType(type);
+  if (!normalizedType) {
+    throw new Error('Jenis akun migrasi tidak valid.');
+  }
+
+  const maxLimit = Math.max(1, Math.min(500, Number(limit || 0)));
+  const exported = await fetchTunnelExportAccounts(sourceServer, normalizedType, maxLimit);
+  if (!exported.accounts.length) {
+    return { type: normalizedType, requested: maxLimit, exported: 0, imported: 0, skipped: 0, deleted: 0 };
+  }
+
+  const imported = await importTunnelAccounts(targetServer, normalizedType, exported.accounts);
+  const usernamesToDelete = Array.isArray(imported.usernames) ? imported.usernames : [];
+  const importedSet = new Set(usernamesToDelete.map((u) => String(u || '').toLowerCase()));
+  const migratedAccounts = exported.accounts
+    .filter((acc) => importedSet.has(String(acc?.username || '').toLowerCase()))
+    .map((acc) => ({
+      username: String(acc?.username || '').trim(),
+      password: String(acc?.password || '').trim(),
+      dateExp: String(acc?.date_exp || '').trim(),
+      days: Number(acc?.days || 0)
+    }));
+  let deleted = 0;
+  if (usernamesToDelete.length > 0) {
+    const deletedResult = await deleteTunnelAccounts(sourceServer, normalizedType, usernamesToDelete);
+    deleted = deletedResult.deleted;
+  }
+  return {
+    type: normalizedType,
+    requested: maxLimit,
+    exported: exported.accounts.length,
+    imported: imported.imported,
+    skipped: imported.skipped,
+    deleted,
+    migratedAccounts
+  };
+}
+
+function getDaysInCurrentMonth() {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+}
+
+function getRemainingDaysInCurrentMonthInclusive() {
+  const now = new Date();
+  const daysInMonth = getDaysInCurrentMonth();
+  return Math.max(1, daysInMonth - now.getDate() + 1);
+}
+
+function getElapsedDaysInCurrentMonth() {
+  return Math.max(1, new Date().getDate());
+}
+
+const BANDWIDTH_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+
+function calculateServerEffectiveCapacity(input) {
+  const usedAccounts = Math.max(0, Number(input.usedAccounts || 0));
+  const manualLimitRaw = Number(input.manualLimit || 0);
+  const bandwidthLimitTb = Number(input.bandwidthLimitTb || 0);
+  const rawDailyBandwidthGb = Math.max(0, Number(input.dailyBandwidthGb || 0));
+  const fallbackPerUserDailyGb = Math.max(0, Number(input.fallbackPerUserDailyGb || 8));
+  const monthUsedTb = Math.max(0, Number(input.monthUsedTb || 0));
+  const projectionDays = Math.max(1, Number(input.projectionDays || 30));
+  const elapsedDays = Math.max(1, Number(input.elapsedDaysInMonth || getElapsedDaysInCurrentMonth()));
+  const monthUsedGb = monthUsedTb * 1024;
+  const avgDailyFromMonthGb = monthUsedGb > 0 ? (monthUsedGb / elapsedDays) : 0;
+  // Pakai nilai harian yang lebih aman agar tidak under-estimate ketika data daily stale/rendah.
+  const effectiveDailyBandwidthGb = Math.max(rawDailyBandwidthGb, avgDailyFromMonthGb);
+
+  const hasManualLimit = Number.isFinite(manualLimitRaw) && manualLimitRaw > 0;
+  const manualLimit = hasManualLimit ? Math.floor(manualLimitRaw) : 0;
+
+  const hasBandwidthLimit = Number.isFinite(bandwidthLimitTb) && bandwidthLimitTb > 0;
+  if (!hasBandwidthLimit) {
+    const projectedMonthlyTbFromToday = (effectiveDailyBandwidthGb * projectionDays) / 1024;
+    return {
+      hasBandwidthLimit: false,
+      effectiveLimit: hasManualLimit ? manualLimit : 0,
+      remainingSlots: hasManualLimit ? Math.max(0, manualLimit - usedAccounts) : null,
+      isFull: hasManualLimit ? usedAccounts >= manualLimit : false,
+      estimatedCapacityByBandwidth: 0,
+      safeUsersFromTodayProjection: 0,
+      safeUsersForRemainingMonth: 0,
+      projectedMonthlyTbFromToday,
+      monthlyRemainingTb: null,
+      estimatedPerUserDailyGb: 0,
+      effectiveDailyBandwidthGb
+    };
+  }
+
+  const perUserDailyGbFromEffectiveUsage = usedAccounts > 0 && effectiveDailyBandwidthGb > 0
+    ? (effectiveDailyBandwidthGb / usedAccounts)
+    : 0;
+  const estimatedPerUserDailyGb = perUserDailyGbFromEffectiveUsage > 0
+    ? perUserDailyGbFromEffectiveUsage
+    : (fallbackPerUserDailyGb > 0 ? fallbackPerUserDailyGb : 8);
+  const daysInMonth = projectionDays;
+  const remainingDaysInMonth = getRemainingDaysInCurrentMonthInclusive();
+
+  let safeUsersFromTodayProjection = 0;
+  if (estimatedPerUserDailyGb > 0) {
+    safeUsersFromTodayProjection = Math.floor((bandwidthLimitTb * 1024) / (estimatedPerUserDailyGb * daysInMonth));
+  }
+  safeUsersFromTodayProjection = Math.max(0, safeUsersFromTodayProjection);
+
+  const monthlyRemainingTb = Math.max(0, bandwidthLimitTb - monthUsedTb);
+  let safeUsersForRemainingMonth = safeUsersFromTodayProjection;
+  if (estimatedPerUserDailyGb > 0) {
+    safeUsersForRemainingMonth = Math.floor((monthlyRemainingTb * 1024) / (estimatedPerUserDailyGb * remainingDaysInMonth));
+  }
+  safeUsersForRemainingMonth = Math.max(0, safeUsersForRemainingMonth);
+
+  const estimatedCapacityByBandwidth = Math.max(0, Math.min(safeUsersFromTodayProjection, safeUsersForRemainingMonth));
+  const projectedMonthlyTbFromToday = (effectiveDailyBandwidthGb * projectionDays) / 1024;
+
+  const effectiveLimit = hasManualLimit
+    ? Math.min(manualLimit, estimatedCapacityByBandwidth)
+    : estimatedCapacityByBandwidth;
+
+  return {
+    hasBandwidthLimit: true,
+    effectiveLimit,
+    remainingSlots: Math.max(0, effectiveLimit - usedAccounts),
+    isFull: usedAccounts >= effectiveLimit,
+    estimatedCapacityByBandwidth,
+    safeUsersFromTodayProjection,
+    safeUsersForRemainingMonth,
+    projectedMonthlyTbFromToday,
+    monthlyRemainingTb,
+    estimatedPerUserDailyGb,
+    effectiveDailyBandwidthGb
+  };
+}
+
+async function sendBandwidthRiskAlert(payload) {
+  const lines = [
+    'PERINGATAN BANDWIDTH SERVER',
+    '',
+    `Server: ${payload.serverName}`,
+    `Host: ${payload.host}`,
+    `User aktif saat ini: ${payload.usedAccounts}`,
+    `Traffic hari ini: ${payload.dailyGb.toFixed(2)} GB`,
+    `Rata-rata/user/hari: ${payload.avgPerUserGb.toFixed(3)} GB`,
+    `Proyeksi 30 hari: ${payload.projectedMonthlyTb.toFixed(2)} TB`,
+    `Limit BW bulanan: ${payload.limitTb.toFixed(2)} TB`,
+    `Batas aman user (estimasi): ${payload.safeUsers} user`
+  ];
+  const message = lines.join('\n');
+
+  const targets = new Set();
+  if (Number(BW_NOTIF_GROUP_ID_NUM)) targets.add(Number(BW_NOTIF_GROUP_ID_NUM));
+  if (targets.size === 0) {
+    logger.warn('Notif peringatan bandwidth dilewati: group id notif bandwidth belum diset.');
+    return;
+  }
+
+  for (const chatId of targets) {
+    try {
+      await bot.telegram.sendMessage(chatId, message);
+    } catch (err) {
+      logger.warn(`Gagal kirim notif bandwidth ke ${chatId}: ${err.message}`);
+    }
+  }
+}
+
+async function sendBandwidthReportToGroup(chatId) {
+  const targetChatId = Number(chatId);
+  if (!Number.isFinite(targetChatId)) return;
+
+  const allRows = await dbAllAsync(
+    'SELECT id, nama_server, domain, sync_host, total_create_akun, batas_create_akun, bandwidth_limit_tb, bandwidth_daily_gb, bandwidth_monthly_used_tb, bandwidth_user_daily_gb FROM Server ORDER BY nama_server COLLATE NOCASE ASC'
+  );
+  if (!allRows || allRows.length === 0) {
+    await bot.telegram.sendMessage(targetChatId, 'Laporan bandwidth: belum ada server.');
+    return;
+  }
+
+  const rows = allRows.filter((srv) => Number(srv.bandwidth_limit_tb || 0) > 0);
+  if (rows.length === 0) {
+    await bot.telegram.sendMessage(targetChatId, 'Laporan bandwidth: belum ada server yang di-set limit bandwidth.');
+    return;
+  }
+
+  const header = [
+    'LAPORAN BANDWIDTH SERVER (3 JAM)',
+    `Waktu: ${new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })}`,
+    ''
+  ];
+  const lines = [...header];
+
+  rows.forEach((srv, idx) => {
+    const capacity = calculateServerEffectiveCapacity({
+      usedAccounts: srv.total_create_akun,
+      manualLimit: srv.batas_create_akun,
+      bandwidthLimitTb: srv.bandwidth_limit_tb,
+      dailyBandwidthGb: srv.bandwidth_daily_gb,
+      fallbackPerUserDailyGb: srv.bandwidth_user_daily_gb,
+      monthUsedTb: srv.bandwidth_monthly_used_tb
+    });
+    const bwLimitTb = Number(srv.bandwidth_limit_tb || 0);
+    const riskOver = capacity.hasBandwidthLimit && capacity.projectedMonthlyTbFromToday > bwLimitTb ? 'YA' : 'TIDAK';
+    const host = normalizeSyncHost(srv.sync_host || srv.domain) || '-';
+    const manualLimit = Number(srv.batas_create_akun || 0);
+    const manualLimitText = manualLimit > 0 ? String(manualLimit) : 'Unlimited';
+
+    lines.push(`${idx + 1}. ${srv.nama_server || '-'}`);
+    lines.push(`- Host: ${host}`);
+    lines.push(`- Akun Terpakai: ${Number(srv.total_create_akun || 0)}/${manualLimitText}`);
+    lines.push(`- Bandwidth Hari Ini (raw): ${Number(srv.bandwidth_daily_gb || 0).toFixed(2)} GB`);
+    lines.push(`- Bandwidth Hari Ini (efektif): ${Number(capacity.effectiveDailyBandwidthGb || 0).toFixed(2)} GB`);
+    lines.push(`- Bandwidth Bulan Ini: ${Number(srv.bandwidth_monthly_used_tb || 0).toFixed(2)}/${bwLimitTb > 0 ? bwLimitTb.toFixed(2) : '-'} TB`);
+    lines.push(`- Proyeksi 30 Hari: ${capacity.projectedMonthlyTbFromToday.toFixed(2)} TB`);
+    lines.push(`- Batas Aman User (BW): ${capacity.hasBandwidthLimit ? capacity.estimatedCapacityByBandwidth : '-'}`);
+    lines.push(`- Risiko Over BW: ${riskOver}`);
+    lines.push('');
+  });
+
+  let buffer = '';
+  for (const line of lines) {
+    const candidate = buffer ? `${buffer}\n${line}` : line;
+    if (candidate.length > 3500) {
+      await bot.telegram.sendMessage(targetChatId, buffer);
+      buffer = line;
+    } else {
+      buffer = candidate;
+    }
+  }
+  if (buffer) await bot.telegram.sendMessage(targetChatId, buffer);
+}
+
+function formatBandwidthReportInterval(minutes) {
+  const m = Math.max(1, Math.floor(Number(minutes) || 0));
+  if (m % 60 === 0) {
+    const h = m / 60;
+    return `${h} jam`;
+  }
+  return `${m} menit`;
+}
+
+function parseBandwidthIntervalInput(raw) {
+  const text = String(raw || '').trim().toLowerCase();
+  if (!text) return null;
+
+  if (/^\d+$/.test(text)) {
+    return Number(text);
+  }
+
+  const jamMatch = text.match(/^(\d+)\s*(jam|j)$/);
+  if (jamMatch) return Number(jamMatch[1]) * 60;
+
+  const menitMatch = text.match(/^(\d+)\s*(menit|m)$/);
+  if (menitMatch) return Number(menitMatch[1]);
+
+  return null;
+}
+
 async function syncServerUsageFromTunnel(trigger = 'manual', options = {}) {
   const targetServerId = options.serverId ? Number(options.serverId) : null;
   const force = options.force === true;
@@ -1073,7 +1636,10 @@ async function syncServerUsageFromTunnel(trigger = 'manual', options = {}) {
 
   const servers = await dbAllAsync(
     `SELECT id, nama_server, domain, auth, batas_create_akun, total_create_akun,
-            sync_host, sync_port, sync_endpoint, sync_enabled
+            sync_host, sync_port, sync_endpoint, sync_enabled,
+            bandwidth_limit_tb, bandwidth_user_daily_gb,
+            bandwidth_daily_gb, bandwidth_monthly_used_tb,
+            bandwidth_alert_last_notified_at
      FROM Server
      WHERE ${whereParts.join(' AND ')}`,
     params
@@ -1117,30 +1683,107 @@ async function syncServerUsageFromTunnel(trigger = 'manual', options = {}) {
 
     try {
       const counts = await fetchTunnelAccountSummary(summaryRequestServer);
-
-      for (const server of groupServers) {
-        await dbRunAsync('UPDATE Server SET total_create_akun = ? WHERE id = ?', [counts.total, server.id]);
+      let vnstatSummary = null;
+      try {
+        vnstatSummary = await fetchTunnelVnstatDailySummary(summaryRequestServer);
+      } catch (vnErr) {
+        logger.warn(`[SyncServer:${trigger}] vnstat skip ${primary.nama_server}: ${vnErr.message}`);
       }
 
-      const positiveBatas = groupServers
-        .map((s) => Number(s.batas_create_akun || 0))
-        .filter((v) => Number.isFinite(v) && v > 0);
+      for (const server of groupServers) {
+        const dailyBandwidthGb = vnstatSummary ? Number(vnstatSummary.totalGb || 0) : Number(server.bandwidth_daily_gb || 0);
+        const monthUsedTb = vnstatSummary ? Number(vnstatSummary.monthTotalTb || 0) : Number(server.bandwidth_monthly_used_tb || 0);
+        const capacity = calculateServerEffectiveCapacity({
+          usedAccounts: counts.total,
+          manualLimit: server.batas_create_akun,
+          bandwidthLimitTb: server.bandwidth_limit_tb,
+          dailyBandwidthGb,
+          fallbackPerUserDailyGb: server.bandwidth_user_daily_gb,
+          monthUsedTb
+        });
 
-      const batas = positiveBatas.length > 0 ? Math.max(...positiveBatas) : 0;
-      const remaining = batas > 0 ? Math.max(0, batas - counts.total) : null;
+        await dbRunAsync(
+          'UPDATE Server SET total_create_akun = ?, bandwidth_daily_gb = ?, bandwidth_monthly_used_tb = ?, bandwidth_remaining_tb = ?, bandwidth_estimated_capacity = ?, bandwidth_last_sync_at = ? WHERE id = ?',
+          [
+            counts.total,
+            dailyBandwidthGb,
+            monthUsedTb,
+            capacity.monthlyRemainingTb === null ? 0 : capacity.monthlyRemainingTb,
+            capacity.estimatedCapacityByBandwidth,
+            Date.now(),
+            server.id
+          ]
+        );
+      }
+
+      const groupManualLimit = groupServers
+        .map((s) => Number(s.batas_create_akun || 0))
+        .filter((v) => Number.isFinite(v) && v > 0)
+        .reduce((max, cur) => Math.max(max, cur), 0);
+      const groupBandwidthLimitTb = groupServers
+        .map((s) => Number(s.bandwidth_limit_tb || 0))
+        .filter((v) => Number.isFinite(v) && v > 0)
+        .reduce((max, cur) => Math.max(max, cur), 0);
+      const groupFallbackDailyGb = groupServers
+        .map((s) => Number(s.bandwidth_user_daily_gb || 0))
+        .filter((v) => Number.isFinite(v) && v > 0)
+        .reduce((max, cur) => Math.max(max, cur), 0);
+      const groupDailyGb = vnstatSummary ? Number(vnstatSummary.totalGb || 0) : Number(primary.bandwidth_daily_gb || 0);
+      const groupMonthTb = vnstatSummary ? Number(vnstatSummary.monthTotalTb || 0) : Number(primary.bandwidth_monthly_used_tb || 0);
+
+      const capacity = calculateServerEffectiveCapacity({
+        usedAccounts: counts.total,
+        manualLimit: groupManualLimit,
+        bandwidthLimitTb: groupBandwidthLimitTb,
+        dailyBandwidthGb: groupDailyGb,
+        fallbackPerUserDailyGb: groupFallbackDailyGb || 8,
+        monthUsedTb: groupMonthTb
+      });
+
+      const latestAlertTs = groupServers
+        .map((s) => Number(s.bandwidth_alert_last_notified_at || 0))
+        .filter((v) => Number.isFinite(v) && v > 0)
+        .reduce((max, cur) => Math.max(max, cur), 0);
+      const nowTs = Date.now();
+      const shouldAlertOverBandwidth =
+        capacity.hasBandwidthLimit &&
+        groupBandwidthLimitTb > 0 &&
+        capacity.projectedMonthlyTbFromToday > groupBandwidthLimitTb;
+      const cooldownPassed = latestAlertTs <= 0 || (nowTs - latestAlertTs) >= BANDWIDTH_ALERT_COOLDOWN_MS;
+
+      if (shouldAlertOverBandwidth && cooldownPassed) {
+        await sendBandwidthRiskAlert({
+          serverName: primary.nama_server || '-',
+          host: normalizeSyncHost(primary.sync_host || primary.domain) || '-',
+          usedAccounts: counts.total,
+          dailyGb: groupDailyGb,
+          avgPerUserGb: capacity.estimatedPerUserDailyGb,
+          projectedMonthlyTb: capacity.projectedMonthlyTbFromToday,
+          limitTb: groupBandwidthLimitTb,
+          safeUsers: capacity.estimatedCapacityByBandwidth
+        });
+        for (const server of groupServers) {
+          await dbRunAsync(
+            'UPDATE Server SET bandwidth_alert_last_notified_at = ? WHERE id = ?',
+            [nowTs, server.id]
+          );
+        }
+      }
 
       result.updated += 1;
       result.totals.used += counts.total;
       result.totals.syncedServers += 1;
 
-      if (remaining === null) {
+      if (capacity.remainingSlots === null) {
         result.totals.unlimitedServers += 1;
       } else {
-        result.totals.remaining += remaining;
-        result.totals.capacity += batas;
+        result.totals.remaining += capacity.remainingSlots;
+        result.totals.capacity += capacity.effectiveLimit;
       }
 
-      logger.info(`[SyncServer:${trigger}] ${primary.nama_server} => ${counts.total}/${batas || '-'} (group ${groupServers.length} row)`);
+      logger.info(
+        `[SyncServer:${trigger}] ${primary.nama_server} => akun ${counts.total}/${capacity.effectiveLimit || '-'}, bw ${groupMonthTb.toFixed(2)}/${groupBandwidthLimitTb || 0} TB (group ${groupServers.length} row)`
+      );
     } catch (err) {
       result.failed += 1;
       result.errors.push({
@@ -1291,6 +1934,62 @@ bot.command('syncservernow', async (ctx) => {
     logger.error('Gagal menjalankan sync server manual:', err.message);
     await ctx.reply('Gagal menjalankan sinkronisasi server.');
   }
+});
+
+bot.command('setserverbw', async (ctx) => {
+  const userId = ctx.message.from.id;
+  if (!adminIds.includes(userId)) {
+    return ctx.reply('Anda tidak memiliki izin untuk menggunakan perintah ini.');
+  }
+
+  const args = ctx.message.text.trim().split(/\s+/);
+  if (args.length < 3 || args.length > 4) {
+    return ctx.reply(
+      'Format salah.\n' +
+      'Gunakan: /setserverbw <server_id> <limit_tb> [avg_gb_per_user_per_hari]\n' +
+      'Contoh: /setserverbw 1 25 8'
+    );
+  }
+
+  const serverId = Number(args[1]);
+  const limitTb = Number(args[2]);
+  const avgUserDailyGb = args[3] !== undefined ? Number(args[3]) : 8;
+
+  if (!Number.isFinite(serverId) || serverId <= 0) {
+    return ctx.reply('server_id harus angka yang valid.');
+  }
+  if (!Number.isFinite(limitTb) || limitTb < 0) {
+    return ctx.reply('limit_tb harus angka >= 0. Pakai 0 untuk menonaktifkan limit bandwidth.');
+  }
+  if (!Number.isFinite(avgUserDailyGb) || avgUserDailyGb <= 0) {
+    return ctx.reply('avg_gb_per_user_per_hari harus angka > 0.');
+  }
+
+  db.run(
+    'UPDATE Server SET bandwidth_limit_tb = ?, bandwidth_user_daily_gb = ? WHERE id = ?',
+    [limitTb, avgUserDailyGb, serverId],
+    async function (err) {
+      if (err) {
+        logger.error('Gagal set limit bandwidth server:', err.message);
+        return ctx.reply('Terjadi kesalahan saat menyimpan limit bandwidth server.');
+      }
+      if (this.changes === 0) {
+        return ctx.reply('Server tidak ditemukan.');
+      }
+
+      try {
+        await syncServerUsageFromTunnel('setserverbw', { serverId, force: true });
+      } catch (syncErr) {
+        logger.warn(`Sync setelah setserverbw gagal: ${syncErr.message}`);
+      }
+
+      return ctx.reply(
+        `Limit bandwidth server #${serverId} berhasil diupdate.\n` +
+        `- Limit bulanan: ${limitTb.toFixed(2)} TB\n` +
+        `- Asumsi rata-rata: ${avgUserDailyGb.toFixed(2)} GB/user/hari`
+      );
+    }
+  );
 });
 // =================== COMMAND HAPUS SALDO ===================
 bot.command('hapussaldo', async (ctx) => {
@@ -1700,28 +2399,44 @@ bot.command('addserverzivpn_reseller', async (ctx) => {
     return ctx.reply('⚠️ Tidak ada izin.');
   }
 
-  const args = ctx.message.text.split(' ');
-  if (args.length !== 8) {
+  const parts = ctx.message.text.trim().split(/\s+/);
+  const params = parts.slice(1);
+
+  if (!(params.length === 7 || params.length === 10)) {
     return ctx.reply(
-      '⚠️ Format:\n`/addserverzivpn_reseller <domain> <auth> <harga> <nama_server> <quota> <iplimit> <batas_create_akun>`',
+      '⚠️ Format:\n`/addserverzivpn_reseller <domain> <auth> <harga_user_1ip> <harga_user_2ip> <harga_reseller_1ip> <harga_reseller_2ip> <nama_server> <quota> <iplimit> <batas_create_akun>`\n\n' +
+      'Format lama (7 argumen) masih didukung, semua harga akan disamakan.',
       { parse_mode: 'Markdown' }
     );
   }
 
-  const [, domain, auth, harga, nama_server, quota, iplimit, batas] = args;
+  let domain, auth, harga1, harga2, hargaRes1, hargaRes2, nama_server, quota, iplimit, batas;
+  if (params.length === 7) {
+    [domain, auth, harga1, nama_server, quota, iplimit, batas] = params;
+    harga2 = harga1;
+    hargaRes1 = harga1;
+    hargaRes2 = harga1;
+  } else {
+    [domain, auth, harga1, harga2, hargaRes1, hargaRes2, nama_server, quota, iplimit, batas] = params;
+  }
 
-  if (![harga, quota, iplimit, batas].every(v => /^\d+$/.test(v))) {
+  if (![harga1, harga2, hargaRes1, hargaRes2, quota, iplimit, batas].every(v => /^\d+$/.test(v))) {
     return ctx.reply('⚠️ harga, quota, iplimit, batas harus angka.');
   }
 
   db.run(
     `INSERT INTO Server
-     (domain, auth, harga, nama_server, quota, iplimit, batas_create_akun, total_create_akun, is_reseller_only, support_zivpn, support_udp_http, service)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 1, 0, 'ssh')`,
+     (domain, auth, harga, harga_reseller, harga_1ip, harga_2ip, harga_reseller_1ip, harga_reseller_2ip, nama_server, quota, iplimit, batas_create_akun, total_create_akun, is_reseller_only, support_zivpn, support_udp_http, service)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 1, 0, 'ssh')`,
     [
       domain,
       auth,
-      parseInt(harga),
+      parseInt(harga1),
+      parseInt(hargaRes1),
+      parseInt(harga1),
+      parseInt(harga2),
+      parseInt(hargaRes1),
+      parseInt(hargaRes2),
       nama_server,
       parseInt(quota),
       parseInt(iplimit),
@@ -1733,9 +2448,14 @@ bot.command('addserverzivpn_reseller', async (ctx) => {
         return ctx.reply('❌ Gagal menambahkan server ZIVPN reseller.');
       }
 
-      ctx.reply(`✅ Server *ZIVPN Reseller* \`${nama_server}\` berhasil ditambahkan.`, {
-        parse_mode: 'Markdown'
-      });
+      ctx.reply(
+        `✅ Server *ZIVPN Reseller* \`${nama_server}\` berhasil ditambahkan.\n` +
+        `• Harga User 1IP: Rp${parseInt(harga1).toLocaleString('id-ID')}\n` +
+        `• Harga User 2IP: Rp${parseInt(harga2).toLocaleString('id-ID')}\n` +
+        `• Harga Reseller 1IP: Rp${parseInt(hargaRes1).toLocaleString('id-ID')}\n` +
+        `• Harga Reseller 2IP: Rp${parseInt(hargaRes2).toLocaleString('id-ID')}`,
+        { parse_mode: 'Markdown' }
+      );
     }
   );
 });
@@ -2214,22 +2934,58 @@ bot.command('helpadmin', async (ctx) => {
 //////////
 bot.command('addserver_reseller', async (ctx) => {
   try {
-    const args = ctx.message.text.split(' ').slice(1);
-    if (args.length < 7) {
-      return ctx.reply('⚠️ Format salah!\n\nGunakan:\n/addserver_reseller <domain> <auth> <harga> <nama_server> <quota> <iplimit> <batas_create_akun>');
+    const params = ctx.message.text.trim().split(/\s+/).slice(1);
+    if (!(params.length === 7 || params.length === 10)) {
+      return ctx.reply(
+        '⚠️ Format salah!\n\n' +
+        'Format baru:\n/addserver_reseller <domain> <auth> <harga_user_1ip> <harga_user_2ip> <harga_reseller_1ip> <harga_reseller_2ip> <nama_server> <quota> <iplimit> <batas_create_akun>\n\n' +
+        'Format lama (7 argumen) masih didukung, semua harga akan disamakan.',
+        { parse_mode: 'Markdown' }
+      );
     }
 
-    const [domain, auth, harga, nama_server, quota, iplimit, batas_create_akun] = args;
-    
-    // ✅ TAMBAHKAN total_create_akun di VALUES
-    db.run(`INSERT INTO Server (domain, auth, harga, nama_server, quota, iplimit, batas_create_akun, is_reseller_only, total_create_akun, support_zivpn, support_udp_http, service) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, 0, 0, 'ssh')`,
-      [domain, auth, harga, nama_server, quota, iplimit, batas_create_akun],
+    let domain, auth, harga1, harga2, hargaRes1, hargaRes2, nama_server, quota, iplimit, batas_create_akun;
+    if (params.length === 7) {
+      [domain, auth, harga1, nama_server, quota, iplimit, batas_create_akun] = params;
+      harga2 = harga1;
+      hargaRes1 = harga1;
+      hargaRes2 = harga1;
+    } else {
+      [domain, auth, harga1, harga2, hargaRes1, hargaRes2, nama_server, quota, iplimit, batas_create_akun] = params;
+    }
+
+    if (![harga1, harga2, hargaRes1, hargaRes2, quota, iplimit, batas_create_akun].every(v => /^\d+$/.test(v))) {
+      return ctx.reply('⚠️ Semua nilai harga/quota/iplimit/batas harus angka.', { parse_mode: 'Markdown' });
+    }
+
+    db.run(`INSERT INTO Server (domain, auth, harga, harga_reseller, harga_1ip, harga_2ip, harga_reseller_1ip, harga_reseller_2ip, nama_server, quota, iplimit, batas_create_akun, is_reseller_only, total_create_akun, support_zivpn, support_udp_http, service) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0, 0, 'ssh')`,
+      [
+        domain,
+        auth,
+        parseInt(harga1),
+        parseInt(hargaRes1),
+        parseInt(harga1),
+        parseInt(harga2),
+        parseInt(hargaRes1),
+        parseInt(hargaRes2),
+        nama_server,
+        quota,
+        iplimit,
+        batas_create_akun
+      ],
       function (err) {
         if (err) {
           logger.error('❌ Gagal menambah server reseller:', err.message);
           return ctx.reply('❌ *Gagal menambah server reseller.*', { parse_mode: 'Markdown' });
         }
-        ctx.reply('✅ *Server khusus reseller berhasil ditambahkan!*', { parse_mode: 'Markdown' });
+        ctx.reply(
+          '✅ *Server khusus reseller berhasil ditambahkan!*\n' +
+          `• Harga User 1IP: Rp${parseInt(harga1).toLocaleString('id-ID')}\n` +
+          `• Harga User 2IP: Rp${parseInt(harga2).toLocaleString('id-ID')}\n` +
+          `• Harga Reseller 1IP: Rp${parseInt(hargaRes1).toLocaleString('id-ID')}\n` +
+          `• Harga Reseller 2IP: Rp${parseInt(hargaRes2).toLocaleString('id-ID')}`,
+          { parse_mode: 'Markdown' }
+        );
       }
     );
   } catch (e) {
@@ -2575,48 +3331,82 @@ bot.command('broadcastpoll', async (ctx) => {
 bot.command('addserver', async (ctx) => {
   const userId = ctx.message.from.id;
   if (!adminIds.includes(userId)) {
-      return ctx.reply('⚠️ Anda tidak memiliki izin untuk menggunakan perintah ini.', { parse_mode: 'Markdown' });
+    return ctx.reply('⚠️ Anda tidak memiliki izin untuk menggunakan perintah ini.', { parse_mode: 'Markdown' });
   }
 
-  const args = ctx.message.text.split(' ');
-  if (args.length !== 8) {
-      return ctx.reply('⚠️ Format salah. Gunakan: `/addserver <domain> <auth> <harga> <nama_server> <quota> <iplimit> <batas_create_account>`', { parse_mode: 'Markdown' });
+  const parts = ctx.message.text.trim().split(/\s+/);
+  const params = parts.slice(1);
+
+  // Format baru: wajib dua harga user + dua harga reseller
+  // Format lama (7 arg) masih didukung, semua harga disamakan.
+  if (!(params.length === 7 || params.length === 10)) {
+    return ctx.reply(
+      '⚠️ Format salah.\n' +
+      'Format baru:\n`/addserver <domain> <auth> <harga_user_1ip> <harga_user_2ip> <harga_reseller_1ip> <harga_reseller_2ip> <nama_server> <quota> <iplimit> <batas_create_akun>`\n\n' +
+      'Format lama (7 argumen) masih bisa dipakai, semua harga akan disamakan.',
+      { parse_mode: 'Markdown' }
+    );
   }
 
-  const [domain, auth, harga, nama_server, quota, iplimit, batas_create_akun] = args.slice(1);
+  let domain, auth, harga1, harga2, hargaRes1, hargaRes2, nama_server, quota, iplimit, batas_create_akun;
+
+  if (params.length === 7) {
+    [domain, auth, harga1, nama_server, quota, iplimit, batas_create_akun] = params;
+    harga2 = harga1;
+    hargaRes1 = harga1;
+    hargaRes2 = harga1;
+  } else {
+    [domain, auth, harga1, harga2, hargaRes1, hargaRes2, nama_server, quota, iplimit, batas_create_akun] = params;
+  }
 
   const numberOnlyRegex = /^\d+$/;
-  if (!numberOnlyRegex.test(harga) || !numberOnlyRegex.test(quota) || !numberOnlyRegex.test(iplimit) || !numberOnlyRegex.test(batas_create_akun)) {
-      return ctx.reply('⚠️ `harga`, `quota`, `iplimit`, dan `batas_create_akun` harus berupa angka.', { parse_mode: 'Markdown' });
+  if (
+    ![harga1, harga2, hargaRes1, hargaRes2, quota, iplimit, batas_create_akun].every(v => numberOnlyRegex.test(v))
+  ) {
+    return ctx.reply('⚠️ Semua nilai harga/quota/iplimit/batas harus berupa angka.', { parse_mode: 'Markdown' });
   }
 
-  // ✅ QUERY YANG BENAR
-const service = userState[ctx.chat.id]?.service || 'ssh'; 
-db.run(
-  "INSERT INTO Server (domain, auth, harga, nama_server, quota, iplimit, batas_create_akun, total_create_akun, support_zivpn, support_udp_http, service) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?)",
-  [
-    domain,
-    auth,
-    parseInt(harga),
-    nama_server,
-    parseInt(quota),
-    parseInt(iplimit),
-    parseInt(batas_create_akun),
-    service
-  ],
-  function(err) {
-    if (err) {
-      logger.error('⚠️ Kesalahan saat menambahkan server:', err.message);
-      return ctx.reply('⚠️ Kesalahan saat menambahkan server.', { parse_mode: 'Markdown' });
+  const service = userState[ctx.chat.id]?.service || 'ssh';
+  const hargaInt1 = parseInt(harga1);
+  const hargaInt2 = parseInt(harga2);
+  const hargaResInt1 = parseInt(hargaRes1);
+  const hargaResInt2 = parseInt(hargaRes2);
+
+  db.run(
+    "INSERT INTO Server (domain, auth, harga, harga_reseller, harga_1ip, harga_2ip, harga_reseller_1ip, harga_reseller_2ip, nama_server, quota, iplimit, batas_create_akun, total_create_akun, support_zivpn, support_udp_http, service) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, ?)",
+    [
+      domain,
+      auth,
+      hargaInt1, // harga dasar = harga paket 1IP user
+      hargaResInt1,
+      hargaInt1,
+      hargaInt2,
+      hargaResInt1,
+      hargaResInt2,
+      nama_server,
+      parseInt(quota),
+      parseInt(iplimit),
+      parseInt(batas_create_akun),
+      service
+    ],
+    function (err) {
+      if (err) {
+        logger.error('⚠️ Kesalahan saat menambahkan server:', err.message);
+        return ctx.reply('⚠️ Kesalahan saat menambahkan server.', { parse_mode: 'Markdown' });
+      }
+
+      delete userState[ctx.chat.id];
+
+      ctx.reply(
+        `✅ Server \`${nama_server}\` berhasil ditambahkan.\n` +
+        `• Harga User 1IP: Rp${hargaInt1.toLocaleString('id-ID')}\n` +
+        `• Harga User 2IP: Rp${hargaInt2.toLocaleString('id-ID')}\n` +
+        `• Harga Reseller 1IP: Rp${hargaResInt1.toLocaleString('id-ID')}\n` +
+        `• Harga Reseller 2IP: Rp${hargaResInt2.toLocaleString('id-ID')}`,
+        { parse_mode: 'Markdown' }
+      );
     }
-
-    // 🧹 bersihkan state setelah sukses
-    delete userState[ctx.chat.id];
-
-    ctx.reply(`✅ Server \`${nama_server}\` berhasil ditambahkan.`, { parse_mode: 'Markdown' });
-  }
-);
-
+  );
 });
 
 //command addserver zivpn
@@ -2626,33 +3416,45 @@ bot.command('addserverzivpn', async (ctx) => {
     return ctx.reply('⚠️ Anda tidak memiliki izin untuk menggunakan perintah ini.');
   }
 
-  const args = ctx.message.text.split(' ');
-  if (args.length !== 8) {
+  const parts = ctx.message.text.trim().split(/\s+/);
+  const params = parts.slice(1);
+
+  if (!(params.length === 7 || params.length === 10)) {
     return ctx.reply(
-      '⚠️ Format salah.\nGunakan:\n`/addserverzivpn <domain> <auth> <harga> <nama_server> <quota> <iplimit> <batas_create_akun>`',
+      '⚠️ Format salah.\n' +
+      'Format baru:\n`/addserverzivpn <domain> <auth> <harga_user_1ip> <harga_user_2ip> <harga_reseller_1ip> <harga_reseller_2ip> <nama_server> <quota> <iplimit> <batas_create_akun>`\n\n' +
+      'Format lama (7 argumen) masih bisa dipakai, semua harga akan disamakan.',
       { parse_mode: 'Markdown' }
     );
   }
 
-  const [, domain, auth, harga, nama_server, quota, iplimit, batas_create_akun] = args;
+  let domain, auth, harga1, harga2, hargaRes1, hargaRes2, nama_server, quota, iplimit, batas_create_akun;
 
-  const numberOnlyRegex = /^\d+$/;
-  if (
-    !numberOnlyRegex.test(harga) ||
-    !numberOnlyRegex.test(quota) ||
-    !numberOnlyRegex.test(iplimit) ||
-    !numberOnlyRegex.test(batas_create_akun)
-  ) {
-    return ctx.reply('⚠️ `harga`, `quota`, `iplimit`, dan `batas_create_akun` harus berupa angka.');
+  if (params.length === 7) {
+    [domain, auth, harga1, nama_server, quota, iplimit, batas_create_akun] = params;
+    harga2 = harga1;
+    hargaRes1 = harga1;
+    hargaRes2 = harga1;
+  } else {
+    [domain, auth, harga1, harga2, hargaRes1, hargaRes2, nama_server, quota, iplimit, batas_create_akun] = params;
   }
 
-  // 🔥 INI SATU-SATUNYA BEDANYA
+  const numberOnlyRegex = /^\d+$/;
+  if (![harga1, harga2, hargaRes1, hargaRes2, quota, iplimit, batas_create_akun].every(v => numberOnlyRegex.test(v))) {
+    return ctx.reply('⚠️ Semua nilai harga/quota/iplimit/batas harus berupa angka.');
+  }
+
   db.run(
-    "INSERT INTO Server (domain, auth, harga, nama_server, quota, iplimit, batas_create_akun, total_create_akun, support_zivpn, support_udp_http, service) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, 'ssh')",
+    "INSERT INTO Server (domain, auth, harga, harga_reseller, harga_1ip, harga_2ip, harga_reseller_1ip, harga_reseller_2ip, nama_server, quota, iplimit, batas_create_akun, total_create_akun, support_zivpn, support_udp_http, service) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 0, 'ssh')",
     [
       domain,
       auth,
-      parseInt(harga),
+      parseInt(harga1),
+      parseInt(hargaRes1),
+      parseInt(harga1),
+      parseInt(harga2),
+      parseInt(hargaRes1),
+      parseInt(hargaRes2),
       nama_server,
       parseInt(quota),
       parseInt(iplimit),
@@ -2664,9 +3466,14 @@ bot.command('addserverzivpn', async (ctx) => {
         return ctx.reply('⚠️ Kesalahan saat menambahkan server ZIVPN.');
       }
 
-      ctx.reply(`✅ Server ZIVPN \`${nama_server}\` berhasil ditambahkan.`, {
-        parse_mode: 'Markdown'
-      });
+      ctx.reply(
+        `✅ Server ZIVPN \`${nama_server}\` berhasil ditambahkan.\n` +
+        `• Harga User 1IP: Rp${parseInt(harga1).toLocaleString('id-ID')}\n` +
+        `• Harga User 2IP: Rp${parseInt(harga2).toLocaleString('id-ID')}\n` +
+        `• Harga Reseller 1IP: Rp${parseInt(hargaRes1).toLocaleString('id-ID')}\n` +
+        `• Harga Reseller 2IP: Rp${parseInt(hargaRes2).toLocaleString('id-ID')}`,
+        { parse_mode: 'Markdown' }
+      );
     }
   );
 });
@@ -3030,12 +3837,17 @@ async function sendAdminServerMenu(ctx) {
         [
       { text: '🛠️ Kelola Server', callback_data: 'admin_manage_server' }
     ],
-    [
-      { text: 'Edit Harga User', callback_data: 'editserver_harga' },
-      { text: 'Edit Harga Reseller', callback_data: 'editserver_harga_reseller' }
+    [{ text: '📶 Cek Bandwidth Server', callback_data: 'admin_check_bandwidth_servers' }],
+        [
+      { text: 'Edit Nama', callback_data: 'nama_server_edit' }
     ],
     [
-      { text: 'Edit Nama', callback_data: 'nama_server_edit' }
+      { text: 'Edit Harga User 1IP', callback_data: 'editserver_harga_1ip' },
+      { text: 'Edit Harga User 2IP', callback_data: 'editserver_harga_2ip' }
+    ],
+    [
+      { text: 'Edit Harga Reseller 1IP', callback_data: 'editserver_harga_reseller_1ip' },
+      { text: 'Edit Harga Reseller 2IP', callback_data: 'editserver_harga_reseller_2ip' }
     ],
     [
       { text: '🌐 Edit Domain', callback_data: 'editserver_domain' },
@@ -3135,7 +3947,9 @@ async function sendAdminToolsMenu(ctx) {
     [{ text: '💾 Restore Database', callback_data: 'restore_db_menu' }],
     [{ text: 'Backup Database Sekarang', callback_data: 'auto_backup_now' }],
     [{ text: 'Sync Server Sekarang', callback_data: 'admin_sync_server_now' }],
+    [{ text: 'Atur Auto Sync Server', callback_data: 'admin_sync_server_toggle_menu' }],
     [{ text: '🔔 Notif Create (Bot)', callback_data: 'notif_settings_menu' }],
+    [{ text: '📶 Notif BW Server', callback_data: 'bw_notif_settings_menu' }],
     [{ text: '📞 Kontak Admin', callback_data: 'admin_contact_settings_menu' }],
     [{ text: '🔙 Kembali', callback_data: 'admin_menu' }]
   ];
@@ -3146,6 +3960,44 @@ async function sendAdminToolsMenu(ctx) {
   });
 }
 
+async function sendAdminSyncToggleMenu(ctx) {
+  try {
+    const servers = await new Promise((resolve, reject) => {
+      db.all('SELECT id, nama_server, domain, sync_enabled FROM Server ORDER BY nama_server COLLATE NOCASE ASC', [], (err, rows) => {
+        if (err) return reject(err);
+        resolve(rows || []);
+      });
+    });
+
+    if (servers.length === 0) {
+      return ctx.editMessageText('Tidak ada server yang tersedia.', {
+        reply_markup: { inline_keyboard: [[{ text: 'Kembali', callback_data: 'admin_menu_tools' }]] }
+      });
+    }
+
+    const inlineKeyboard = servers.map((server) => {
+      const statusText = Number(server.sync_enabled) === 1 ? '[ON]' : '[OFF]';
+      return [{
+        text: statusText + ' ' + (server.nama_server || server.domain || ('ID ' + server.id)),
+        callback_data: 'admin_sync_server_toggle_' + server.id
+      }];
+    });
+
+    inlineKeyboard.push([{ text: 'Kembali', callback_data: 'admin_menu_tools' }]);
+
+    await ctx.editMessageText(
+      '*AUTO SYNC SERVER*\n\nPilih server untuk aktif/nonaktif autosync.\nLabel [ON] berarti ikut autosync, [OFF] berarti dilewati.',
+      {
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: inlineKeyboard }
+      }
+    );
+  } catch (err) {
+    logger.error('Gagal menampilkan menu toggle autosync:', err.message);
+    await ctx.reply('Terjadi kesalahan saat membuka menu autosync server.');
+  }
+}
+
 bot.action('admin_menu_server', async (ctx) => {
   await ctx.answerCbQuery();
   await sendAdminServerMenu(ctx);
@@ -3154,6 +4006,9 @@ bot.action('admin_menu_server', async (ctx) => {
 async function sendAdminManageServerMenu(ctx) {
   const keyboard = [
     [{ text: '🔢 Edit Total + Batas', callback_data: 'manage_edit_total_batas' }],
+    [{ text: '📶 Set Limit Bandwidth', callback_data: 'manage_set_bw_limit' }],
+    [{ text: '🔄 Migrasi User Server', callback_data: 'admin_migrate_users_menu' }],
+    [{ text: '🗑️ Hapus Semua SSH/ZIVPN', callback_data: 'admin_delete_all_accounts_manual' }],
     [{ text: '🚫 Jadikan Server Penuh', callback_data: 'manage_server_full' }],
     [{ text: '✅ Jadikan Server Tersedia', callback_data: 'manage_server_activate' }],
     [{ text: '🔙 Kembali', callback_data: 'admin_menu_server' }]
@@ -3168,6 +4023,198 @@ async function sendAdminManageServerMenu(ctx) {
 bot.action('admin_manage_server', async (ctx) => {
   await ctx.answerCbQuery();
   await sendAdminManageServerMenu(ctx);
+});
+
+bot.action('admin_migrate_users_menu', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const requesterId = Number(ctx.from?.id || 0);
+  if (!adminIds.includes(requesterId)) {
+    return ctx.reply('Anda tidak memiliki izin untuk membuka menu ini.');
+  }
+
+  const keyboard = [
+    [
+      { text: 'SSH', callback_data: 'migr_user_type_ssh' },
+      { text: 'VMESS', callback_data: 'migr_user_type_vmess' }
+    ],
+    [
+      { text: 'VLESS', callback_data: 'migr_user_type_vless' },
+      { text: 'TROJAN', callback_data: 'migr_user_type_trojan' }
+    ],
+    [{ text: 'UDP ZIVPN', callback_data: 'migr_user_type_zivpn' }],
+    [{ text: 'Kembali', callback_data: 'admin_manage_server' }]
+  ];
+
+  await ctx.reply('Pilih jenis akun yang ingin dimigrasi:', {
+    reply_markup: { inline_keyboard: keyboard }
+  });
+});
+
+bot.action('admin_delete_all_accounts_manual', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const requesterId = Number(ctx.from?.id || 0);
+  if (!adminIds.includes(requesterId)) {
+    return ctx.reply('Anda tidak memiliki izin untuk membuka menu ini.');
+  }
+
+  userState[ctx.chat.id] = { step: 'delete_all_input_host' };
+  return ctx.reply(
+    'Hapus semua akun SSH/ZIVPN (DANGEROUS)\n\n' +
+    'Masukkan host server target (contoh: id1.prem-1forcr.shop).\n' +
+    'Ketik "batal" untuk membatalkan.'
+  );
+});
+
+bot.action(/migr_user_type_(ssh|vmess|vless|trojan|zivpn)/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const requesterId = Number(ctx.from?.id || 0);
+  if (!adminIds.includes(requesterId)) {
+    return ctx.reply('Anda tidak memiliki izin untuk membuka menu ini.');
+  }
+
+  const type = normalizeMigrationType(ctx.match[1]);
+  if (!isSupportedMigrationType(type)) {
+    return ctx.reply(
+      `Migrasi ${String(type || '').toUpperCase()} belum didukung saat ini.\n` +
+      'Saat ini migrasi yang tersedia: SSH dan UDP ZIVPN.'
+    );
+  }
+  userState[ctx.chat.id] = {
+    step: 'migrate_input_source_host',
+    migrationType: type
+  };
+
+  await ctx.reply(
+    `Migrasi ${type.toUpperCase()}\n` +
+    'Masukkan host server sumber (contoh: id1.prem-1forcr.shop).\n' +
+    'Ketik "batal" untuk membatalkan.'
+  );
+});
+
+bot.action(/migr_src_(ssh|vmess|vless|trojan|zivpn)_(\d+)/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  return ctx.reply(
+    'Alur migrasi terbaru menggunakan input manual host + key.\n' +
+    'Silakan buka lagi menu Migrasi User Server.'
+  );
+});
+
+bot.action('admin_check_bandwidth_servers', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const requesterId = Number(ctx.from?.id || 0);
+  if (!adminIds.includes(requesterId)) {
+    return ctx.reply('Anda tidak memiliki izin untuk membuka menu ini.');
+  }
+
+  try {
+    await ctx.reply('Mengambil data bandwidth terbaru dari server tunnel...');
+    await syncServerUsageFromTunnel('admin_check_bandwidth', { force: true });
+  } catch (syncErr) {
+    logger.warn(`Sync saat cek bandwidth gagal: ${syncErr.message}`);
+  }
+
+  db.all(
+    'SELECT id, nama_server, domain, sync_host, total_create_akun, batas_create_akun, bandwidth_limit_tb, bandwidth_daily_gb, bandwidth_monthly_used_tb, bandwidth_user_daily_gb FROM Server ORDER BY nama_server COLLATE NOCASE ASC',
+    [],
+    async (err, rows) => {
+      if (err) {
+        logger.error('❌ Gagal mengambil data bandwidth server:', err.message);
+        return ctx.reply('❌ Gagal mengambil data bandwidth server.');
+      }
+      if (!rows || rows.length === 0) {
+        return ctx.reply('Belum ada server yang ditambahkan.');
+      }
+
+      const lines = ['*CEK BANDWIDTH SERVER*', ''];
+      const groupedServers = [];
+      const groups = new Map();
+      for (const srv of rows) {
+        const key = normalizeSyncHost(srv.sync_host || srv.domain) || (`id-${srv.id}`);
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(srv);
+      }
+
+      for (const hostKey of groups.keys()) {
+        const group = groups.get(hostKey) || [];
+        if (group.length === 0) continue;
+        const primary = group[0];
+        groupedServers.push({
+          nama_server: primary.nama_server,
+          host: normalizeSyncHost(primary.sync_host || primary.domain) || '-',
+          total_create_akun: group
+            .map((s) => Number(s.total_create_akun || 0))
+            .reduce((max, cur) => Math.max(max, cur), 0),
+          batas_create_akun: group
+            .map((s) => Number(s.batas_create_akun || 0))
+            .filter((v) => Number.isFinite(v) && v > 0)
+            .reduce((max, cur) => Math.max(max, cur), 0),
+          bandwidth_limit_tb: group
+            .map((s) => Number(s.bandwidth_limit_tb || 0))
+            .filter((v) => Number.isFinite(v) && v > 0)
+            .reduce((max, cur) => Math.max(max, cur), 0),
+          bandwidth_daily_gb: group
+            .map((s) => Number(s.bandwidth_daily_gb || 0))
+            .reduce((max, cur) => Math.max(max, cur), 0),
+          bandwidth_monthly_used_tb: group
+            .map((s) => Number(s.bandwidth_monthly_used_tb || 0))
+            .reduce((max, cur) => Math.max(max, cur), 0),
+          bandwidth_user_daily_gb: group
+            .map((s) => Number(s.bandwidth_user_daily_gb || 0))
+            .filter((v) => Number.isFinite(v) && v > 0)
+            .reduce((max, cur) => Math.max(max, cur), 0)
+        });
+      }
+
+      let idx = 1;
+      for (const srv of groupedServers) {
+        const capacity = calculateServerEffectiveCapacity({
+          usedAccounts: srv.total_create_akun,
+          manualLimit: srv.batas_create_akun,
+          bandwidthLimitTb: srv.bandwidth_limit_tb,
+          dailyBandwidthGb: srv.bandwidth_daily_gb,
+          fallbackPerUserDailyGb: srv.bandwidth_user_daily_gb,
+          monthUsedTb: srv.bandwidth_monthly_used_tb
+        });
+        const manualLimit = Number(srv.batas_create_akun || 0);
+        const manualLimitText = manualLimit > 0 ? String(manualLimit) : 'Unlimited';
+        const host = srv.host || '-';
+        const bwLimitTb = Number(srv.bandwidth_limit_tb || 0);
+        const bwMonthTb = Number(srv.bandwidth_monthly_used_tb || 0);
+        const riskOver = capacity.hasBandwidthLimit && capacity.projectedMonthlyTbFromToday > bwLimitTb ? 'YA' : 'TIDAK';
+
+        lines.push(`${idx}. ${srv.nama_server || '-'}`);
+        lines.push(`- Host: ${host}`);
+        lines.push(`- Akun Terpakai (manual): ${Number(srv.total_create_akun || 0)}/${manualLimitText}`);
+        lines.push(`- Bandwidth Hari Ini (vnstat): ${Number(srv.bandwidth_daily_gb || 0).toFixed(2)} GB`);
+        lines.push(`- Bandwidth Hari Ini (estimasi): ${Number(capacity.effectiveDailyBandwidthGb || 0).toFixed(2)} GB`);
+        lines.push(`- Bandwidth Bulan Ini: ${bwMonthTb.toFixed(2)}/${bwLimitTb > 0 ? bwLimitTb.toFixed(2) : '-'} TB`);
+        lines.push(`- Estimasi BW 30 Hari: ${capacity.projectedMonthlyTbFromToday.toFixed(2)} TB`);
+        lines.push(`- Batas Aman User (BW): ${capacity.hasBandwidthLimit ? capacity.estimatedCapacityByBandwidth : '-'}`);
+        lines.push(`- Estimasi Pemakaian/User/Hari: ${capacity.hasBandwidthLimit ? capacity.estimatedPerUserDailyGb.toFixed(3) + ' GB' : '-'}`);
+        lines.push(`- Risiko Over BW: ${riskOver}`);
+        lines.push('');
+        idx += 1;
+      }
+
+      const msg = lines.join('\n');
+      if (msg.length <= 3900) {
+        await ctx.reply(msg, { parse_mode: 'Markdown' });
+      } else {
+        // Bagi per potongan agar aman dari limit telegram
+        let buffer = '';
+        for (const line of lines) {
+          const candidate = buffer ? `${buffer}\n${line}` : line;
+          if (candidate.length > 3500) {
+            await ctx.reply(buffer, { parse_mode: 'Markdown' });
+            buffer = line;
+          } else {
+            buffer = candidate;
+          }
+        }
+        if (buffer) await ctx.reply(buffer, { parse_mode: 'Markdown' });
+      }
+    }
+  );
 });
 
 bot.action('manage_edit_total_batas', async (ctx) => {
@@ -3252,6 +4299,67 @@ bot.action('manage_server_activate', async (ctx) => {
       reply_markup: { inline_keyboard: inlineKeyboard }
     });
   });
+});
+
+bot.action('manage_set_bw_limit', async (ctx) => {
+  await ctx.answerCbQuery();
+  db.all(
+    'SELECT id, nama_server, bandwidth_limit_tb, bandwidth_user_daily_gb FROM Server ORDER BY nama_server COLLATE NOCASE ASC',
+    [],
+    async (err, servers) => {
+      if (err) {
+        logger.error('❌ Kesalahan saat mengambil daftar server:', err.message);
+        return ctx.reply('❌ Terjadi kesalahan saat mengambil daftar server.');
+      }
+      if (!servers || servers.length === 0) {
+        return ctx.reply('⚠️ Tidak ada server yang tersedia.');
+      }
+
+      const buttons = servers.map((server) => ({
+        text: `${server.nama_server} (${Number(server.bandwidth_limit_tb || 0).toFixed(1)}TB)`,
+        callback_data: `set_server_bw_limit_${server.id}`
+      }));
+      const inlineKeyboard = [];
+      for (let i = 0; i < buttons.length; i += 2) {
+        inlineKeyboard.push(buttons.slice(i, i + 2));
+      }
+      inlineKeyboard.push([{ text: '🔙 Kembali', callback_data: 'admin_manage_server' }]);
+
+      await ctx.reply('📶 Pilih server untuk set limit bandwidth:', {
+        parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: inlineKeyboard }
+      });
+    }
+  );
+});
+
+bot.action(/set_server_bw_limit_(\d+)/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const serverId = Number(ctx.match[1]);
+  if (!Number.isFinite(serverId) || serverId <= 0) {
+    return ctx.reply('ID server tidak valid.');
+  }
+
+  db.get(
+    'SELECT id, nama_server, bandwidth_limit_tb, bandwidth_user_daily_gb FROM Server WHERE id = ?',
+    [serverId],
+    (err, row) => {
+      if (err || !row) {
+        return ctx.reply('Server tidak ditemukan.');
+      }
+
+      userState[ctx.chat.id] = { step: 'edit_bw_limit_input', serverId };
+      return ctx.reply(
+        `Server: ${row.nama_server}\n` +
+        `Setting saat ini:\n` +
+        `- Limit bulanan: ${Number(row.bandwidth_limit_tb || 0).toFixed(2)} TB\n` +
+        `- Estimasi/user/hari: ${Number(row.bandwidth_user_daily_gb || 8).toFixed(2)} GB\n\n` +
+        'Kirim format: <limit_tb> <avg_gb_per_user_per_hari>\n' +
+        'Contoh: 25 8\n' +
+        'Ketik batal untuk membatalkan.'
+      );
+    }
+  );
 });
 
 bot.action('admin_menu_saldo', async (ctx) => {
@@ -3393,6 +4501,59 @@ bot.action('notif_set_chat', async (ctx) => {
   }
   userState[ctx.chat.id] = { step: 'notif_chat_id' };
   await ctx.reply('Kirim *CHAT ID* tujuan notifikasi.\nKetik "batal" untuk membatalkan.', { parse_mode: 'Markdown' });
+});
+
+bot.action('bw_notif_settings_menu', async (ctx) => {
+  await ctx.answerCbQuery();
+  const adminId = ctx.from.id;
+  if (!adminIds.includes(adminId)) {
+    return ctx.reply('🚫 Anda tidak memiliki izin untuk mengakses menu ini.');
+  }
+
+  const status = BW_NOTIF_GROUP_ID_NUM ? `✅ ${BW_NOTIF_GROUP_ID_NUM}` : '❌ Belum diisi';
+  const intervalText = formatBandwidthReportInterval(BW_REPORT_INTERVAL_MINUTES);
+  const message =
+    '*📶 PENGATURAN NOTIF BANDWIDTH SERVER*\n\n' +
+    `Group ID tujuan notif BW: ${status}\n` +
+    `Interval laporan otomatis: ${intervalText}\n` +
+    'Anda bisa ubah ke menit atau jam.';
+
+  const keyboard = [
+    [{ text: 'Set Group ID Notif BW', callback_data: 'bw_notif_set_group_id' }],
+    [{ text: 'Set Interval Laporan BW', callback_data: 'bw_notif_set_interval' }],
+    [{ text: 'Kembali', callback_data: 'admin_menu_tools' }]
+  ];
+
+  await ctx.editMessageText(message, {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: keyboard }
+  });
+});
+
+bot.action('bw_notif_set_group_id', async (ctx) => {
+  await ctx.answerCbQuery();
+  const adminId = ctx.from.id;
+  if (!adminIds.includes(adminId)) {
+    return ctx.reply('🚫 Anda tidak memiliki izin untuk mengubah pengaturan ini.');
+  }
+  userState[ctx.chat.id] = { step: 'bw_notif_group_id' };
+  await ctx.reply('Kirim *GROUP ID* tujuan notifikasi bandwidth.\nContoh: `-1001234567890`\nKetik "batal" untuk membatalkan.', { parse_mode: 'Markdown' });
+});
+
+bot.action('bw_notif_set_interval', async (ctx) => {
+  await ctx.answerCbQuery();
+  const adminId = ctx.from.id;
+  if (!adminIds.includes(adminId)) {
+    return ctx.reply('🚫 Anda tidak memiliki izin untuk mengubah pengaturan ini.');
+  }
+  userState[ctx.chat.id] = { step: 'bw_notif_interval' };
+  await ctx.reply(
+    'Kirim interval laporan bandwidth.\n' +
+    'Contoh: `180` (menit), `3 jam`, atau `30 menit`.\n' +
+    'Rentang: 5 menit sampai 24 jam.\n' +
+    'Ketik "batal" untuk membatalkan.',
+    { parse_mode: 'Markdown' }
+  );
 });
 
 bot.action('restore_db_menu', async (ctx) => {
@@ -3680,6 +4841,49 @@ bot.action('admin_sync_server_now', async (ctx) => {
     await ctx.reply('Gagal menjalankan sinkronisasi server.');
   }
 });
+bot.action('admin_sync_server_toggle_menu', async (ctx) => {
+  await ctx.answerCbQuery();
+  const adminId = ctx.from.id;
+  if (!adminIds.includes(adminId)) {
+    return ctx.reply('Anda tidak memiliki izin untuk mengatur autosync server.');
+  }
+  await sendAdminSyncToggleMenu(ctx);
+});
+
+bot.action(/admin_sync_server_toggle_(\d+)/, async (ctx) => {
+  await ctx.answerCbQuery();
+  const adminId = ctx.from.id;
+  if (!adminIds.includes(adminId)) {
+    return ctx.reply('Anda tidak memiliki izin untuk mengatur autosync server.');
+  }
+
+  const serverId = Number(ctx.match[1]);
+  if (!Number.isFinite(serverId)) {
+    return ctx.reply('ID server tidak valid.');
+  }
+
+  db.get('SELECT id, sync_enabled FROM Server WHERE id = ?', [serverId], (err, row) => {
+    if (err) {
+      logger.error('Gagal membaca status sync server:', err.message);
+      return ctx.reply('Gagal membaca status autosync server.');
+    }
+
+    if (!row) {
+      return ctx.reply('Server tidak ditemukan.');
+    }
+
+    const nextValue = Number(row.sync_enabled) === 1 ? 0 : 1;
+    db.run('UPDATE Server SET sync_enabled = ? WHERE id = ?', [nextValue, serverId], async (updateErr) => {
+      if (updateErr) {
+        logger.error('Gagal mengubah status autosync server:', updateErr.message);
+        return ctx.reply('Gagal mengubah status autosync server.');
+      }
+
+      await sendAdminSyncToggleMenu(ctx);
+    });
+  });
+});
+
 
 bot.action('reseller_terms_menu', async (ctx) => {
   try {
@@ -4196,11 +5400,20 @@ function calcRemainingDays(expiresAt) {
   return Math.ceil(diff / (24 * 60 * 60 * 1000));
 }
 
+function getEffectiveServerPackagePrice(serverRow, isReseller, ipPackage) {
+  const pkg = ipPackage === 2 ? '2ip' : '1ip';
+  if (isReseller) {
+    return pkg === '2ip'
+      ? Number(serverRow?.harga_reseller_2ip || serverRow?.harga_reseller || 0)
+      : Number(serverRow?.harga_reseller_1ip || serverRow?.harga_reseller || 0);
+  }
+  return pkg === '2ip'
+    ? Number(serverRow?.harga_2ip || serverRow?.harga || 0)
+    : Number(serverRow?.harga_1ip || serverRow?.harga || 0);
+}
+
 function getEffectiveServerPrice(serverRow, isReseller) {
-  const hargaUser = Number(serverRow?.harga || 0);
-  const hargaReseller = Number(serverRow?.harga_reseller || 0);
-  if (isReseller && hargaReseller > 0) return hargaReseller;
-  return hargaUser;
+  return getEffectiveServerPackagePrice(serverRow, isReseller, 1);
 }
 
 function isStrongCreateUsername(username) {
@@ -5013,9 +6226,9 @@ bot.action('reseller_stats_refresh', async (ctx) => {
 bot.action('add_server_zivpn_reseller_cmd', async (ctx) => {
   await ctx.reply(
     'Silakan gunakan command berikut untuk menambahkan server ZIVPN reseller:\n\n' +
-    '`/addserverzivpn_reseller <domain> <auth> <harga> <nama_server> <quota> <iplimit> <batas_create_akun>`\n\n' +
+    '`/addserverzivpn_reseller <domain> <auth> <harga_user_1ip> <harga_user_2ip> <harga_reseller_1ip> <harga_reseller_2ip> <nama_server> <quota> <iplimit> <batas_create_akun>`\n\n' +
     'Contoh:\n' +
-    '`/addserverzivpn_reseller sg-udp-01.example.com myauth123 500 SG-ZIVPN-RS-01 50 2 100`',
+    '`/addserverzivpn_reseller sg-udp-01.example.com myauth123 5000 7000 4500 6500 SG-ZIVPN-RS-01 50 2 100`',
     { parse_mode: 'Markdown' }
   );
 });
@@ -5107,28 +6320,46 @@ bot.action('cek_server', async (ctx) => {
         const positiveBatas = groupServers
           .map((s) => Number(s.batas_create_akun || 0))
           .filter((v) => Number.isFinite(v) && v > 0);
-        const batas = positiveBatas.length > 0 ? Math.max(...positiveBatas) : 0;
-        const sisa = batas > 0 ? Math.max(0, batas - total) : 0;
-        const status = batas > 0 && sisa <= 0 ? 'Penuh' : 'Tersedia';
+        const batasManual = positiveBatas.length > 0 ? Math.max(...positiveBatas) : 0;
+        const bandwidthLimitTb = groupServers
+          .map((s) => Number(s.bandwidth_limit_tb || 0))
+          .filter((v) => Number.isFinite(v) && v > 0)
+          .reduce((max, cur) => Math.max(max, cur), 0);
+        const fallbackPerUserDailyGb = groupServers
+          .map((s) => Number(s.bandwidth_user_daily_gb || 0))
+          .filter((v) => Number.isFinite(v) && v > 0)
+          .reduce((max, cur) => Math.max(max, cur), 8);
+        const capacity = calculateServerEffectiveCapacity({
+          usedAccounts: total,
+          manualLimit: batasManual,
+          bandwidthLimitTb,
+          dailyBandwidthGb: Number(primary.bandwidth_daily_gb || 0),
+          fallbackPerUserDailyGb,
+          monthUsedTb: Number(primary.bandwidth_monthly_used_tb || 0)
+        });
+        const hasManualLimit = Number.isFinite(batasManual) && batasManual > 0;
+        const batasManualText = hasManualLimit ? String(batasManual) : 'Unlimited';
+        const sisaManual = hasManualLimit ? Math.max(0, batasManual - total) : 0;
+        const status = hasManualLimit && total >= batasManual ? 'Penuh' : 'Tersedia';
         const forecast = forecastByGroup.get(groupKey);
 
         let prediksiBesok = '-';
         let prediksiBesokNum = null;
 
-        if (batas <= 0) {
+        if (!hasManualLimit) {
           prediksiBesok = 'Unlimited';
           serverUnlimited += 1;
         } else if (forecast?.ok) {
-          prediksiBesokNum = Math.max(0, sisa + Number(forecast.releaseTomorrow || 0));
+          prediksiBesokNum = Math.max(0, sisaManual + Number(forecast.releaseTomorrow || 0));
           prediksiBesok = String(prediksiBesokNum);
         } else {
           prediksiBesok = '- (gagal ambil data expiry)';
           serverPrediksiGagal += 1;
         }
 
-        if (batas > 0) {
-          totalSisaSekarang += sisa;
-          totalKapasitas += batas;
+        if (hasManualLimit) {
+          totalSisaSekarang += sisaManual;
+          totalKapasitas += batasManual;
           totalTerpakai += total;
           if (prediksiBesokNum !== null) totalPrediksiBesok += prediksiBesokNum;
         }
@@ -5136,8 +6367,15 @@ bot.action('cek_server', async (ctx) => {
         lines.push(
           `${idx + 1}. ${primary.nama_server || '-'}`,
           `- Domain: ${normalizeSyncHost(primary.sync_host || primary.domain) || '-'}`,
-          `- Akun Terpakai: ${total}/${batas > 0 ? batas : 'Unlimited'}`,
-          `- Sisa Akun Saat Ini: ${batas > 0 ? sisa : 'Unlimited'}`,
+          `- Akun Terpakai: ${total}/${batasManualText}`,
+          `- Sisa Akun Saat Ini: ${hasManualLimit ? sisaManual : 'Unlimited'}`,
+          `- Bandwidth Hari Ini (raw): ${Number(primary.bandwidth_daily_gb || 0).toFixed(2)} GB`,
+          `- Bandwidth Hari Ini (efektif): ${Number(capacity.effectiveDailyBandwidthGb || 0).toFixed(2)} GB`,
+          `- Bandwidth Bulan Ini: ${Number(primary.bandwidth_monthly_used_tb || 0).toFixed(2)}/${bandwidthLimitTb > 0 ? bandwidthLimitTb.toFixed(2) : '-'} TB`,
+          `- Proyeksi BW 30 Hari: ${capacity.hasBandwidthLimit ? capacity.projectedMonthlyTbFromToday.toFixed(2) + ' TB' : '-'}`,
+          `- Batas Aman User (BW): ${capacity.hasBandwidthLimit ? capacity.estimatedCapacityByBandwidth : '-'}`,
+          `- Estimasi Pemakaian/User/Hari: ${capacity.hasBandwidthLimit ? capacity.estimatedPerUserDailyGb.toFixed(3) + ' GB' : '-'}`,
+          `- Risiko Over BW: ${capacity.hasBandwidthLimit && capacity.projectedMonthlyTbFromToday > bandwidthLimitTb ? 'YA' : 'TIDAK'}`,
           `- Prediksi Tersedia Besok: ${prediksiBesok}`,
           `- Status: ${status}`,
           `- Group Server: ${groupServers.length} baris server`,
@@ -5366,7 +6604,8 @@ bot.action('addserver_reseller', async (ctx) => {
   userState[ctx.chat.id] = { step: 'addserver_reseller' };
   await ctx.reply(
     '🪄 Silakan kirim data server reseller dengan format:\n\n' +
-    '/addserver_reseller <domain> <auth> <harga> <nama_server> <quota> <iplimit> <batas_create_akun>'
+    '/addserver_reseller <domain> <auth> <harga_user_1ip> <harga_user_2ip> <harga_reseller_1ip> <harga_reseller_2ip> <nama_server> <quota> <iplimit> <batas_create_akun>\n\n' +
+    'Format lama (7 argumen) masih bisa, semua harga akan disamakan.'
   );
 });
 
@@ -5787,22 +7026,39 @@ db.all(query, params, (err, servers) => {
     keyboard.push([{ text: '🔙 Kembali ke Menu Utama', callback_data: 'sendMainMenu' }]);
 
 const serverList = currentServers.map(server => {
-  const hargaPerHari = getEffectiveServerPrice(server, isR);
-  const hargaPer30Hari = hargaPerHari * 30;
-  const isFull = server.total_create_akun >= server.batas_create_akun;
+  const hargaPerHari1 = getEffectiveServerPackagePrice(server, isR, 1);
+  const hargaPerHari2 = getEffectiveServerPackagePrice(server, isR, 2);
+  const hargaPer30Hari1 = hargaPerHari1 * 30;
+  const hargaPer30Hari2 = hargaPerHari2 * 30;
+  const capacity = calculateServerEffectiveCapacity({
+    usedAccounts: server.total_create_akun,
+    manualLimit: server.batas_create_akun,
+    bandwidthLimitTb: server.bandwidth_limit_tb,
+    dailyBandwidthGb: server.bandwidth_daily_gb,
+    fallbackPerUserDailyGb: server.bandwidth_user_daily_gb,
+    monthUsedTb: server.bandwidth_monthly_used_tb
+  });
+  const manualLimit = Number(server.batas_create_akun || 0);
+  const isManualUnlimited = !(Number.isFinite(manualLimit) && manualLimit > 0);
+  const akunLimitText = isManualUnlimited ? 'Unlimited' : String(manualLimit);
+  const isFullByManualLimit = !isManualUnlimited && Number(server.total_create_akun || 0) >= manualLimit;
 
   return (
-`╔══════════════════════╗
-  🟦 *${server.nama_server.toUpperCase()}*
-╚══════════════════════╝
+`╔══════════════════╗
+*${server.nama_server.toUpperCase()}*
+╚══════════════════╝
+╔══════════════════╗
+💳 *Harga/Hari 1IP:* Rp${hargaPerHari1.toLocaleString('id-ID')}
+💳 *Harga/Hari 2IP:* Rp${hargaPerHari2.toLocaleString('id-ID')}
+
+📆 *Harga/Bulan 1IP:* Rp${hargaPer30Hari1.toLocaleString('id-ID')}
+📆 *Harga/Bulan 2IP:* Rp${hargaPer30Hari2.toLocaleString('id-ID')}
+╚══════════════════╝
 🛜 *Domain:* \`${server.domain}\`
-💳 *Harga/Hari:* Rp${hargaPerHari.toLocaleString()}
-📆 *Harga/Bulan:* Rp${hargaPer30Hari.toLocaleString()}
 📡 *Quota:* ${server.quota} GB
 🔐 *IP Limit:* ${server.iplimit} IP
-👥 *Akun Terpakai:* ${server.total_create_akun}/${server.batas_create_akun}
-📌 *Status:* ${isFull ? "❌ Server Penuh" : "✅ Tersedia"}
-`
+👥 *Akun Terpakai:* ${server.total_create_akun}/${akunLimitText}
+📌 *Status:* ${isFullByManualLimit ? "❌ Server Penuh" : "✅ Tersedia"}`
   );
 }).join('\n\n');
     if (ctx.updateType === 'callback_query') {
@@ -5837,7 +7093,7 @@ bot.action(/(create|renew)_username_(vmess|vless|trojan|shadowsocks|ssh|zivpn|ud
   const serverId = ctx.match[3];
   userState[ctx.chat.id] = { step: `username_${action}_${type}`, serverId, type, action };
 
-  db.get('SELECT batas_create_akun, total_create_akun FROM Server WHERE id = ?', [serverId], async (err, server) => {
+  db.get('SELECT * FROM Server WHERE id = ?', [serverId], async (err, server) => {
     if (err) {
       logger.error('⚠️ Error fetching server details:', err.message);
       return ctx.reply('❌ *Terjadi kesalahan saat mengambil detail server.*', { parse_mode: 'Markdown' });
@@ -5847,15 +7103,54 @@ bot.action(/(create|renew)_username_(vmess|vless|trojan|shadowsocks|ssh|zivpn|ud
       return ctx.reply('❌ *Server tidak ditemukan.*', { parse_mode: 'Markdown' });
     }
 
-    const batasCreateAkun = server.batas_create_akun;
-    const totalCreateAkun = server.total_create_akun;
-
-    if (totalCreateAkun >= batasCreateAkun) {
+    const batasCreateAkun = Number(server.batas_create_akun || 0);
+    const totalCreateAkun = Number(server.total_create_akun || 0);
+    const hasManualLimit = Number.isFinite(batasCreateAkun) && batasCreateAkun > 0;
+    if (action === 'create' && hasManualLimit && totalCreateAkun >= batasCreateAkun) {
       return ctx.reply('❌ *Server penuh. Tidak dapat membuat akun baru di server ini.*', { parse_mode: 'Markdown' });
     }
 
-    await ctx.reply('👤 *Masukkan username:*', { parse_mode: 'Markdown' });
+    if (action === 'create') {
+      const isReseller = await isUserReseller(ctx.from.id).catch(() => false);
+      const harga1 = getEffectiveServerPackagePrice(server, isReseller, 1);
+      const harga2 = getEffectiveServerPackagePrice(server, isReseller, 2);
+
+      const keyboard = [
+        [{ text: `Paket 1IP per hari - Rp ${harga1.toLocaleString('id-ID')}`, callback_data: `create_pkg_${type}_${serverId}_1` }],
+        [{ text: `Paket 2IP per hari - Rp ${harga2.toLocaleString('id-ID')}`, callback_data: `create_pkg_${type}_${serverId}_2` }],
+        [{ text: '⬅️ Kembali', callback_data: 'sendMainMenu' }]
+      ];
+
+      await ctx.reply(
+        `Pilih paket IP untuk server:\n`+
+        `*${server.nama_server || server.domain}*:\n\n` +
+        `- Paket 1IP: Rp ${harga1.toLocaleString('id-ID')}\n`+
+        `Maksimal dipake 1 orang atau 1 device(hp), lebih dari itu akun akan *otomatis di banned* oleh sistem.\n\n` +
+        `- Paket 2IP: Rp ${harga2.toLocaleString('id-ID')}\n`+
+        `Maksimal dipake 2 orang atau 2 device(hp), lebih dari itu akun akan *otomatis di banned* oleh sistem.\n\n`,
+        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } }
+      );
+    } else {
+      await ctx.reply('👤 *Masukkan username:*', { parse_mode: 'Markdown' });
+    }
   });
+});
+
+// Paket IP (create)
+bot.action(/create_pkg_(vmess|vless|trojan|shadowsocks|ssh|zivpn|udp_http)_(\d+)_(1|2)/, async (ctx) => {
+  const type = ctx.match[1];
+  const serverId = ctx.match[2];
+  const ipPkg = parseInt(ctx.match[3], 10) === 2 ? 2 : 1;
+
+  userState[ctx.chat.id] = {
+    step: `username_create_${type}`,
+    serverId,
+    type,
+    action: 'create',
+    selectedIpPackage: ipPkg
+  };
+
+  await ctx.reply('👤 *Masukkan username:*', { parse_mode: 'Markdown' });
 });
 
 // === ⚡️ KONFIRMASI TRIAL (semua tipe) ===
@@ -6220,6 +7515,323 @@ if (!state || !state.step) return;
     return sendAdminMenu(ctx);
   }
 
+  if (state.step === 'bw_notif_group_id') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan group id notif bandwidth dibatalkan.');
+    }
+    if (!/^-?\d+$/.test(text)) {
+      return ctx.reply('Group ID tidak valid. Contoh: -1001234567890');
+    }
+
+    BW_NOTIF_GROUP_ID_NUM = Number(text);
+    const nextVars = loadVars();
+    nextVars.BW_NOTIF_GROUP_ID = String(BW_NOTIF_GROUP_ID_NUM);
+    saveVars(nextVars);
+
+    delete userState[ctx.chat.id];
+    await ctx.reply(`✅ Group ID notif bandwidth tersimpan: ${BW_NOTIF_GROUP_ID_NUM}`);
+    return sendAdminToolsMenu(ctx);
+  }
+
+  if (state.step === 'bw_notif_interval') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan interval notif bandwidth dibatalkan.');
+    }
+
+    const parsedMinutes = parseBandwidthIntervalInput(text);
+    if (!Number.isFinite(parsedMinutes)) {
+      return ctx.reply('Format tidak valid. Contoh: 180, 3 jam, atau 30 menit.');
+    }
+    if (parsedMinutes < 5 || parsedMinutes > 1440) {
+      return ctx.reply('Interval harus antara 5 menit sampai 24 jam (1440 menit).');
+    }
+
+    BW_REPORT_INTERVAL_MINUTES = Math.floor(parsedMinutes);
+    const nextVars = loadVars();
+    nextVars.BW_REPORT_INTERVAL_MINUTES = BW_REPORT_INTERVAL_MINUTES;
+    saveVars(nextVars);
+
+    restartBandwidthReportScheduler();
+
+    delete userState[ctx.chat.id];
+    await ctx.reply(`✅ Interval notif bandwidth disimpan: ${formatBandwidthReportInterval(BW_REPORT_INTERVAL_MINUTES)}`);
+    return sendAdminToolsMenu(ctx);
+  }
+
+
+  if (state.step === 'delete_all_input_host') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Hapus semua akun dibatalkan.');
+    }
+    const host = normalizeSyncHost(text);
+    if (!host) {
+      return ctx.reply('Host tidak valid. Contoh: id1.prem-1forcr.shop');
+    }
+    state.host = host;
+    state.step = 'delete_all_input_token';
+    return ctx.reply('Masukkan key/token server tersebut.');
+  }
+
+  if (state.step === 'delete_all_input_token') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Hapus semua akun dibatalkan.');
+    }
+    if (text.length < 8) {
+      return ctx.reply('Token tidak valid. Minimal 8 karakter.');
+    }
+    state.token = text;
+    state.step = 'delete_all_input_type';
+    return ctx.reply('Pilih tipe yang dihapus: ketik ssh atau zivpn.');
+  }
+
+  if (state.step === 'delete_all_input_type') {
+    const text = String(ctx.message.text || '').trim().toLowerCase();
+    if (text === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Hapus semua akun dibatalkan.');
+    }
+    if (text !== 'ssh' && text !== 'zivpn') {
+      return ctx.reply('Tipe tidak valid. Ketik ssh atau zivpn.');
+    }
+    state.type = text;
+    state.step = 'delete_all_confirm';
+    return ctx.reply(
+      'Konfirmasi hapus semua akun ' + text.toUpperCase() + ' di host ' + state.host + '\n' +
+      'Ketik YA HAPUS SEMUA untuk lanjut.'
+    );
+  }
+
+  if (state.step === 'delete_all_confirm') {
+    const text = String(ctx.message.text || '').trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Hapus semua akun dibatalkan.');
+    }
+    if (text !== 'YA HAPUS SEMUA') {
+      return ctx.reply('Konfirmasi salah. Ketik persis: YA HAPUS SEMUA atau batal.');
+    }
+
+    const requestServer = {
+      domain: state.host,
+      sync_host: state.host,
+      sync_port: 8789,
+      sync_endpoint: '/internal/account-summary',
+      auth: state.token
+    };
+    const type = state.type;
+    delete userState[ctx.chat.id];
+    await ctx.reply('Memproses hapus semua akun...');
+    try {
+      const resDelete = await deleteAllTunnelAccounts(requestServer, type);
+      return ctx.reply(
+        'Selesai hapus semua ' + type.toUpperCase() + '.\n' +
+        'Host: ' + requestServer.sync_host + '\n' +
+        'Terhapus DB: ' + resDelete.deletedDb + '\n' +
+        'Terhapus ZIVPN config: ' + resDelete.deletedZivpn
+      );
+    } catch (err) {
+      return ctx.reply('Gagal hapus semua akun: ' + err.message);
+    }
+  }
+
+  if (state.step === 'migrate_input_source_host') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Migrasi user dibatalkan.');
+    }
+
+    const sourceHost = normalizeSyncHost(text);
+    if (!sourceHost) {
+      return ctx.reply('Host sumber tidak valid. Contoh: id1.prem-1forcr.shop');
+    }
+
+    state.sourceHost = sourceHost;
+    state.step = 'migrate_input_source_token';
+    return ctx.reply(
+      `Host sumber: ${sourceHost}\n` +
+      'Sekarang masukkan token (`servers.key`) server sumber.\n' +
+      'Ketik "batal" untuk membatalkan.',
+      { parse_mode: 'Markdown' }
+    );
+  }
+
+  if (state.step === 'migrate_input_source_token') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Migrasi user dibatalkan.');
+    }
+
+    const sourceToken = String(text || '').trim();
+    if (sourceToken.length < 8) {
+      return ctx.reply('Token sumber tidak valid. Minimal 8 karakter.');
+    }
+
+    state.sourceToken = sourceToken;
+    state.step = 'migrate_input_target_host';
+    return ctx.reply(
+      'Masukkan host server tujuan (contoh: id2.prem-1forcr.shop).\n' +
+      'Ketik "batal" untuk membatalkan.'
+    );
+  }
+
+  if (state.step === 'migrate_input_target_host') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Migrasi user dibatalkan.');
+    }
+
+    const targetHost = normalizeSyncHost(text);
+    if (!targetHost) {
+      return ctx.reply('Host tujuan tidak valid. Contoh: id2.prem-1forcr.shop');
+    }
+
+    state.targetHost = targetHost;
+    state.step = 'migrate_input_target_token';
+    return ctx.reply(
+      `Host tujuan: ${targetHost}\n` +
+      'Sekarang masukkan token (`servers.key`) server tujuan.\n' +
+      'Ketik "batal" untuk membatalkan.',
+      { parse_mode: 'Markdown' }
+    );
+  }
+
+  if (state.step === 'migrate_input_target_token') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Migrasi user dibatalkan.');
+    }
+
+    const targetToken = String(text || '').trim();
+    if (targetToken.length < 8) {
+      return ctx.reply('Token tujuan tidak valid. Minimal 8 karakter.');
+    }
+
+    state.targetToken = targetToken;
+    state.step = 'migrate_input_limit';
+    return ctx.reply(
+      'Masukkan jumlah user yang dipindahkan (1-500).\n' +
+      'Data diambil dari urutan paling bawah (row terbaru).'
+    );
+  }
+
+  if (state.step === 'migrate_input_limit') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Migrasi user dibatalkan.');
+    }
+
+    if (!/^\d+$/.test(text)) {
+      return ctx.reply('Jumlah user harus angka. Contoh: 50');
+    }
+
+    const limit = Math.max(1, Math.min(500, Number(text)));
+    const type = normalizeMigrationType(state.migrationType);
+    if (!isSupportedMigrationType(type)) {
+      delete userState[ctx.chat.id];
+      return ctx.reply(
+        `Migrasi ${String(type || '').toUpperCase()} belum didukung saat ini.\n` +
+        'Saat ini migrasi yang tersedia: SSH dan UDP ZIVPN.'
+      );
+    }
+    const sourceHost = normalizeSyncHost(state.sourceHost || '');
+    const sourceToken = String(state.sourceToken || '').trim();
+    const targetHost = normalizeSyncHost(state.targetHost || '');
+    const targetToken = String(state.targetToken || '').trim();
+
+    if (!type || !sourceHost || !sourceToken || !targetHost || !targetToken) {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Data migrasi tidak valid. Ulangi dari menu admin.');
+    }
+
+    const sourceServer = {
+      id: 0,
+      nama_server: sourceHost,
+      domain: sourceHost,
+      sync_host: sourceHost,
+      sync_port: 8789,
+      sync_endpoint: '/internal/account-summary',
+      auth: sourceToken
+    };
+
+    const targetServer = {
+      id: 0,
+      nama_server: targetHost,
+      domain: targetHost,
+      sync_host: targetHost,
+      sync_port: 8789,
+      sync_endpoint: '/internal/account-summary',
+      auth: targetToken
+    };
+
+    await ctx.reply('Memproses migrasi user, mohon tunggu...');
+
+    try {
+      const result = await migrateTunnelAccountsBetweenServers(sourceServer, targetServer, type, limit);
+
+      delete userState[ctx.chat.id];
+      const header =
+        'Migrasi selesai.\n\n' +
+        `Jenis akun: ${result.type.toUpperCase()}\n` +
+        `Server sumber: ${sourceHost}\n` +
+        `Server tujuan: ${targetHost}\n` +
+        `Diminta: ${limit}\n` +
+        `Diambil: ${result.exported}\n` +
+        `Berhasil import: ${result.imported}\n` +
+        `Terlewat: ${result.skipped}\n` +
+        `Terhapus dari sumber: ${result.deleted}`;
+
+      const details = Array.isArray(result.migratedAccounts) ? result.migratedAccounts : [];
+      if (details.length === 0) {
+        return ctx.reply(header);
+      }
+
+      const detailLines = details.map((acc, i) => {
+        const remainDays = acc.dateExp ? calcRemainingDaysFromDateExp(acc.dateExp) : Math.max(0, Number(acc.days || 0));
+        const pass = acc.password || '-';
+        const exp = acc.dateExp || '-';
+        return `${i + 1}. ${acc.username || '-'} | pass: ${pass} | sisa aktif: ${remainDays} hari | exp: ${exp}`;
+      });
+
+      const fullMessage = `${header}\n\nDetail akun migrasi:\n${detailLines.join('\n')}`;
+      if (fullMessage.length <= 3900) {
+        return ctx.reply(fullMessage);
+      }
+
+      await ctx.reply(header);
+      let chunk = 'Detail akun migrasi:\n';
+      for (const line of detailLines) {
+        const next = `${chunk}${line}\n`;
+        if (next.length > 3600) {
+          await ctx.reply(chunk.trimEnd());
+          chunk = `${line}\n`;
+        } else {
+          chunk = next;
+        }
+      }
+      if (chunk.trim()) {
+        await ctx.reply(chunk.trimEnd());
+      }
+      return;
+    } catch (migrateErr) {
+      delete userState[ctx.chat.id];
+      logger.error(`Migrasi user gagal: ${migrateErr.message}`);
+      return ctx.reply(`Migrasi gagal: ${migrateErr.message}`);
+    }
+  }
+
   if (state.step === 'admin_contact_whatsapp') {
     const text = ctx.message.text.trim();
     if (text.toLowerCase() === 'batal') {
@@ -6367,6 +7979,58 @@ if (!state || !state.step) return;
         }
         delete userState[ctx.chat.id];
         ctx.reply(`✅ Total & batas berhasil diupdate.\nTotal: ${total}\nBatas: ${batas}`);
+      }
+    );
+    return;
+  }
+
+  if (state.step === 'edit_bw_limit_input') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Set limit bandwidth dibatalkan.');
+    }
+
+    const parts = text.split(/\s+/);
+    if (parts.length !== 2) {
+      return ctx.reply('Format salah. Contoh: 25 8');
+    }
+
+    const limitTb = Number(parts[0]);
+    const avgGb = Number(parts[1]);
+    if (!Number.isFinite(limitTb) || limitTb < 0) {
+      return ctx.reply('Limit TB harus angka >= 0.');
+    }
+    if (!Number.isFinite(avgGb) || avgGb <= 0) {
+      return ctx.reply('Rata-rata GB/user/hari harus angka > 0.');
+    }
+
+    const serverId = state.serverId;
+    db.run(
+      'UPDATE Server SET bandwidth_limit_tb = ?, bandwidth_user_daily_gb = ? WHERE id = ?',
+      [limitTb, avgGb, serverId],
+      async function (err) {
+        if (err) {
+          logger.error('❌ Gagal update limit bandwidth:', err.message);
+          return ctx.reply('❌ Gagal update limit bandwidth server.');
+        }
+        if (this.changes === 0) {
+          delete userState[ctx.chat.id];
+          return ctx.reply('Server tidak ditemukan.');
+        }
+
+        try {
+          await syncServerUsageFromTunnel('edit_bw_limit_input', { serverId, force: true });
+        } catch (syncErr) {
+          logger.warn(`Sync setelah edit_bw_limit_input gagal: ${syncErr.message}`);
+        }
+
+        delete userState[ctx.chat.id];
+        return ctx.reply(
+          `✅ Limit bandwidth server berhasil diupdate.\n` +
+          `- Limit bulanan: ${limitTb.toFixed(2)} TB\n` +
+          `- Estimasi/user/hari: ${avgGb.toFixed(2)} GB`
+        );
       }
     );
     return;
@@ -7004,7 +8668,12 @@ if (exp > 365) {
       }
 
       state.quota = server.quota;
-      state.iplimit = server.iplimit;
+      if (state.type === 'udp_http' && state.action === 'create') {
+        const selectedPkg = Number(state.selectedIpPackage || 1);
+        state.iplimit = selectedPkg === 2 ? 6 : 5;
+      } else {
+        state.iplimit = state.selectedIpPackage || server.iplimit;
+      }
       state.serverDomain = server.domain || '';
       state.serverName = server.nama_server || server.domain || '';
 
@@ -7012,7 +8681,7 @@ if (exp > 365) {
       let usedPassword = password || '';
       let msg;
 
-      db.get('SELECT harga, harga_reseller FROM Server WHERE id = ?', [serverId], async (err, server) => {
+      db.get('SELECT * FROM Server WHERE id = ?', [serverId], async (err, server) => {
         if (err) {
           logger.error('⚠️ Error fetching server price:', err.message);
           return ctx.reply('❌ *Terjadi kesalahan saat mengambil harga server.*', { parse_mode: 'Markdown' });
@@ -7023,7 +8692,8 @@ if (exp > 365) {
         }
 
         const isResellerUser = await isUserReseller(ctx.from.id).catch(() => false);
-        const harga = getEffectiveServerPrice(server, isResellerUser);
+        const selectedPackage = state.selectedIpPackage || 1;
+        const harga = getEffectiveServerPackagePrice(server, isResellerUser, selectedPackage);
         const totalHarga = harga * state.exp; 
         db.get('SELECT saldo FROM users WHERE user_id = ?', [ctx.from.id], async (err, user) => {
           if (err) {
@@ -7039,6 +8709,16 @@ if (exp > 365) {
           if (saldo < totalHarga) {
             return ctx.reply('❌ *Saldo Anda tidak mencukupi untuk melakukan transaksi ini.*', { parse_mode: 'Markdown' });
           }
+
+          const reserveResult = await reserveAccountChargeAtomic(ctx.from.id, totalHarga, type, action);
+          if (!reserveResult.ok) {
+            logger.error(`Gagal reserve saldo user ${ctx.from.id}, type: ${type}, server: ${serverId}, err: ${reserveResult.error}`);
+            if (reserveResult.error === 'SALDO_NOT_ENOUGH_OR_USER_NOT_FOUND') {
+              return ctx.reply('❌ *Saldo tidak cukup (kemungkinan sudah terpakai transaksi lain).* Silakan cek saldo Anda lalu coba lagi.', { parse_mode: 'Markdown' });
+            }
+            return ctx.reply('❌ *Terjadi kesalahan saat memproses saldo. Silakan coba lagi.*', { parse_mode: 'Markdown' });
+          }
+
           if (action === 'create') {
             if (type === 'vmess') {
               msg = await createvmess(username, exp, quota, iplimit, serverId);
@@ -7081,7 +8761,8 @@ if (exp > 365) {
           }
 //SALDO DATABES
 // setelah bikin akun (create/renew), kita cek hasilnya
-const msgLower = String(msg).toLowerCase();
+const msgText = String(msg || '');
+const msgLower = msgText.toLowerCase();
 const isDuplicateUsername =
   action === 'create' &&
   (
@@ -7094,6 +8775,10 @@ const isDuplicateUsername =
   );
 
 if (isDuplicateUsername) {
+  const cancelDup = await cancelReservedAccountCharge(ctx.from.id, totalHarga, reserveResult.referenceId);
+  if (!cancelDup.ok) {
+    logger.error(`Gagal refund reserve duplicate username user ${ctx.from.id}, ref: ${reserveResult.referenceId}, err: ${cancelDup.error}`);
+  }
   state.step = `username_${action}_${type}`;
   delete state.username;
   delete state.exp;
@@ -7105,22 +8790,35 @@ if (isDuplicateUsername) {
   );
   return;
 }
-const isErrorMsg = msg.includes('?') || msg.includes('❌') || msgLower.includes('sudah ada') || msgLower.includes('exists') || msgLower.includes('already exists');
+const isErrorMsg = [
+  'error',
+  'gagal',
+  'failed',
+  'not found',
+  'tidak ditemukan',
+  'unauthorized',
+  'forbidden',
+  'invalid'
+].some((needle) => msgLower.includes(needle));
 if (isErrorMsg) {
-  logger.error(`🔄 Rollback saldo user ${ctx.from.id}, type: ${type}, server: ${serverId}, respon: ${msg}`);
+  const cancelErr = await cancelReservedAccountCharge(ctx.from.id, totalHarga, reserveResult.referenceId);
+  if (!cancelErr.ok) {
+    logger.error(`Gagal refund reserve error create/renew user ${ctx.from.id}, ref: ${reserveResult.referenceId}, err: ${cancelErr.error}`);
+  }
+  logger.error(`[TXN] Rollback saldo user ${ctx.from.id}, type: ${type}, server: ${serverId}, respon: ${msgText}`);
   return ctx.reply(msg, { parse_mode: 'Markdown' });
 }
 // kalau sampai sini artinya tidak ada error, lanjut finalisasi saldo + transaksi (atomic)
-const chargeResult = await chargeAccountTransactionAtomic(ctx.from.id, totalHarga, type, action);
-if (!chargeResult.ok) {
-  logger.error(`Finalisasi transaksi gagal untuk user ${ctx.from.id}, type: ${type}, server: ${serverId}, err: ${chargeResult.error}`);
-  if (chargeResult.error === 'SALDO_NOT_ENOUGH_OR_USER_NOT_FOUND') {
-    return ctx.reply('? Saldo tidak cukup (kemungkinan sudah terpakai transaksi lain). Silakan cek saldo Anda lalu coba lagi.', { parse_mode: 'Markdown' });
-  }
-  return ctx.reply('? Terjadi kesalahan saat finalisasi transaksi. Silakan coba lagi.', { parse_mode: 'Markdown' });
+const finalizeResult = await finalizeReservedAccountCharge(reserveResult.referenceId, type);
+if (!finalizeResult.ok) {
+  logger.error(`Finalisasi transaksi gagal untuk user ${ctx.from.id}, type: ${type}, server: ${serverId}, ref: ${reserveResult.referenceId}, err: ${finalizeResult.error}`);
+  await ctx.reply(
+    '⚠️ *Akun berhasil dibuat, tapi finalisasi transaksi gagal tercatat.*\nSilakan hubungi admin agar dicek manual (log transaksi pending).',
+    { parse_mode: 'Markdown' }
+  );
 }
 
-logger.info(`? Transaksi sukses untuk user ${ctx.from.id}, type: ${type}, server: ${serverId}, ref: ${chargeResult.referenceId}`);
+logger.info(`? Transaksi sukses untuk user ${ctx.from.id}, type: ${type}, server: ${serverId}, ref: ${reserveResult.referenceId}`);
 
 if (action === 'create') {
   db.run('UPDATE Server SET total_create_akun = total_create_akun + 1 WHERE id = ?', [serverId], (err) => {
@@ -7140,7 +8838,7 @@ if (action === 'renew' && expDays > 0) {
 }
 const passwordToStore = (type === 'zivpn') ? usedPassword : password;
 const linkPayload = (type === 'vmess' || type === 'vless' || type === 'trojan')
-  ? extractAccountLinksFromMessage(msg)
+  ? extractAccountLinksFromMessage(msgText)
   : {};
 upsertAccountRecord({
   userId: ctx.from.id,
@@ -7249,31 +8947,119 @@ delete userState[ctx.chat.id];
   } else if (state.step === 'addserver_harga') {
     const harga = parseFloat(ctx.message.text.trim());
     if (isNaN(harga) || harga <= 0) {
-      await ctx.reply('⚠️ *Harga tidak valid.* Silakan masukkan harga server yang valid.', { parse_mode: 'Markdown' });
+      await ctx.reply('*Harga tidak valid.* Silakan masukkan harga server yang valid.', { parse_mode: 'Markdown' });
       return;
     }
+
+    state.harga = harga;
+    state.step = 'addserver_harga_reseller';
+    await ctx.reply('*Silakan masukkan harga reseller server:*', { parse_mode: 'Markdown' });
+  } else if (state.step === 'addserver_harga_reseller') {
+    const harga_reseller = parseFloat(ctx.message.text.trim());
+    if (isNaN(harga_reseller) || harga_reseller <= 0) {
+      await ctx.reply('*Harga reseller tidak valid.* Silakan masukkan harga reseller yang valid.', { parse_mode: 'Markdown' });
+      return;
+    }
+
+    state.harga_reseller = harga_reseller;
+    state.step = 'addserver_harga_1ip';
+    await ctx.reply('💳 Masukkan harga *User Paket 1IP*:', { parse_mode: 'Markdown' });
+  } else if (state.step === 'addserver_harga_1ip') {
+    const harga_1ip = parseFloat(ctx.message.text.trim());
+    if (isNaN(harga_1ip) || harga_1ip <= 0) {
+      await ctx.reply('Harga User 1IP tidak valid. Masukkan angka yang benar.', { parse_mode: 'Markdown' });
+      return;
+    }
+    state.harga_1ip = harga_1ip;
+    state.step = 'addserver_harga_2ip';
+    await ctx.reply('💳 Masukkan harga *User Paket 2IP*:', { parse_mode: 'Markdown' });
+  } else if (state.step === 'addserver_harga_2ip') {
+    const harga_2ip = parseFloat(ctx.message.text.trim());
+    if (isNaN(harga_2ip) || harga_2ip <= 0) {
+      await ctx.reply('Harga User 2IP tidak valid. Masukkan angka yang benar.', { parse_mode: 'Markdown' });
+      return;
+    }
+    state.harga_2ip = harga_2ip;
+    state.step = 'addserver_harga_reseller_1ip';
+    await ctx.reply('💳 Masukkan harga *Reseller Paket 1IP*:', { parse_mode: 'Markdown' });
+  } else if (state.step === 'addserver_harga_reseller_1ip') {
+    const harga_reseller_1ip = parseFloat(ctx.message.text.trim());
+    if (isNaN(harga_reseller_1ip) || harga_reseller_1ip <= 0) {
+      await ctx.reply('Harga Reseller 1IP tidak valid. Masukkan angka yang benar.', { parse_mode: 'Markdown' });
+      return;
+    }
+    state.harga_reseller_1ip = harga_reseller_1ip;
+    state.step = 'addserver_harga_reseller_2ip';
+    await ctx.reply('💳 Masukkan harga *Reseller Paket 2IP*:', { parse_mode: 'Markdown' });
+  } else if (state.step === 'addserver_harga_reseller_2ip') {
+    const harga_reseller_2ip = parseFloat(ctx.message.text.trim());
+    if (isNaN(harga_reseller_2ip) || harga_reseller_2ip <= 0) {
+      await ctx.reply('Harga Reseller 2IP tidak valid. Masukkan angka yang benar.', { parse_mode: 'Markdown' });
+      return;
+    }
+
+    state.harga_reseller_2ip = harga_reseller_2ip;
+
     const { domain, auth, nama_server, quota, iplimit, batas_create_akun } = state;
 
-  try {
-    const isResellerOnly = state.is_reseller_only ? 1 : 0;
-    const supportZivpn = state.support_zivpn ? 1 : 0;
-    const supportUdpHttp = state.support_udp_http ? 1 : 0;
-    db.run(
-      'INSERT INTO Server (domain, auth, nama_server, quota, iplimit, batas_create_akun, harga, total_create_akun, is_reseller_only, support_zivpn, support_udp_http, service) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [domain, auth, nama_server, quota, iplimit, batas_create_akun, harga, 0, isResellerOnly, supportZivpn, supportUdpHttp, 'ssh'],
-      function(err) {
-        if (err) {
-          logger.error('Error saat menambahkan server:', err.message);
-          ctx.reply('❌ *Terjadi kesalahan saat menambahkan server baru.*', { parse_mode: 'Markdown' });
-        } else {
-          ctx.reply(`✅ *Server baru dengan domain ${domain} telah berhasil ditambahkan.*\n\n📄 *Detail Server:*\n- Domain: ${domain}\n- Auth: ${auth}\n- Nama Server: ${nama_server}\n- Quota: ${quota}\n- Limit IP: ${iplimit}\n- Batas Create Akun: ${batas_create_akun}\n- Harga: Rp ${harga}`, { parse_mode: 'Markdown' });
+    try {
+      const isResellerOnly = state.is_reseller_only ? 1 : 0;
+      const supportZivpn = state.support_zivpn ? 1 : 0;
+      const supportUdpHttp = state.support_udp_http ? 1 : 0;
+
+      const hargaUser1 = state.harga_1ip || state.harga || 0;
+      const hargaUser2 = state.harga_2ip || state.harga || 0;
+      const hargaRes1 = state.harga_reseller_1ip || state.harga_reseller || state.harga || 0;
+      const hargaRes2 = state.harga_reseller_2ip || state.harga_reseller || state.harga || 0;
+      const hargaDasar = state.harga || hargaUser1;
+      const hargaResellerDasar = state.harga_reseller || hargaRes1;
+
+      db.run(
+        'INSERT INTO Server (domain, auth, nama_server, quota, iplimit, batas_create_akun, harga, harga_reseller, harga_1ip, harga_2ip, harga_reseller_1ip, harga_reseller_2ip, total_create_akun, is_reseller_only, support_zivpn, support_udp_http, service) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)',
+        [
+          domain,
+          auth,
+          nama_server,
+          quota,
+          iplimit,
+          batas_create_akun,
+          hargaDasar,
+          hargaResellerDasar,
+          hargaUser1,
+          hargaUser2,
+          hargaRes1,
+          hargaRes2,
+          isResellerOnly,
+          supportZivpn,
+          supportUdpHttp,
+          'ssh'
+        ],
+        function (err) {
+          if (err) {
+            logger.error('Error saat menambahkan server:', err.message);
+            ctx.reply('*Terjadi kesalahan saat menambahkan server baru.*', { parse_mode: 'Markdown' });
+          } else {
+            ctx.reply(
+              '*Server baru berhasil ditambahkan.*\n\n' +
+              `• Domain: \`${domain}\`\n` +
+              `• Auth: \`${auth}\`\n` +
+              `• Nama Server: ${nama_server}\n` +
+              `• Quota: ${quota}\n` +
+              `• Limit IP: ${iplimit}\n` +
+              `• Batas Create Akun: ${batas_create_akun}\n` +
+              `• Harga User 1IP: Rp ${hargaUser1}\n` +
+              `• Harga User 2IP: Rp ${hargaUser2}\n` +
+              `• Harga Reseller 1IP: Rp ${hargaRes1}\n` +
+              `• Harga Reseller 2IP: Rp ${hargaRes2}`,
+              { parse_mode: 'Markdown' }
+            );
+          }
         }
-      }
-    );
-  } catch (error) {
-    logger.error('Error saat menambahkan server:', error);
-    await ctx.reply('❌ *Terjadi kesalahan saat menambahkan server baru.*', { parse_mode: 'Markdown' });
-  }
+      );
+    } catch (error) {
+      logger.error('Error saat menambahkan server:', error);
+      await ctx.reply('*Terjadi kesalahan saat menambahkan server baru.*', { parse_mode: 'Markdown' });
+    }
     delete userState[ctx.chat.id];
   }
 // === 🏷️ TAMBAH SERVER UNTUK RESELLER ===
@@ -7317,11 +9103,16 @@ if (state && state.step === 'reseller_batas') {
   state.batas_create_akun = text;
 
   db.run(
-    `INSERT INTO Server (domain, auth, harga, nama_server, quota, iplimit, batas_create_akun, total_create_akun, is_reseller_only, support_zivpn, support_udp_http, service)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, 0, 0, 'ssh')`,
+    `INSERT INTO Server (domain, auth, harga, harga_reseller, harga_1ip, harga_2ip, harga_reseller_1ip, harga_reseller_2ip, nama_server, quota, iplimit, batas_create_akun, total_create_akun, is_reseller_only, support_zivpn, support_udp_http, service)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 0, 0, 'ssh')`,
     [
       state.domain,
       state.auth,
+      parseInt(state.harga),
+      parseInt(state.harga),
+      parseInt(state.harga),
+      parseInt(state.harga),
+      parseInt(state.harga),
       parseInt(state.harga),
       state.nama_server,
       parseInt(state.quota),
@@ -7393,21 +9184,28 @@ db.run('UPDATE users SET saldo = saldo + ? WHERE user_id = ?', [amount, targetId
 ////////
 bot.action('addserver', async (ctx) => {
   try {
-    logger.info('📥 Proses tambah server dimulai');
+    logger.info('Proses tambah server dimulai');
     await ctx.answerCbQuery();
-    userState[ctx.chat.id] = { step: 'addserver_role', data: {} };
-    await ctx.reply('Pilih tipe server:', {
+
+    userState[ctx.chat.id] = {
+      step: 'addserver_support',
+      data: {},
+      is_reseller_only: 0
+    };
+
+    await ctx.reply('Pilih support server:', {
       reply_markup: {
         inline_keyboard: [
-          [{ text: 'Server Reseller', callback_data: 'addserver_role_reseller' }],
-          [{ text: 'Server User Biasa', callback_data: 'addserver_role_user' }],
+          [{ text: 'Support ZIVPN', callback_data: 'addserver_support_zivpn' }],
+          [{ text: 'Support UDP HTTP', callback_data: 'addserver_support_udp_http' }],
+          [{ text: 'Tanpa Support', callback_data: 'addserver_support_none' }],
           [{ text: 'Batal', callback_data: 'admin_menu' }]
         ]
       }
     });
   } catch (error) {
-    logger.error('❌ Kesalahan saat memulai proses tambah server:', error);
-    await ctx.reply('❌ *GAGAL! Terjadi kesalahan saat memproses permintaan Anda. Silakan coba lagi nanti.*', { parse_mode: 'Markdown' });
+    logger.error('Kesalahan saat memulai proses tambah server:', error);
+    await ctx.reply('Gagal memulai proses tambah server. Silakan coba lagi.');
   }
 });
 
@@ -7988,82 +9786,99 @@ bot.action('editserver_auth', async (ctx) => {
   }
 });
 
-bot.action('editserver_harga', async (ctx) => {
+// Harga User 1IP
+bot.action('editserver_harga_1ip', async (ctx) => {
   try {
-    logger.info('Edit server harga process started');
     await ctx.answerCbQuery();
-
     const servers = await new Promise((resolve, reject) => {
-      db.all('SELECT id, nama_server FROM Server ORDER BY nama_server COLLATE NOCASE ASC', [], (err, servers) => {
-        if (err) {
-          logger.error('❌ Kesalahan saat mengambil daftar server:', err.message);
-          return reject('⚠️ *PERHATIAN! Terjadi kesalahan saat mengambil daftar server.*');
-        }
-        resolve(servers);
+      db.all('SELECT id, nama_server FROM Server ORDER BY nama_server COLLATE NOCASE ASC', [], (err, rows) => {
+        if (err) return reject(err);
+        resolve(rows || []);
       });
     });
-
-    if (servers.length === 0) {
-      return ctx.reply('⚠️ *PERHATIAN! Tidak ada server yang tersedia untuk diedit.*', { parse_mode: 'Markdown' });
-    }
-
-    const buttons = servers.map(server => ({
-      text: server.nama_server,
-      callback_data: `edit_harga_${server.id}`
-    }));
-
+    if (servers.length === 0) return ctx.reply('Tidak ada server.', { parse_mode: 'Markdown' });
+    const buttons = servers.map(s => ({ text: s.nama_server, callback_data: `edit_harga1_${s.id}` }));
     const inlineKeyboard = [];
-    for (let i = 0; i < buttons.length; i += 2) {
-      inlineKeyboard.push(buttons.slice(i, i + 2));
-    }
-
-    await ctx.reply('💰 *Silakan pilih server untuk mengedit harga:*', {
+    for (let i = 0; i < buttons.length; i += 2) inlineKeyboard.push(buttons.slice(i, i + 2));
+    await ctx.reply('Pilih server untuk edit harga User 1IP:', {
       reply_markup: { inline_keyboard: inlineKeyboard },
       parse_mode: 'Markdown'
     });
-  } catch (error) {
-    logger.error('❌ Kesalahan saat memulai proses edit harga server:', error);
-    await ctx.reply(`❌ *${error}*`, { parse_mode: 'Markdown' });
+  } catch (err) {
+    logger.error('Edit harga 1IP error:', err);
+    await ctx.reply('Terjadi kesalahan.', { parse_mode: 'Markdown' });
   }
 });
 
-
-bot.action('editserver_harga_reseller', async (ctx) => {
+// Harga User 2IP
+bot.action('editserver_harga_2ip', async (ctx) => {
   try {
-    logger.info('Edit server harga reseller process started');
     await ctx.answerCbQuery();
-
     const servers = await new Promise((resolve, reject) => {
-      db.all('SELECT id, nama_server FROM Server ORDER BY nama_server COLLATE NOCASE ASC', [], (err, servers) => {
-        if (err) {
-          logger.error('Kesalahan saat mengambil daftar server:', err.message);
-          return reject('PERHATIAN! Terjadi kesalahan saat mengambil daftar server.');
-        }
-        resolve(servers);
+      db.all('SELECT id, nama_server FROM Server ORDER BY nama_server COLLATE NOCASE ASC', [], (err, rows) => {
+        if (err) return reject(err);
+        resolve(rows || []);
       });
     });
-
-    if (servers.length === 0) {
-      return ctx.reply('PERHATIAN! Tidak ada server yang tersedia untuk diedit.', { parse_mode: 'Markdown' });
-    }
-
-    const buttons = servers.map(server => ({
-      text: server.nama_server,
-      callback_data: 'edit_harga_reseller_' + server.id
-    }));
-
+    if (servers.length === 0) return ctx.reply('Tidak ada server.', { parse_mode: 'Markdown' });
+    const buttons = servers.map(s => ({ text: s.nama_server, callback_data: `edit_harga2_${s.id}` }));
     const inlineKeyboard = [];
-    for (let i = 0; i < buttons.length; i += 2) {
-      inlineKeyboard.push(buttons.slice(i, i + 2));
-    }
-
-    await ctx.reply('Silakan pilih server untuk mengedit harga reseller:', {
+    for (let i = 0; i < buttons.length; i += 2) inlineKeyboard.push(buttons.slice(i, i + 2));
+    await ctx.reply('Pilih server untuk edit harga User 2IP:', {
       reply_markup: { inline_keyboard: inlineKeyboard },
       parse_mode: 'Markdown'
     });
-  } catch (error) {
-    logger.error('Kesalahan saat memulai proses edit harga reseller server:', error);
-    await ctx.reply(String(error), { parse_mode: 'Markdown' });
+  } catch (err) {
+    logger.error('Edit harga 2IP error:', err);
+    await ctx.reply('Terjadi kesalahan.', { parse_mode: 'Markdown' });
+  }
+});
+
+// Harga Reseller 1IP
+bot.action('editserver_harga_reseller_1ip', async (ctx) => {
+  try {
+    await ctx.answerCbQuery();
+    const servers = await new Promise((resolve, reject) => {
+      db.all('SELECT id, nama_server FROM Server ORDER BY nama_server COLLATE NOCASE ASC', [], (err, rows) => {
+        if (err) return reject(err);
+        resolve(rows || []);
+      });
+    });
+    if (servers.length === 0) return ctx.reply('Tidak ada server.', { parse_mode: 'Markdown' });
+    const buttons = servers.map(s => ({ text: s.nama_server, callback_data: `edit_harga_res1_${s.id}` }));
+    const inlineKeyboard = [];
+    for (let i = 0; i < buttons.length; i += 2) inlineKeyboard.push(buttons.slice(i, i + 2));
+    await ctx.reply('Pilih server untuk edit harga Reseller 1IP:', {
+      reply_markup: { inline_keyboard: inlineKeyboard },
+      parse_mode: 'Markdown'
+    });
+  } catch (err) {
+    logger.error('Edit harga reseller 1IP error:', err);
+    await ctx.reply('Terjadi kesalahan.', { parse_mode: 'Markdown' });
+  }
+});
+
+// Harga Reseller 2IP
+bot.action('editserver_harga_reseller_2ip', async (ctx) => {
+  try {
+    await ctx.answerCbQuery();
+    const servers = await new Promise((resolve, reject) => {
+      db.all('SELECT id, nama_server FROM Server ORDER BY nama_server COLLATE NOCASE ASC', [], (err, rows) => {
+        if (err) return reject(err);
+        resolve(rows || []);
+      });
+    });
+    if (servers.length === 0) return ctx.reply('Tidak ada server.', { parse_mode: 'Markdown' });
+    const buttons = servers.map(s => ({ text: s.nama_server, callback_data: `edit_harga_res2_${s.id}` }));
+    const inlineKeyboard = [];
+    for (let i = 0; i < buttons.length; i += 2) inlineKeyboard.push(buttons.slice(i, i + 2));
+    await ctx.reply('Pilih server untuk edit harga Reseller 2IP:', {
+      reply_markup: { inline_keyboard: inlineKeyboard },
+      parse_mode: 'Markdown'
+    });
+  } catch (err) {
+    logger.error('Edit harga reseller 2IP error:', err);
+    await ctx.reply('Terjadi kesalahan.', { parse_mode: 'Markdown' });
   }
 });
 
@@ -8142,22 +9957,41 @@ bot.action('nama_server_edit', async (ctx) => {
   }
 });
 
-bot.action(/edit_harga_(\d+)/, async (ctx) => {
+bot.action(/edit_harga1_(\d+)/, async (ctx) => {
   const serverId = ctx.match[1];
-  logger.info(`User ${ctx.from.id} memilih untuk mengedit harga server dengan ID: ${serverId}`);
-  userState[ctx.chat.id] = { step: 'edit_harga', serverId: serverId };
-
-  await ctx.reply('💰 *Silakan masukkan harga server baru:*', {
+  logger.info(`User ${ctx.from.id} memilih edit harga user 1IP server ${serverId}`);
+  userState[ctx.chat.id] = { step: 'edit_harga_1ip', serverId };
+  await ctx.reply('Masukkan harga User 1IP:', {
     reply_markup: { inline_keyboard: keyboard_nomor_simple() },
     parse_mode: 'Markdown'
   });
 });
-bot.action(/edit_harga_reseller_(\d+)/, async (ctx) => {
-  const serverId = ctx.match[1];
-  logger.info('User ' + ctx.from.id + ' memilih untuk mengedit harga reseller server dengan ID: ' + serverId);
-  userState[ctx.chat.id] = { step: 'edit_harga_reseller', serverId: serverId };
 
-  await ctx.reply('Silakan masukkan harga reseller server baru:', {
+bot.action(/edit_harga2_(\d+)/, async (ctx) => {
+  const serverId = ctx.match[1];
+  logger.info(`User ${ctx.from.id} memilih edit harga user 2IP server ${serverId}`);
+  userState[ctx.chat.id] = { step: 'edit_harga_2ip', serverId };
+  await ctx.reply('Masukkan harga User 2IP:', {
+    reply_markup: { inline_keyboard: keyboard_nomor_simple() },
+    parse_mode: 'Markdown'
+  });
+});
+
+bot.action(/edit_harga_res1_(\d+)/, async (ctx) => {
+  const serverId = ctx.match[1];
+  logger.info(`User ${ctx.from.id} memilih edit harga reseller 1IP server ${serverId}`);
+  userState[ctx.chat.id] = { step: 'edit_harga_reseller_1ip', serverId };
+  await ctx.reply('Masukkan harga Reseller 1IP:', {
+    reply_markup: { inline_keyboard: keyboard_nomor_simple() },
+    parse_mode: 'Markdown'
+  });
+});
+
+bot.action(/edit_harga_res2_(\d+)/, async (ctx) => {
+  const serverId = ctx.match[1];
+  logger.info(`User ${ctx.from.id} memilih edit harga reseller 2IP server ${serverId}`);
+  userState[ctx.chat.id] = { step: 'edit_harga_reseller_2ip', serverId };
+  await ctx.reply('Masukkan harga Reseller 2IP:', {
     reply_markup: { inline_keyboard: keyboard_nomor_simple() },
     parse_mode: 'Markdown'
   });
@@ -8408,11 +10242,17 @@ bot.on('callback_query', async (ctx) => {
       case 'edit_domain':
         await handleEditDomain(ctx, userStateData, data);
         break;
-      case 'edit_harga':
-        await handleEditHarga(ctx, userStateData, data);
+      case 'edit_harga_1ip':
+        await handleEditHarga1Ip(ctx, userStateData, data);
         break;
-      case 'edit_harga_reseller':
-        await handleEditHargaReseller(ctx, userStateData, data);
+      case 'edit_harga_2ip':
+        await handleEditHarga2Ip(ctx, userStateData, data);
+        break;
+      case 'edit_harga_reseller_1ip':
+        await handleEditHargaReseller1Ip(ctx, userStateData, data);
+        break;
+      case 'edit_harga_reseller_2ip':
+        await handleEditHargaReseller2Ip(ctx, userStateData, data);
         break;
       case 'edit_nama':
         await handleEditNama(ctx, userStateData, data);
@@ -8591,49 +10431,7 @@ async function handleEditDomain(ctx, userStateData, data) {
   await handleEditField(ctx, userStateData, data, 'domain', 'domain', 'UPDATE Server SET domain = ? WHERE id = ?', keyboard_full);
 }
 
-async function handleEditHarga(ctx, userStateData, data) {
-  let currentAmount = userStateData.amount || '';
-
-  if (data === 'delete') {
-    currentAmount = currentAmount.slice(0, -1);
-  } else if (data === 'confirm') {
-    if (currentAmount.length === 0) {
-      return await ctx.answerCbQuery('⚠️ *Jumlah tidak boleh kosong!*', { show_alert: true });
-    }
-    const hargaBaru = parseFloat(currentAmount);
-    if (isNaN(hargaBaru) || hargaBaru <= 0) {
-      return ctx.reply('❌ *Harga tidak valid. Masukkan angka yang valid.*', { parse_mode: 'Markdown' });
-    }
-    try {
-      await updateServerField(userStateData.serverId, hargaBaru, 'UPDATE Server SET harga = ? WHERE id = ?');
-      ctx.reply(`✅ *Harga server berhasil diupdate.*\n\n📄 *Detail Server:*\n- Harga Baru: *Rp ${hargaBaru}*`, { parse_mode: 'Markdown' });
-    } catch (err) {
-      ctx.reply('❌ *Terjadi kesalahan saat mengupdate harga server.*', { parse_mode: 'Markdown' });
-    }
-    delete userState[ctx.chat.id];
-    return;
-  } else {
-    if (!/^\d+$/.test(data)) {
-      return await ctx.answerCbQuery('⚠️ *Hanya angka yang diperbolehkan!*', { show_alert: true });
-    }
-    if (currentAmount.length < 12) {
-      currentAmount += data;
-    } else {
-      return await ctx.answerCbQuery('⚠️ *Jumlah maksimal adalah 12 digit!*', { show_alert: true });
-    }
-  }
-
-  userStateData.amount = currentAmount;
-  const newMessage = `💰 *Silakan masukkan harga server baru:*\n\nJumlah saat ini: *Rp ${currentAmount}*`;
-  if (newMessage !== ctx.callbackQuery.message.text) {
-    await ctx.editMessageText(newMessage, {
-      reply_markup: { inline_keyboard: keyboard_nomor_simple() },
-      parse_mode: 'Markdown'
-    });
-  }
-}
-
-async function handleEditHargaReseller(ctx, userStateData, data) {
+async function handleEditHargaGeneric(ctx, userStateData, data, label, column) {
   let currentAmount = userStateData.amount || '';
 
   if (data === 'delete') {
@@ -8644,13 +10442,13 @@ async function handleEditHargaReseller(ctx, userStateData, data) {
     }
     const hargaBaru = parseFloat(currentAmount);
     if (isNaN(hargaBaru) || hargaBaru <= 0) {
-      return ctx.reply('Harga reseller tidak valid. Masukkan angka yang valid.', { parse_mode: 'Markdown' });
+      return ctx.reply(`${label} tidak valid. Masukkan angka yang valid.`, { parse_mode: 'Markdown' });
     }
     try {
-      await updateServerField(userStateData.serverId, hargaBaru, 'UPDATE Server SET harga_reseller = ? WHERE id = ?');
-      ctx.reply('Harga reseller server berhasil diupdate.\n\nDetail Server:\n- Harga Reseller Baru: Rp ' + hargaBaru, { parse_mode: 'Markdown' });
+      await updateServerField(userStateData.serverId, hargaBaru, `UPDATE Server SET ${column} = ? WHERE id = ?`);
+      ctx.reply(`${label} berhasil diupdate.\n\nDetail:\n- ${label}: Rp ${hargaBaru}`, { parse_mode: 'Markdown' });
     } catch (err) {
-      ctx.reply('Terjadi kesalahan saat mengupdate harga reseller server.', { parse_mode: 'Markdown' });
+      ctx.reply(`Terjadi kesalahan saat mengupdate ${label}.`, { parse_mode: 'Markdown' });
     }
     delete userState[ctx.chat.id];
     return;
@@ -8666,13 +10464,29 @@ async function handleEditHargaReseller(ctx, userStateData, data) {
   }
 
   userStateData.amount = currentAmount;
-  const newMessage = 'Silakan masukkan harga reseller server baru:\n\nJumlah saat ini: Rp ' + currentAmount;
+  const newMessage = `${label}:\n\nJumlah saat ini: Rp ${currentAmount}`;
   if (newMessage !== ctx.callbackQuery.message.text) {
     await ctx.editMessageText(newMessage, {
       reply_markup: { inline_keyboard: keyboard_nomor_simple() },
       parse_mode: 'Markdown'
     });
   }
+}
+
+async function handleEditHarga1Ip(ctx, userStateData, data) {
+  return handleEditHargaGeneric(ctx, userStateData, data, 'Harga User 1IP', 'harga_1ip');
+}
+
+async function handleEditHarga2Ip(ctx, userStateData, data) {
+  return handleEditHargaGeneric(ctx, userStateData, data, 'Harga User 2IP', 'harga_2ip');
+}
+
+async function handleEditHargaReseller1Ip(ctx, userStateData, data) {
+  return handleEditHargaGeneric(ctx, userStateData, data, 'Harga Reseller 1IP', 'harga_reseller_1ip');
+}
+
+async function handleEditHargaReseller2Ip(ctx, userStateData, data) {
+  return handleEditHargaGeneric(ctx, userStateData, data, 'Harga Reseller 2IP', 'harga_reseller_2ip');
 }
 
 async function handleEditNama(ctx, userStateData, data) {
@@ -9795,6 +11609,43 @@ schedule.scheduleJob('server_usage_sync_10m', serverSyncRule, async () => {
     logger.error(`[SyncServer:every_10m] gagal: ${err.message}`);
   }
 });
+
+let bandwidthReportTimer = null;
+async function runBandwidthReportTick(trigger = 'interval') {
+  try {
+    if (!Number(BW_NOTIF_GROUP_ID_NUM)) return;
+    await syncServerUsageFromTunnel(`bw_report_${trigger}`, { force: true });
+    await sendBandwidthReportToGroup(BW_NOTIF_GROUP_ID_NUM);
+    logger.info(`[BWReport:${trigger}] laporan bandwidth terkirim ke ${BW_NOTIF_GROUP_ID_NUM}`);
+  } catch (err) {
+    logger.error(`[BWReport:${trigger}] gagal kirim laporan bandwidth: ${err.message}`);
+  }
+}
+
+function restartBandwidthReportScheduler() {
+  try {
+    if (bandwidthReportTimer) {
+      clearInterval(bandwidthReportTimer);
+      bandwidthReportTimer = null;
+    }
+
+    const minutes = Number(BW_REPORT_INTERVAL_MINUTES || 0);
+    if (!Number.isFinite(minutes) || minutes < 5) {
+      logger.warn('[BWReport] scheduler dimatikan karena interval tidak valid');
+      return;
+    }
+
+    bandwidthReportTimer = setInterval(() => {
+      runBandwidthReportTick('dynamic').catch(() => {});
+    }, minutes * 60 * 1000);
+
+    logger.info(`[BWReport] scheduler aktif setiap ${minutes} menit`);
+  } catch (err) {
+    logger.error(`[BWReport] gagal restart scheduler: ${err.message}`);
+  }
+}
+
+restartBandwidthReportScheduler();
 const dbFile = path.join(__dirname, "sellvpn.db");
 const autoBackupDir = path.join(__dirname, "auto_backup");
 
@@ -9992,3 +11843,4 @@ const adminMessage =
     cleanupOldBroadcastPolls();
   }, 10000);
 });
+

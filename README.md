@@ -64,6 +64,7 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 && sysctl -w net.ipv6.conf.default.di
 - Kontrol top up: auto/manual/bonus (aktif/nonaktif + atur persentase bonus).
 - Upload QRIS dari menu admin.
 - Command penting: `/admin`, `/syncservernow`, `/checkpaymentconfig`, `/helpadmin`, `/resellerstats`, `/allresellerstats`.
+- Command limit bandwidth server: `/setserverbw <server_id> <limit_tb> [avg_gb_per_user_per_hari]` (contoh: `/setserverbw 1 25 8`).
 
 ### Sistem dan Keandalan
 - Auto migrasi kolom/tabel SQLite saat bot start.
@@ -86,7 +87,9 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 && sysctl -w net.ipv6.conf.default.di
 
 API tunnel dipakai bot untuk:
 - sinkron total akun aktif ke `Server.total_create_akun`,
-- lookup `date_exp` akun berdasarkan username.
+- lookup `date_exp` akun berdasarkan username,
+- ambil trafik bandwidth harian + akumulasi bulan berjalan dari `vnstat` untuk estimasi kapasitas akun berdasarkan limit TB bulanan.
+- kirim notifikasi otomatis ke admin/grup jika proyeksi trafik 30 hari melebihi limit bandwidth bulanan server.
 
 Trigger sinkron:
 - Manual: `/syncservernow` atau tombol admin `Sync Server Sekarang`.
@@ -95,6 +98,8 @@ Trigger sinkron:
 Endpoint yang dipakai bot:
 - `GET /internal/account-summary`
 - `GET /internal/account-expiry?username=<USERNAME>`
+- `GET /internal/expiry-summary?date=<YYYY-MM-DD>`
+- `GET /internal/vnstat-daily`
 
 Auth endpoint:
 - Header `x-sync-token: <TOKEN>`

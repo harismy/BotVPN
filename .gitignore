@@ -7,6 +7,8 @@ backups/
 backup/
 scripts
 .editorconfig
+app2.js
+
 
 # Env & secrets
 .env
