@@ -1,4 +1,4 @@
-const os = require('os');
+﻿const os = require('os');
 const sqlite3 = require('sqlite3').verbose();
 const express = require('express');
 const { Telegraf } = require('telegraf');
@@ -9,7 +9,7 @@ const fsPromises = require('fs/promises');
 const path = require('path');
 const resselFilePath = path.join(__dirname, 'ressel.db');
 const resellerTermsPath = path.join(__dirname, 'reseller_terms.json');
-const defaultResellerTerms = { min_accounts: 0, min_topup: 30000 };
+const defaultResellerTerms = { min_accounts: 0, min_topup: 30000, join_topup_min: 18000 };
 const topupManualPath = path.join(__dirname, 'topup_manual.json');
 const defaultTopupManual = { enabled: true };
 const topupAutoPath = path.join(__dirname, 'topup_auto.json');
@@ -23,12 +23,16 @@ function loadResellerTerms() {
     const parsed = JSON.parse(raw);
     const minAccounts = Number(parsed.min_accounts);
     const minTopup = Number(parsed.min_topup);
+    const joinTopupMin = Number(parsed.join_topup_min);
     if (!Number.isFinite(minAccounts) || !Number.isFinite(minTopup)) {
       return { ...defaultResellerTerms };
     }
     return {
       min_accounts: Math.max(0, Math.floor(minAccounts)),
-      min_topup: Math.max(0, Math.floor(minTopup))
+      min_topup: Math.max(0, Math.floor(minTopup)),
+      join_topup_min: Number.isFinite(joinTopupMin)
+        ? Math.max(0, Math.floor(joinTopupMin))
+        : defaultResellerTerms.join_topup_min
     };
   } catch (err) {
     return { ...defaultResellerTerms };
@@ -36,9 +40,11 @@ function loadResellerTerms() {
 }
 
 function saveResellerTerms(terms) {
+  const current = loadResellerTerms();
   const payload = {
-    min_accounts: Math.max(0, Math.floor(Number(terms.min_accounts) || 0)),
-    min_topup: Math.max(0, Math.floor(Number(terms.min_topup) || 0))
+    min_accounts: Math.max(0, Math.floor(Number(terms.min_accounts ?? current.min_accounts) || 0)),
+    min_topup: Math.max(0, Math.floor(Number(terms.min_topup ?? current.min_topup) || 0)),
+    join_topup_min: Math.max(0, Math.floor(Number(terms.join_topup_min ?? current.join_topup_min) || 0))
   };
   fs.writeFileSync(resellerTermsPath, JSON.stringify(payload, null, 2), 'utf8');
   return payload;
@@ -305,16 +311,38 @@ function saveVars(next) {
   fs.writeFileSync('./.vars.json', JSON.stringify(next, null, 2), 'utf8');
 }
 
+function normalizeHttpUrl(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return '';
+  const withScheme = /^https?:\/\//i.test(text) ? text : `https://${text}`;
+  try {
+    const u = new URL(withScheme);
+    u.hash = '';
+    u.search = '';
+    return u.toString().replace(/\/+$/, '');
+  } catch (_err) {
+    return '';
+  }
+}
+
+function maskSecret(secret) {
+  const s = String(secret || '');
+  if (!s) return '-';
+  if (s.length <= 8) return '****';
+  return `${s.slice(0, 4)}****${s.slice(-4)}`;
+}
+
 const vars = loadVars();
 
 const BOT_TOKEN = vars.BOT_TOKEN;
 const port = vars.PORT || 6969;
 const ADMIN = vars.USER_ID; 
 const NAMA_STORE = vars.NAMA_STORE || '@ARI_VPN_STORE';
-const DATA_QRIS = vars.DATA_QRIS;
-const MERCHANT_ID = vars.MERCHANT_ID;
-const API_KEY = vars.API_KEY;
-const RAJASERVER_API_KEY = vars.RAJASERVER_API_KEY;
+let DATA_QRIS = vars.DATA_QRIS;
+let MERCHANT_ID = vars.MERCHANT_ID;
+let API_KEY = vars.API_KEY;
+let RAJASERVER_API_KEY = vars.RAJASERVER_API_KEY;
+let PAYMENT_GATEWAY_BASE_URL = String(vars.PAYMENT_GATEWAY_BASE_URL || 'https://api.rajaserver.web.id/orderkuota/createpayment').trim();
 const GROUP_ID = vars.GROUP_ID;
 const BW_NOTIF_GROUP_ID = vars.BW_NOTIF_GROUP_ID;
 let BW_REPORT_INTERVAL_MINUTES = Number(vars.BW_REPORT_INTERVAL_MINUTES || 180);
@@ -326,6 +354,17 @@ let NOTIF_BOT_TOKEN = vars.NOTIF_BOT_TOKEN || '';
 let NOTIF_CHAT_ID = vars.NOTIF_CHAT_ID || '';
 let ADMIN_WHATSAPP = String(vars.ADMIN_WHATSAPP || vars.CONTACT_WA || '').replace(/\D/g, '');
 let ADMIN_TELEGRAM = String(vars.ADMIN_TELEGRAM || vars.CONTACT_TELEGRAM || '').trim().replace(/^@+/, '');
+
+function reloadRuntimePaymentConfig() {
+  const current = loadVars();
+  DATA_QRIS = current.DATA_QRIS || '';
+  MERCHANT_ID = current.MERCHANT_ID || '';
+  API_KEY = current.API_KEY || '';
+  RAJASERVER_API_KEY = current.RAJASERVER_API_KEY || '';
+  PAYMENT_GATEWAY_BASE_URL = normalizeHttpUrl(current.PAYMENT_GATEWAY_BASE_URL || PAYMENT_GATEWAY_BASE_URL)
+    || 'https://api.rajaserver.web.id/orderkuota/createpayment';
+}
+reloadRuntimePaymentConfig();
 
 function formatDateId(date) {
   try {
@@ -1842,12 +1881,16 @@ bot.command('checkpaymentconfig', async (ctx) => {
   await ctx.reply('🔍 Memeriksa konfigurasi pembayaran...');
   
   try {
+    reloadRuntimePaymentConfig();
     const { buildPayload, API_URL } = require('./api-cekpayment-orkut');
     const qs = require('qs');
     const payload = buildPayload();
     const decoded = qs.parse(payload);
     
     let message = `🔧 *KONFIGURASI PEMBAYARAN*\n\n`;
+    message += `🌐 Gateway URL: \`${PAYMENT_GATEWAY_BASE_URL}\`\n`;
+    message += `🔑 RajaServer API Key: \`${maskSecret(RAJASERVER_API_KEY)}\`\n`;
+    message += `🧾 DATA_QRIS: \`${DATA_QRIS ? '✅ Tersimpan' : '❌ Belum diisi'}\`\n`;
     message += `📡 API URL: \`${API_URL}\`\n`;
     message += `👤 Username: \`${decoded.username}\`\n`;
     message += `🔑 Token: \`${decoded.token ? '••••••' + decoded.token.substring(decoded.token.length - 10) : 'empty'}\`\n\n`;
@@ -1864,8 +1907,9 @@ bot.command('checkpaymentconfig', async (ctx) => {
       message += `1. Tonton video tutorial di atas\n`;
       message += `2. Login ke orderkuota.com\n`;
       message += `3. Ambil username & token API\n`;
-      message += `4. Edit file: \`api-cekpayment-orkut.js\`\n`;
-      message += `5. Restart bot: \`pm2 restart app\`\n\n`;
+      message += `4. Buka menu admin: *Setting Payment Gateway*\n`;
+      message += `5. Isi Gateway URL, API Key, dan parameter lain\n`;
+      message += `6. Jika ubah username/token, update di \`.vars.json\` lalu restart bot\n\n`;
       message += `🔄 Setelah selesai, cek lagi dengan: /checkpaymentconfig`;
     } else {
       message += `✅ *STATUS: TERKONFIGURASI*\n`;
@@ -2545,17 +2589,33 @@ bot.command('addsaldo', async (ctx) => {
         }
 
 // Ambil saldo terbaru dan kirim ke Telegram + log
-db.get('SELECT saldo FROM users WHERE user_id = ?', [targetId], (err2, updatedRow) => {
+db.get('SELECT saldo FROM users WHERE user_id = ?', [targetUserId], async (err2, updatedRow) => {
   if (err2 || !updatedRow) {
-    logger.info(`Admin ${ctx.from.id} menambah saldo Rp${amount} ke user ${targetId}, namun gagal membaca saldo terbaru.`);
-    return ctx.reply(`✅ Saldo sebesar Rp${amount.toLocaleString()} berhasil ditambahkan ke user ${targetId}.`);
+    logger.info(`Admin ${ctx.from.id} menambah saldo Rp${amount} ke user ${targetUserId}, namun gagal membaca saldo terbaru.`);
+    await ctx.reply(`✅ Saldo sebesar Rp${amount.toLocaleString()} berhasil ditambahkan ke user ${targetUserId}.`);
+    await bot.telegram.sendMessage(
+      targetUserId,
+      `✅ Saldo Anda berhasil ditambahkan admin.\n` +
+      `💰 Nominal: Rp${amount.toLocaleString('id-ID')}`
+    ).catch((notifyErr) => {
+      logger.error(`Gagal kirim notifikasi tambah saldo ke ${targetUserId}: ${notifyErr.message}`);
+    });
+    return;
   }
 
           // Kirim pesan ke Telegram dengan saldo akhir
-          ctx.reply(
+          await ctx.reply(
             `✅ Saldo sebesar *Rp${amount.toLocaleString()}* berhasil ditambahkan ke user \`${targetUserId}\`.\n💰 Saldo user sekarang: *Rp${updatedRow.saldo.toLocaleString()}*`,
             { parse_mode: 'Markdown' }
           );
+          await bot.telegram.sendMessage(
+            targetUserId,
+            `✅ Saldo Anda berhasil ditambahkan admin.\n` +
+            `💰 Nominal: Rp${amount.toLocaleString('id-ID')}\n` +
+            `🏦 Saldo sekarang: Rp${updatedRow.saldo.toLocaleString('id-ID')}`
+          ).catch((notifyErr) => {
+            logger.error(`Gagal kirim notifikasi tambah saldo ke ${targetUserId}: ${notifyErr.message}`);
+          });
 
           // Log di file
           logger.info(`Admin ${ctx.from.id} menambah saldo Rp${amount} ke user ${targetUserId}. Saldo user sekarang: Rp${updatedRow.saldo}`);
@@ -2901,30 +2961,39 @@ async function sendHelpAdmin(ctx) {
   }
   
   const helpMessage = `
-*📋 Daftar Perintah Admin:*
+*Daftar Perintah Admin:*
 
 1. /addsaldo - Menambahkan saldo ke akun pengguna.
 2. /hapussaldo - Menghapus saldo dari akun pengguna.
 3. /addserver - Menambahkan server baru.
-4. /addressel - Menambahkan Reseller baru.
-5. /delressel - Menghapus id Reseller.
-6. /broadcast - Mengirim pesan siaran ke semua pengguna.
-7. /editharga - Mengedit harga layanan.
-8. /editauth - Mengedit auth server.
-9. /editdomain - Mengedit domain server.
-10. /editlimitcreate - Mengedit batas pembuatan akun server.
-11. /editlimitip - Mengedit batas IP server.
-12. /editlimitquota - Mengedit batas quota server.
-13. /editnama - Mengedit nama server.
-14. /edittotalcreate - Mengedit total pembuatan akun server.
-15. /hapuslog - Menghapus log bot.
-16. /allresellerstats - Ambil data statistik pembuatan semua reseller
-17. /resellerstats - Ambil data statistik saya
-18. /checkpaymentconfig - Ngecek konfigurasi file api-payment-outkut.js\n19. /restartserver [target] - Restart app PM2 dari Telegram
+4. /addserver_reseller - Menambahkan server khusus reseller.
+5. /addserverzivpn - Menambahkan server ZIVPN.
+6. /addserverzivpn_reseller - Menambahkan server ZIVPN khusus reseller.
+7. /addressel - Menambahkan reseller baru.
+8. /delressel - Menghapus ID reseller.
+9. /broadcast - Mengirim pesan siaran ke semua pengguna.
+10. /broadcastreseller - Mengirim pesan siaran khusus reseller.
+11. /broadcastpoll - Mengirim polling ke semua pengguna.
+12. /editharga - Mengedit harga layanan.
+13. /edithargareseller - Mengedit harga reseller (legacy).
+14. /editauth - Mengedit auth server.
+15. /editdomain - Mengedit domain server.
+16. /editlimitcreate - Mengedit batas pembuatan akun server.
+17. /editlimitip - Mengedit batas IP server.
+18. /editlimitquota - Mengedit batas quota server.
+19. /editnama - Mengedit nama server.
+20. /edittotalcreate - Mengedit total pembuatan akun server.
+21. /syncservernow - Sinkronisasi data akun dan bandwidth server.
+22. /setserverbw <id> <limit_tb> [estimasi_gb_per_user_hari] - Set limit bandwidth server via command.
+23. /checkpaymentconfig - Cek konfigurasi payment API.
+24. /allresellerstats - Ambil data statistik semua reseller.
+25. /resellerstats - Ambil data statistik reseller sendiri.
+26. /restartserver [target] - Restart app PM2 dari Telegram.
+27. /hapuslog - Menghapus log bot.
 
-Gunakan perintah ini dengan format yang benar untuk menghindari kesalahan.
+Gunakan perintah dengan format yang benar untuk menghindari kesalahan.
 `;
-  ctx.reply(helpMessage, { parse_mode: 'Markdown' });
+  ctx.reply(helpMessage);
 }
 
 bot.command('helpadmin', async (ctx) => {
@@ -3018,6 +3087,29 @@ async function broadcastMessageToAllUsers(message) {
       resolve({ ok, fail });
     });
   });
+}
+
+async function broadcastMessageToResellers(message) {
+  const resellerIds = listResellersSync()
+    .map((id) => Number(String(id || '').trim()))
+    .filter((id) => Number.isFinite(id) && id > 0);
+
+  if (resellerIds.length === 0) {
+    return { ok: 0, fail: 0, total: 0 };
+  }
+
+  let ok = 0;
+  let fail = 0;
+  for (const resellerId of resellerIds) {
+    try {
+      await bot.telegram.sendMessage(resellerId, message);
+      ok += 1;
+    } catch (err) {
+      fail += 1;
+      logger.warn(`Gagal kirim broadcast reseller ke ${resellerId}: ${err.message}`);
+    }
+  }
+  return { ok, fail, total: resellerIds.length };
 }
 
 function buildBroadcastPollText(question, options, counts, totalVotes, userChoiceIndex = -1) {
@@ -3279,6 +3371,38 @@ bot.command('broadcast', async (ctx) => {
 
       ctx.reply('✅ Pesan siaran berhasil dikirim.', { parse_mode: 'Markdown' });
   });
+});
+
+bot.command('broadcastreseller', async (ctx) => {
+  const userId = Number(ctx.message?.from?.id || 0);
+  if (!adminIds.includes(userId)) {
+    return ctx.reply('⚠️ Anda tidak memiliki izin untuk menggunakan perintah ini.', { parse_mode: 'Markdown' });
+  }
+
+  const rawText = ctx.message.text || '';
+  const message = ctx.message.reply_to_message
+    ? (ctx.message.reply_to_message.text || ctx.message.reply_to_message.caption || '')
+    : rawText.replace(/^\/broadcastreseller(?:@\w+)?\s*/i, '');
+
+  if (!message || !String(message).trim()) {
+    return ctx.reply(
+      '⚠️ Mohon berikan pesan untuk reseller.\n\n' +
+      'Contoh:\n`/broadcastreseller Halo reseller, ada update harga.`',
+      { parse_mode: 'Markdown' }
+    );
+  }
+
+  const result = await broadcastMessageToResellers(String(message).trim());
+  if (result.total === 0) {
+    return ctx.reply('ℹ️ Belum ada reseller terdaftar.');
+  }
+
+  return ctx.reply(
+    `✅ Broadcast reseller selesai.\n` +
+    `- Total reseller: ${result.total}\n` +
+    `- Berhasil: ${result.ok}\n` +
+    `- Gagal: ${result.fail}`
+  );
 });
 
 
@@ -3950,6 +4074,7 @@ async function sendAdminToolsMenu(ctx) {
     [{ text: 'Atur Auto Sync Server', callback_data: 'admin_sync_server_toggle_menu' }],
     [{ text: '🔔 Notif Create (Bot)', callback_data: 'notif_settings_menu' }],
     [{ text: '📶 Notif BW Server', callback_data: 'bw_notif_settings_menu' }],
+    [{ text: '💳 Setting Payment Gateway', callback_data: 'payment_gateway_settings_menu' }],
     [{ text: '📞 Kontak Admin', callback_data: 'admin_contact_settings_menu' }],
     [{ text: '🔙 Kembali', callback_data: 'admin_menu' }]
   ];
@@ -4556,6 +4681,73 @@ bot.action('bw_notif_set_interval', async (ctx) => {
   );
 });
 
+bot.action('payment_gateway_settings_menu', async (ctx) => {
+  await ctx.answerCbQuery();
+  const adminId = ctx.from.id;
+  if (!adminIds.includes(adminId)) {
+    return ctx.reply('🚫 Anda tidak memiliki izin untuk mengakses menu ini.');
+  }
+
+  reloadRuntimePaymentConfig();
+  const message =
+    '*💳 SETTING PAYMENT GATEWAY*\n\n' +
+    `Gateway URL: \`${PAYMENT_GATEWAY_BASE_URL || '-'}\`\n` +
+    `RajaServer API Key: \`${maskSecret(RAJASERVER_API_KEY)}\`\n` +
+    `QRIS String: \`${DATA_QRIS ? '✅ Tersimpan' : '❌ Belum diisi'}\`\n` +
+    `Merchant ID: \`${MERCHANT_ID || '-'}\`\n` +
+    `API Key (legacy): \`${maskSecret(API_KEY)}\`\n\n` +
+    'Pilih parameter yang ingin diubah.';
+
+  const keyboard = [
+    [{ text: 'Set Gateway URL/Domain', callback_data: 'payment_gateway_set_url' }],
+    [{ text: 'Set RajaServer API Key', callback_data: 'payment_gateway_set_raja_api_key' }],
+    [{ text: 'Set QRIS String', callback_data: 'payment_gateway_set_qris' }],
+    [{ text: 'Set Merchant ID', callback_data: 'payment_gateway_set_merchant_id' }],
+    [{ text: 'Set API Key (legacy)', callback_data: 'payment_gateway_set_api_key' }],
+    [{ text: 'Kembali', callback_data: 'admin_menu_tools' }]
+  ];
+
+  await ctx.editMessageText(message, {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: keyboard }
+  });
+});
+
+bot.action('payment_gateway_set_url', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('🚫 Anda tidak memiliki izin.');
+  userState[ctx.chat.id] = { step: 'payment_gateway_url_input' };
+  await ctx.reply('Kirim URL/domain payment gateway.\nContoh:\n`api.rajaserver.web.id/orderkuota/createpayment`\nKetik "batal" untuk membatalkan.', { parse_mode: 'Markdown' });
+});
+
+bot.action('payment_gateway_set_raja_api_key', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('🚫 Anda tidak memiliki izin.');
+  userState[ctx.chat.id] = { step: 'payment_gateway_raja_api_key_input' };
+  await ctx.reply('Kirim RajaServer API Key baru.\nKetik "batal" untuk membatalkan.');
+});
+
+bot.action('payment_gateway_set_qris', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('🚫 Anda tidak memiliki izin.');
+  userState[ctx.chat.id] = { step: 'payment_gateway_qris_input' };
+  await ctx.reply('Kirim DATA_QRIS string baru.\nKetik "batal" untuk membatalkan.');
+});
+
+bot.action('payment_gateway_set_merchant_id', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('🚫 Anda tidak memiliki izin.');
+  userState[ctx.chat.id] = { step: 'payment_gateway_merchant_id_input' };
+  await ctx.reply('Kirim Merchant ID baru.\nKetik "batal" untuk membatalkan.');
+});
+
+bot.action('payment_gateway_set_api_key', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('🚫 Anda tidak memiliki izin.');
+  userState[ctx.chat.id] = { step: 'payment_gateway_api_key_input' };
+  await ctx.reply('Kirim API Key legacy baru.\nKetik "batal" untuk membatalkan.');
+});
+
 bot.action('restore_db_menu', async (ctx) => {
   await ctx.answerCbQuery();
   const adminId = ctx.from.id;
@@ -4896,11 +5088,13 @@ bot.action('reseller_terms_menu', async (ctx) => {
     const terms = loadResellerTerms();
     const message =
       '*SYARAT RESELLER*\n\n' +
+      `Minimal top up jadi reseller: ${formatRupiah(terms.join_topup_min)}\n` +
       `Minimal top up per bulan: ${formatRupiah(terms.min_topup)}\n\n` +
       'Gunakan tombol di bawah untuk mengubah syarat.';
 
     const keyboard = [
-      [{ text: 'Set Syarat', callback_data: 'reseller_terms_set' }],
+      [{ text: 'Set Minimal TopUp Jadi Reseller', callback_data: 'reseller_terms_set_join' }],
+      [{ text: 'Set Minimal TopUp Bulanan', callback_data: 'reseller_terms_set' }],
       [{ text: 'Kembali', callback_data: 'admin_menu' }]
     ];
 
@@ -4928,6 +5122,21 @@ bot.action('reseller_terms_set', async (ctx) => {
   await ctx.reply(
     'Kirim format: <min_topup>\n' +
     'Contoh: 30000\n' +
+    'Ketik \"batal\" untuk membatalkan.'
+  );
+});
+
+bot.action('reseller_terms_set_join', async (ctx) => {
+  await ctx.answerCbQuery();
+  const adminId = ctx.from.id;
+  if (!adminIds.includes(adminId)) {
+    return ctx.reply('Anda tidak memiliki izin untuk mengubah syarat.');
+  }
+
+  userState[ctx.chat.id] = { step: 'reseller_join_topup_input' };
+  await ctx.reply(
+    'Kirim format: <minimal_topup_jadi_reseller>\n' +
+    'Contoh: 18000\n' +
     'Ketik \"batal\" untuk membatalkan.'
   );
 });
@@ -5139,7 +5348,12 @@ if (isDefaultCredential) {
     if (!global.depositState) {
       global.depositState = {};
     }
-    global.depositState[userId] = { action: 'request_amount', amount: '' };
+    global.depositState[userId] = {
+      action: 'request_amount',
+      amount: '',
+      topupPurpose: 'regular',
+      minAmount: 2000
+    };
     
     const keyboard = keyboard_nomor();
     
@@ -5601,7 +5815,7 @@ bot.action(/delete_my_account_pick_(\d+)/, async (ctx) => {
 
       const remainingDays = calcRemainingDays(row.expires_at);
       const accountAgeMs = Date.now() - Number(row.created_at || 0);
-      const lockDelete24h = !Number.isFinite(accountAgeMs) || accountAgeMs < (24 * 60 * 60 * 1000);
+      const lockDelete24h = !isReseller && (!Number.isFinite(accountAgeMs) || accountAgeMs < (24 * 60 * 60 * 1000));
       const refund = Math.max(0, remainingDays * getEffectiveServerPrice(row, isReseller));
       const serverLabel = row.server_name || row.domain || '-';
 
@@ -5675,7 +5889,7 @@ bot.action(/delete_my_account_confirm_(\d+)/, async (ctx) => {
       return ctx.reply('Akun belum bisa dihapus. Minimal sisa masa aktif 2 hari.');
     }
     const accountAgeMs = Date.now() - Number(row.created_at || 0);
-    if (!Number.isFinite(accountAgeMs) || accountAgeMs < (24 * 60 * 60 * 1000)) {
+    if (!isReseller && (!Number.isFinite(accountAgeMs) || accountAgeMs < (24 * 60 * 60 * 1000))) {
       return ctx.reply('Akun belum bisa dihapus. Akun harus aktif minimal 24 jam.');
     }
     const refund = Math.max(0, remainingDays * getEffectiveServerPrice(row, isReseller));
@@ -5761,7 +5975,7 @@ async function sendAccountList(ctx, isExpired, limit = 10) {
         .replace(/'/g, '&#039;');
     };
 
-    const items = rows.map((row, idx) => {
+    const blocks = rows.map((row, idx) => {
       const expText = row.expires_at ? formatDateId(new Date(row.expires_at)) : '-';
       const linkLines = [];
       if (row.link_tls) linkLines.push(`- <b>Link TLS</b>: <code>${escapeHtmlLocal(row.link_tls)}</code>`);
@@ -5784,9 +5998,25 @@ async function sendAccountList(ctx, isExpired, limit = 10) {
         `- <b>Expired:</b> ${escapeHtmlLocal(expText)}` +
         (linkLines.length ? `\n${linkLines.join('\n')}` : '')
       );
-    }).join('\n\n');
+    });
 
-    await ctx.reply(`<b>${isExpired ? 'Akun Expired' : 'Akun Aktif'}</b>\n\n${items}`, { parse_mode: 'HTML' });
+    const title = `<b>${isExpired ? 'Akun Expired' : 'Akun Aktif'}</b>`;
+    const maxLen = 3800;
+    let chunk = `${title}\n\n`;
+
+    for (const block of blocks) {
+      const next = chunk.length > title.length + 2 ? `${chunk}\n\n${block}` : `${chunk}${block}`;
+      if (next.length > maxLen) {
+        await ctx.reply(chunk, { parse_mode: 'HTML' });
+        chunk = `${title}\n\n${block}`;
+      } else {
+        chunk = next;
+      }
+    }
+
+    if (chunk.trim()) {
+      await ctx.reply(chunk, { parse_mode: 'HTML' });
+    }
   });
 }
 
@@ -5861,7 +6091,7 @@ bot.action('topup_history', async (ctx) => {
         return ctx.reply('📭 Belum ada riwayat topup.');
       }
 
-      const items = rows.map((row, idx) => {
+      const blocks = rows.map((row, idx) => {
         const dateText = row.timestamp ? new Date(row.timestamp).toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' }) : '-';
         const label = row.type === 'deposit_bonus' ? 'Bonus' : 'TopUp';
         return (
@@ -5870,9 +6100,26 @@ bot.action('topup_history', async (ctx) => {
           `• <b>Nominal:</b> ${escapeHtmlLocal(formatRupiah(row.amount))}\n` +
           `• <b>Waktu:</b> ${escapeHtmlLocal(dateText)}`
         );
-      }).join('\n\n');
+      });
 
-      return ctx.reply(`💳 <b>Riwayat TopUp (10 terakhir)</b>\n\n${items}`, { parse_mode: 'HTML' });
+      const title = '💳 <b>Riwayat TopUp (10 terakhir)</b>';
+      const maxLen = 3800;
+      let chunk = `${title}\n\n`;
+
+      for (const block of blocks) {
+        const next = chunk.length > title.length + 2 ? `${chunk}\n\n${block}` : `${chunk}${block}`;
+        if (next.length > maxLen) {
+          await ctx.reply(chunk, { parse_mode: 'HTML' });
+          chunk = `${title}\n\n${block}`;
+        } else {
+          chunk = next;
+        }
+      }
+
+      if (chunk.trim()) {
+        await ctx.reply(chunk, { parse_mode: 'HTML' });
+      }
+      return;
     }
   );
 });
@@ -6528,7 +6775,6 @@ bot.action('jadi_reseller', async (ctx) => {
   const userId = ctx.from.id;
   const terms = loadResellerTerms();
   const waUrl = getAdminWhatsappUrl();
-  const telegramAdmin = getAdminTelegramUsername();
   const username = ctx.from.username ? '@' + ctx.from.username : '-';
   const fullName = (ctx.from.first_name || '') + (ctx.from.last_name ? ' ' + ctx.from.last_name : '');
 
@@ -6537,7 +6783,7 @@ bot.action('jadi_reseller', async (ctx) => {
     'ID Telegram: ' + userId + '\n' +
     'Username: ' + username + '\n' +
     'Nama: ' + (fullName || '-') + '\n' +
-    'Siap top up awal: Rp 18.000\n\n' +
+    'Siap top up awal: ' + formatRupiah(terms.join_topup_min) + '\n\n' +
     'Mohon info langkah lanjutnya.'
   );
 
@@ -6552,26 +6798,63 @@ bot.action('jadi_reseller', async (ctx) => {
     '- Dukungan langsung dari admin\n' +
     '- Akses promo dan bonus reseller\n\n' +
     '*Syarat Bergabung:*\n' +
-    '> Top up awal: *Rp 18.000* (langsung masuk saldo)\n' +
+    '> Top up jadi reseller: *' + formatRupiah(terms.join_topup_min) + '* (langsung masuk saldo)\n' +
     '> Minimal top up bulanan: *' + formatRupiah(terms.min_topup) + '*\n\n' +
+    '*Jika Tidak Memenuhi Minimal Top Up Bulanan:*\n' +
+    '- Status reseller akan otomatis dinonaktifkan di akhir periode bulanan\n' +
+    '- Harga reseller tidak berlaku sampai status reseller diaktifkan kembali\n\n' +
     '*Data Anda:*\n' +
     '- ID: ' + userId + '\n' +
     '- Username: ' + username + '\n\n' +
     (waUrl
-      ? 'Klik tombol di bawah untuk kirim format pendaftaran otomatis ke admin via WhatsApp.'
-      : 'Nomor WhatsApp admin belum diset. Silakan hubungi admin via Telegram: ' + telegramAdmin + '.');
+      ? 'Klik tombol di bawah untuk topup jadi reseller (manual) via WhatsApp admin.'
+      : 'Nomor WhatsApp admin belum diset. Silakan hubungi admin untuk aktivasi kontak.');
 
   const inlineKeyboard = [];
+  inlineKeyboard.push([{ text: 'Topup Jadi Reseller', callback_data: 'reseller_join_topup' }]);
   if (waAutoUrl) {
-    inlineKeyboard.push([{ text: 'Daftar Reseller (Otomatis)', url: waAutoUrl }]);
-    inlineKeyboard.push([{ text: 'Chat WhatsApp Admin', url: waUrl }]);
+    inlineKeyboard.push([{ text: 'Topup jadi reseller manual', url: waAutoUrl }]);
   }
-  inlineKeyboard.push([{ text: 'Kontak Telegram Admin', url: 'https://t.me/' + telegramAdmin.replace(/^@/, '') }]);
 
   await ctx.reply(message, {
     parse_mode: 'Markdown',
     reply_markup: { inline_keyboard: inlineKeyboard }
   });
+});
+
+bot.action('reseller_join_topup', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+
+  const alreadyReseller = await isUserReseller(ctx.from.id).catch(() => false);
+  if (alreadyReseller) {
+    return ctx.reply('Status Anda sudah reseller.');
+  }
+
+  if (!loadTopupAutoSetting()) {
+    return ctx.reply('Topup otomatis sedang nonaktif. Silakan hubungi admin.');
+  }
+
+  const terms = loadResellerTerms();
+  const minJoinTopup = Math.max(2000, Number(terms.join_topup_min) || 18000);
+  const userId = ctx.from.id;
+  if (!global.depositState) global.depositState = {};
+  global.depositState[userId] = {
+    action: 'request_amount',
+    amount: '',
+    topupPurpose: 'reseller_join',
+    minAmount: minJoinTopup
+  };
+
+  return ctx.reply(
+    'Topup Jadi Reseller\n\n' +
+      `Minimal topup: ${formatRupiah(minJoinTopup)}\n` +
+      'Nominal topup harus sama atau lebih besar dari minimal tersebut.\n\n' +
+      'Silakan masukkan jumlah topup:',
+    {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: keyboard_nomor() }
+    }
+  );
 });
 
 ///////
@@ -6988,7 +7271,7 @@ try {
   const whereClause = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
   const query = `SELECT * FROM Server ${whereClause} ORDER BY nama_server COLLATE NOCASE ASC`;
 
-db.all(query, params, (err, servers) => {
+db.all(query, params, async (err, servers) => {
   if (err) {
     logger.error('⚠️ Error fetching servers:', err.message);
     return ctx.reply('⚠️ Tidak ada server yang tersedia saat ini.', { parse_mode: 'HTML' });
@@ -7025,7 +7308,7 @@ db.all(query, params, (err, servers) => {
     if (navButtons.length > 0) keyboard.push(navButtons);
     keyboard.push([{ text: '🔙 Kembali ke Menu Utama', callback_data: 'sendMainMenu' }]);
 
-const serverList = currentServers.map(server => {
+const serverBlocks = currentServers.map(server => {
   const hargaPerHari1 = getEffectiveServerPackagePrice(server, isR, 1);
   const hargaPerHari2 = getEffectiveServerPackagePrice(server, isR, 2);
   const hargaPer30Hari1 = hargaPerHari1 * 30;
@@ -7060,17 +7343,38 @@ const serverList = currentServers.map(server => {
 👥 *Akun Terpakai:* ${server.total_create_akun}/${akunLimitText}
 📌 *Status:* ${isFullByManualLimit ? "❌ Server Penuh" : "✅ Tersedia"}`
   );
-}).join('\n\n');
+});
+    const title = `📋 *List Server (Halaman ${currentPage + 1} dari ${totalPages})*`;
+    const maxLen = 3800;
+    const chunks = [];
+    let chunk = `${title}\n\n`;
+    for (const block of serverBlocks) {
+      const next = chunk.length > title.length + 2 ? `${chunk}\n\n${block}` : `${chunk}${block}`;
+      if (next.length > maxLen) {
+        chunks.push(chunk);
+        chunk = `${title}\n\n${block}`;
+      } else {
+        chunk = next;
+      }
+    }
+    if (chunk.trim()) chunks.push(chunk);
+
     if (ctx.updateType === 'callback_query') {
-      ctx.editMessageText(`📋 *List Server (Halaman ${currentPage + 1} dari ${totalPages})*\n\n${serverList}`, {
+      await ctx.editMessageText(chunks[0], {
         reply_markup: { inline_keyboard: keyboard },
         parse_mode: 'Markdown'
       });
     } else {
-      ctx.reply(`📋 *List Server (Halaman ${currentPage + 1} dari ${totalPages})*\n\n${serverList}`, {
+      await ctx.reply(chunks[0], {
         reply_markup: { inline_keyboard: keyboard },
         parse_mode: 'Markdown'
       });
+    }
+
+    if (chunks.length > 1) {
+      for (let i = 1; i < chunks.length; i += 1) {
+        await ctx.reply(chunks[i], { parse_mode: 'Markdown' });
+      }
     }
 
     userState[ctx.chat.id] = { step: `${action}_username_${type}`, page: currentPage };
@@ -7562,6 +7866,87 @@ if (!state || !state.step) return;
     return sendAdminToolsMenu(ctx);
   }
 
+  if (state.step === 'payment_gateway_url_input') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan payment gateway dibatalkan.');
+    }
+    const normalized = normalizeHttpUrl(text);
+    if (!normalized) {
+      return ctx.reply('URL/domain tidak valid. Contoh: `api.rajaserver.web.id/orderkuota/createpayment`', { parse_mode: 'Markdown' });
+    }
+    const nextVars = loadVars();
+    nextVars.PAYMENT_GATEWAY_BASE_URL = normalized;
+    saveVars(nextVars);
+    reloadRuntimePaymentConfig();
+    delete userState[ctx.chat.id];
+    await ctx.reply(`✅ Gateway URL disimpan:\n\`${PAYMENT_GATEWAY_BASE_URL}\``, { parse_mode: 'Markdown' });
+    return sendAdminToolsMenu(ctx);
+  }
+
+  if (state.step === 'payment_gateway_raja_api_key_input') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan payment gateway dibatalkan.');
+    }
+    if (text.length < 8) return ctx.reply('API key terlalu pendek.');
+    const nextVars = loadVars();
+    nextVars.RAJASERVER_API_KEY = text;
+    saveVars(nextVars);
+    reloadRuntimePaymentConfig();
+    delete userState[ctx.chat.id];
+    await ctx.reply('✅ RajaServer API Key berhasil disimpan.');
+    return sendAdminToolsMenu(ctx);
+  }
+
+  if (state.step === 'payment_gateway_qris_input') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan payment gateway dibatalkan.');
+    }
+    if (text.length < 8) return ctx.reply('DATA_QRIS terlalu pendek.');
+    const nextVars = loadVars();
+    nextVars.DATA_QRIS = text;
+    saveVars(nextVars);
+    reloadRuntimePaymentConfig();
+    delete userState[ctx.chat.id];
+    await ctx.reply('✅ DATA_QRIS berhasil disimpan.');
+    return sendAdminToolsMenu(ctx);
+  }
+
+  if (state.step === 'payment_gateway_merchant_id_input') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan payment gateway dibatalkan.');
+    }
+    const nextVars = loadVars();
+    nextVars.MERCHANT_ID = text;
+    saveVars(nextVars);
+    reloadRuntimePaymentConfig();
+    delete userState[ctx.chat.id];
+    await ctx.reply('✅ Merchant ID berhasil disimpan.');
+    return sendAdminToolsMenu(ctx);
+  }
+
+  if (state.step === 'payment_gateway_api_key_input') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan payment gateway dibatalkan.');
+    }
+    const nextVars = loadVars();
+    nextVars.API_KEY = text;
+    saveVars(nextVars);
+    reloadRuntimePaymentConfig();
+    delete userState[ctx.chat.id];
+    await ctx.reply('✅ API Key legacy berhasil disimpan.');
+    return sendAdminToolsMenu(ctx);
+  }
+
 
   if (state.step === 'delete_all_input_host') {
     const text = ctx.message.text.trim();
@@ -7892,7 +8277,12 @@ if (!state || !state.step) return;
       return ctx.reply('Nilai tidak boleh negatif.');
     }
 
-    const saved = saveResellerTerms({ min_accounts: 0, min_topup: minTopup });
+    const current = loadResellerTerms();
+    const saved = saveResellerTerms({
+      min_accounts: current.min_accounts,
+      min_topup: minTopup,
+      join_topup_min: current.join_topup_min
+    });
     delete userState[ctx.chat.id];
     await ctx.reply(
       'Syarat reseller berhasil diperbarui:\n' +
@@ -7911,6 +8301,36 @@ if (!state || !state.step) return;
     } catch (e) {
       logger.error('Gagal kirim notifikasi perubahan syarat reseller:', e.message);
     }
+    return sendAdminMenu(ctx);
+  }
+
+  if (state.step === 'reseller_join_topup_input') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan minimal topup jadi reseller dibatalkan.');
+    }
+
+    if (!/^\d+$/.test(text)) {
+      return ctx.reply('Format salah. Contoh: 18000');
+    }
+
+    const minJoinTopup = parseInt(text, 10);
+    if (minJoinTopup < 0) {
+      return ctx.reply('Nilai tidak boleh negatif.');
+    }
+
+    const current = loadResellerTerms();
+    const saved = saveResellerTerms({
+      min_accounts: current.min_accounts,
+      min_topup: current.min_topup,
+      join_topup_min: minJoinTopup
+    });
+    delete userState[ctx.chat.id];
+    await ctx.reply(
+      'Minimal topup jadi reseller berhasil diperbarui:\n' +
+      `Topup jadi reseller: ${formatRupiah(saved.join_topup_min)}`
+    );
     return sendAdminMenu(ctx);
   }
 
@@ -9165,12 +9585,27 @@ db.run('UPDATE users SET saldo = saldo + ? WHERE user_id = ?', [amount, targetId
   }
 
   // Ambil saldo terbaru
-  db.get('SELECT saldo FROM users WHERE user_id = ?', [targetId], (err2, updated) => {
+  db.get('SELECT saldo FROM users WHERE user_id = ?', [targetId], async (err2, updated) => {
     if (err2 || !updated) {
-      ctx.reply(`✅ Saldo sebesar Rp${amount} berhasil ditambahkan ke user ${targetId}.`);
+      await ctx.reply(`✅ Saldo sebesar Rp${amount} berhasil ditambahkan ke user ${targetId}.`);
+      await bot.telegram.sendMessage(
+        targetId,
+        `✅ Saldo Anda berhasil ditambahkan admin.\n` +
+        `💰 Nominal: Rp${amount.toLocaleString('id-ID')}`
+      ).catch((notifyErr) => {
+        logger.error(`Gagal kirim notifikasi tambah saldo ke ${targetId}: ${notifyErr.message}`);
+      });
       logger.info(`Admin ${ctx.from.id} menambah saldo Rp${amount} ke user ${targetId}.`);
     } else {
-      ctx.reply(`✅ Saldo sebesar Rp${amount} berhasil ditambahkan ke user ${targetId}.\n💳 Saldo sekarang: Rp${updated.saldo}`);
+      await ctx.reply(`✅ Saldo sebesar Rp${amount} berhasil ditambahkan ke user ${targetId}.\n💳 Saldo sekarang: Rp${updated.saldo}`);
+      await bot.telegram.sendMessage(
+        targetId,
+        `✅ Saldo Anda berhasil ditambahkan admin.\n` +
+        `💰 Nominal: Rp${amount.toLocaleString('id-ID')}\n` +
+        `🏦 Saldo sekarang: Rp${updated.saldo.toLocaleString('id-ID')}`
+      ).catch((notifyErr) => {
+        logger.error(`Gagal kirim notifikasi tambah saldo ke ${targetId}: ${notifyErr.message}`);
+      });
       logger.info(`Admin ${ctx.from.id} menambah saldo Rp${amount} ke user ${targetId} (Saldo akhir: Rp${updated.saldo}).`);
     }
   });
@@ -10204,7 +10639,7 @@ bot.on('callback_query', async (ctx) => {
       
       if (global.depositState && global.depositState[userId]) {
         const amount = global.depositState[userId].amount;
-        await processDeposit(ctx, amount);
+        await processDeposit(ctx, amount, global.depositState[userId]);
       } else {
         await ctx.reply('❌ Sesi top-up sudah expired. Silakan mulai lagi.');
       }
@@ -10223,7 +10658,7 @@ bot.on('callback_query', async (ctx) => {
       case 'confirm_final_topup':
         if (global.depositState && global.depositState[userId]) {
           const amount = global.depositState[userId].amount;
-          await processDeposit(ctx, amount);
+          await processDeposit(ctx, amount, global.depositState[userId]);
         }
         break;
         
@@ -10271,25 +10706,23 @@ bot.on('callback_query', async (ctx) => {
 
 
 async function handleDepositState(ctx, userId, data) {
-  let currentAmount = global.depositState[userId].amount;
+  const state = global.depositState[userId] || {};
+  let currentAmount = String(state.amount || '');
+  const minAmount = Number(state.minAmount) > 0 ? Number(state.minAmount) : 2000;
+  const topupPurpose = String(state.topupPurpose || 'regular');
 
   if (data === 'delete') {
     currentAmount = currentAmount.slice(0, -1);
   } else if (data === 'confirm') {
     if (currentAmount.length === 0) {
-      return await ctx.answerCbQuery('⚠️ Jumlah tidak boleh kosong!', { show_alert: true });
+      return ctx.answerCbQuery('Jumlah tidak boleh kosong!', { show_alert: true });
     }
-    
-    const amountNum = parseInt(currentAmount);
-    
-    if (amountNum < 2000) {
-      return await ctx.answerCbQuery('⚠️ Jumlah minimal adalah 2.000!', { show_alert: true });
+
+    const amountNum = parseInt(currentAmount, 10);
+    if (!Number.isFinite(amountNum) || amountNum < minAmount) {
+      return ctx.answerCbQuery(`Jumlah minimal Rp ${minAmount.toLocaleString('id-ID')}!`, { show_alert: true });
     }
-    
-    // Hitung admin fee FIXED
-    const adminFee = amountNum < 5000 ? 200 : 150;
-    const totalAmount = amountNum + adminFee;
-    
+
     const bonusCfg = loadTopupBonusSetting();
     let bonusInfo = '';
     if (bonusCfg.enabled && amountNum >= 10000) {
@@ -10297,67 +10730,56 @@ async function handleDepositState(ctx, userId, data) {
       if (amountNum <= 49000) bonusPercent = bonusCfg.range_10_40;
       else if (amountNum <= 79000) bonusPercent = bonusCfg.range_50_70;
       else bonusPercent = bonusCfg.range_70_100;
-      bonusInfo = `\n🎁 *Bonus:* ${bonusPercent}% (akan ditambah ke saldo jika pembayaran sukses)\n`;
+      bonusInfo = `\nBonus: ${bonusPercent}% (ditambah ke saldo jika pembayaran sukses)\n`;
     }
 
-    // TAMPILAN BARU YANG PROFESIONAL
-    const confirmMessage = 
-`💳 *KONFIRMASI TOP-UP*
+    const confirmTitle = topupPurpose === 'reseller_join'
+      ? 'KONFIRMASI TOPUP JADI RESELLER'
+      : 'KONFIRMASI TOPUP';
 
-┏━━━━━━━━━━━━━━━━━━━┓
-📋 PERKIRAAN BIAYA
-┗━━━━━━━━━━━━━━━━━━━┛
+    const confirmMessage =
+`*${confirmTitle}*
 
-💰 *Nominal Top-up:* Rp ${amountNum.toLocaleString('id-ID')}
-${bonusInfo}💸 *Biaya Admin:* Rp 100 - Rp 200 (random)
-🎯 *Perkiraan Total:* Rp ${(amountNum + 100).toLocaleString('id-ID')} - Rp ${(amountNum + 200).toLocaleString('id-ID')}
+Nominal Topup: Rp ${amountNum.toLocaleString('id-ID')}
+${bonusInfo}Biaya Admin: Rp 100 - Rp 200 (random)
+Perkiraan Total: Rp ${(amountNum + 100).toLocaleString('id-ID')} - Rp ${(amountNum + 200).toLocaleString('id-ID')}
 
-┏━━━━━━━━━━━━━━━━━━━┓
-🎲 SISTEM KEAMANAN
-┗━━━━━━━━━━━━━━━━━━━┛
+Penting:
+- Total final ada di QRIS
+- Transfer harus sesuai nominal QRIS
+- Verifikasi otomatis 1-2 menit
 
-• Admin fee RANDOM 100-200
-• Setiap transaksi unik
-• Mencegah duplikasi pembayaran
-
-┏━━━━━━━━━━━━━━━━━━━┓
-⚠️ PENTING
-┗━━━━━━━━━━━━━━━━━━━┛
-
-• Total final akan ada di QRIS
-• Transfer HARUS sesuai nominal di QRIS
-• Sistem otomatis verifikasi
-
-_Lanjutkan untuk melihat QRIS dengan nominal final?_`;
+Lanjutkan untuk melihat QRIS?`;
 
     await ctx.editMessageText(confirmMessage, {
       parse_mode: 'Markdown',
       reply_markup: {
         inline_keyboard: [
-          [{ text: '✅ LANJUT BAYAR', callback_data: 'confirm_final' }],
-          [{ text: '❌ BATAL', callback_data: 'send_main_menu' }]
+          [{ text: 'Lanjut Bayar', callback_data: 'confirm_final' }],
+          [{ text: 'Batal', callback_data: 'send_main_menu' }]
         ]
       }
     });
-    
+
     global.depositState[userId].amount = currentAmount;
     global.depositState[userId].action = 'confirm_final';
-    return await ctx.answerCbQuery();
-    
+    return ctx.answerCbQuery();
   } else {
-    if (currentAmount.length < 12) {
-      currentAmount += data;
-    } else {
-      return await ctx.answerCbQuery('⚠️ Jumlah maksimal adalah 12 digit!', { show_alert: true });
+    if (currentAmount.length >= 12) {
+      return ctx.answerCbQuery('Jumlah maksimal 12 digit!', { show_alert: true });
     }
+    currentAmount += data;
   }
 
   global.depositState[userId].amount = currentAmount;
-  const newMessage = `💰 *Masukkan jumlah saldo yang ingin ditambahkan:*\n\nJumlah: *Rp ${currentAmount || '0'}*`;
-  
+  const title = topupPurpose === 'reseller_join'
+    ? `Masukkan nominal topup jadi reseller (minimal Rp ${minAmount.toLocaleString('id-ID')})`
+    : 'Masukkan jumlah saldo yang ingin ditambahkan';
+  const message = `*${title}*\n\nJumlah: *Rp ${currentAmount || '0'}*`;
+
   try {
-    if (newMessage !== ctx.callbackQuery.message.text) {
-      await ctx.editMessageText(newMessage, {
+    if (message !== ctx.callbackQuery.message.text) {
+      await ctx.editMessageText(message, {
         reply_markup: { inline_keyboard: keyboard_nomor() },
         parse_mode: 'Markdown'
       });
@@ -10369,7 +10791,6 @@ _Lanjutkan untuk melihat QRIS dengan nominal final?_`;
     logger.error('Error editing message:', error.message);
   }
 }
-
 async function handleAddSaldo(ctx, userStateData, data) {
   let currentSaldo = userStateData.saldo || '';
 
@@ -10574,6 +10995,7 @@ db.all('SELECT * FROM pending_deposits WHERE status = "pending"', [], (err, rows
       userId: row.user_id,
       timestamp: row.timestamp,
       status: row.status || 'pending',
+      topupPurpose: 'regular',
       qrMessageId: row.qr_message_id,
       createdAt,
       expiresAt: createdAt + (5 * 60 * 1000)
@@ -10595,7 +11017,7 @@ function generateRandomNumber(min, max) {
 }
 
 // Ganti fungsi processDeposit dengan versi yang lebih sederhana
-async function processDeposit(ctx, amount) {
+async function processDeposit(ctx, amount, options = {}) {
   const currentTime = Date.now();
   
   if (currentTime - lastRequestTime < requestInterval) {
@@ -10624,10 +11046,12 @@ async function processDeposit(ctx, amount) {
   }
 
   const amountNum = Number(amount);
-  
-  if (amountNum < 2000) {
+  const minAmount = Number(options?.minAmount) > 0 ? Number(options.minAmount) : 2000;
+  const topupPurpose = String(options?.topupPurpose || 'regular');
+
+  if (amountNum < minAmount) {
     await ctx.editMessageText(
-      '❌ *Minimal top-up Rp 2.000!*\n\nSilakan masukkan nominal yang valid.',
+      `❌ *Minimal top-up Rp ${minAmount.toLocaleString('id-ID')}!*\n\nSilakan masukkan nominal yang valid.`,
       { 
         parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: [[{ text: '🔄 Coba Lagi', callback_data: 'topup_saldo' }]] }
@@ -10654,10 +11078,14 @@ async function processDeposit(ctx, amount) {
     if (!RAJASERVER_API_KEY) {
       throw new Error('RAJASERVER_API_KEY belum diisi di .vars.json');
     }
-    const bayar = await axios.get(
-      `https://api.rajaserverpremium.web.id/orderkuota/createpayment?apikey=${encodeURIComponent(RAJASERVER_API_KEY)}&amount=${finalAmount}&codeqr=${urlQr}&reference=${referenceId}`,
-      { timeout: 15000 }
-    );
+    const gatewayBase = normalizeHttpUrl(PAYMENT_GATEWAY_BASE_URL) || 'https://api.rajaserver.web.id/orderkuota/createpayment';
+    const gatewayUrl = `${gatewayBase}?${new URLSearchParams({
+      apikey: String(RAJASERVER_API_KEY || ''),
+      amount: String(finalAmount),
+      codeqr: String(urlQr || ''),
+      reference: String(referenceId || '')
+    }).toString()}`;
+    const bayar = await axios.get(gatewayUrl, { timeout: 15000 });
     
     if (bayar.data.status !== 'success') {
       throw new Error('QRIS failed: ' + JSON.stringify(bayar.data));
@@ -10673,6 +11101,10 @@ async function processDeposit(ctx, amount) {
     const qrBuffer = Buffer.from(qrResponse.data);
 
     // KIRIM KE USER DENGAN INSTRUKSI SIMPLE
+    const purposeLine = topupPurpose === 'reseller_join'
+      ? '\nTujuan: Aktivasi reseller otomatis setelah pembayaran sukses'
+      : '';
+
     const caption = 
 `💳 *INSTRUKSI PEMBAYARAN*
 
@@ -10692,7 +11124,7 @@ async function processDeposit(ctx, amount) {
 • Saldo otomatis bertambah setelah terdeteksi
 
 🆔 *Referensi:* \`${referenceId}\`
-👤 *User ID:* \`${userId}\``;
+👤 *User ID:* \`${userId}\`${purposeLine}`;
     
     const qrMessage = await ctx.replyWithPhoto({ source: qrBuffer }, { caption: caption, parse_mode: 'Markdown' });
 
@@ -10708,6 +11140,7 @@ async function processDeposit(ctx, amount) {
       timestamp: Date.now(),         // Waktu pembuatan QR
       referenceId: referenceId,
       status: 'pending',
+      topupPurpose: topupPurpose,
       qrMessageId: qrMessage.message_id,
       createdAt: Date.now(),         // Untuk expired check
       expiresAt: Date.now() + (5 * 60 * 1000) // 5 menit dari sekarang
@@ -10920,6 +11353,15 @@ async function processSuccessfulPayment(deposit, uniqueCode) {
         // 4. AMBIL SALDO TERBARU
         db.get('SELECT saldo FROM users WHERE user_id = ?', [deposit.userId], async (err, row) => {
           const currentBalance = row ? row.saldo : totalCredit;
+          const resellerTerms = loadResellerTerms();
+          const joinMinTopup = Math.max(0, Number(resellerTerms.join_topup_min) || 0);
+          const eligibleForReseller =
+            String(deposit.topupPurpose || '') === 'reseller_join' &&
+            Number(deposit.originalAmount || 0) >= joinMinTopup;
+          const alreadyReseller = await isUserReseller(deposit.userId).catch(() => false);
+          if (eligibleForReseller && !alreadyReseller) {
+            addReseller(deposit.userId);
+          }
           
           // 5. KIRIM NOTIFIKASI KE USER
           try {
@@ -10930,6 +11372,9 @@ async function processSuccessfulPayment(deposit, uniqueCode) {
               (bonusAmount > 0 ? `🎁 Bonus: Rp ${bonusAmount.toLocaleString('id-ID')}\n` : '') +
               `💵 Total bayar: Rp ${deposit.amount.toLocaleString('id-ID')}\n` +
               `🏦 Saldo sekarang: Rp ${currentBalance.toLocaleString('id-ID')}\n\n` +
+              (eligibleForReseller
+                ? '✅ Status reseller: aktif\n\n'
+                : '') +
               `🆔 Referensi: \`${deposit.referenceId}\`\n` +
               `⏰ ${new Date().toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta' })}`,
               { parse_mode: 'Markdown' }
@@ -11757,9 +12202,10 @@ const adminMessage =
   `[🎬 Video Tutorial](https://drive.google.com/file/d/1ugR_N5gEtcLx8TDsf7ecTFqYY3zrlHn-/view)\n\n` +
   `📝 *Langkah Perbaikan:*\n` +
   `1. Tonton video tutorial\n` +
-  `2. Edit file: \`api-cekpayment-orkut.js\`\n` +
-  `3. Ganti username & token\n` +
-  `4. Restart: \`pm2 restart app\`\n\n` +
+  `2. Buka menu admin: *Setting Payment Gateway*\n` +
+  `3. Isi Gateway URL, API Key, dan QRIS\n` +
+  `4. Update username & token jika perlu\n` +
+  `5. Restart: \`pm2 restart app\`\n\n` +
   `🔧 Cek status: /checkpaymentconfig\n\n` +
   `⚠️ Fitur top-up otomatis dinonaktifkan sementara.`;      
       if (Array.isArray(adminIds)) {
@@ -11843,4 +12289,6 @@ const adminMessage =
     cleanupOldBroadcastPolls();
   }, 10000);
 });
+
+
 
