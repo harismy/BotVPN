@@ -7339,7 +7339,6 @@ const serverBlocks = currentServers.map(server => {
 ╚══════════════════╝
 🛜 *Domain:* \`${server.domain}\`
 📡 *Quota:* ${server.quota} GB
-🔐 *IP Limit:* ${server.iplimit} IP
 👥 *Akun Terpakai:* ${server.total_create_akun}/${akunLimitText}
 📌 *Status:* ${isFullByManualLimit ? "❌ Server Penuh" : "✅ Tersedia"}`
   );
@@ -9341,18 +9340,8 @@ delete userState[ctx.chat.id];
       return;
     }
 
-    state.step = 'addserver_iplimit';
-    state.quota = quota;
-    await ctx.reply('🔢 *Silakan masukkan limit IP server:*', { parse_mode: 'Markdown' });
-  } else if (state.step === 'addserver_iplimit') {
-    const iplimit = parseInt(ctx.message.text.trim(), 10);
-    if (isNaN(iplimit)) {
-      await ctx.reply('⚠️ *Limit IP tidak valid.* Silakan masukkan limit IP server yang valid.', { parse_mode: 'Markdown' });
-      return;
-    }
-
     state.step = 'addserver_batas_create_akun';
-    state.iplimit = iplimit;
+    state.quota = quota;
     await ctx.reply('🔢 *Silakan masukkan batas create akun server:*', { parse_mode: 'Markdown' });
   } else if (state.step === 'addserver_batas_create_akun') {
     const batas_create_akun = parseInt(ctx.message.text.trim(), 10);
@@ -9361,28 +9350,8 @@ delete userState[ctx.chat.id];
       return;
     }
 
-    state.step = 'addserver_harga';
-    state.batas_create_akun = batas_create_akun;
-    await ctx.reply('💰 *Silakan masukkan harga server:*', { parse_mode: 'Markdown' });
-  } else if (state.step === 'addserver_harga') {
-    const harga = parseFloat(ctx.message.text.trim());
-    if (isNaN(harga) || harga <= 0) {
-      await ctx.reply('*Harga tidak valid.* Silakan masukkan harga server yang valid.', { parse_mode: 'Markdown' });
-      return;
-    }
-
-    state.harga = harga;
-    state.step = 'addserver_harga_reseller';
-    await ctx.reply('*Silakan masukkan harga reseller server:*', { parse_mode: 'Markdown' });
-  } else if (state.step === 'addserver_harga_reseller') {
-    const harga_reseller = parseFloat(ctx.message.text.trim());
-    if (isNaN(harga_reseller) || harga_reseller <= 0) {
-      await ctx.reply('*Harga reseller tidak valid.* Silakan masukkan harga reseller yang valid.', { parse_mode: 'Markdown' });
-      return;
-    }
-
-    state.harga_reseller = harga_reseller;
     state.step = 'addserver_harga_1ip';
+    state.batas_create_akun = batas_create_akun;
     await ctx.reply('💳 Masukkan harga *User Paket 1IP*:', { parse_mode: 'Markdown' });
   } else if (state.step === 'addserver_harga_1ip') {
     const harga_1ip = parseFloat(ctx.message.text.trim());
@@ -9420,19 +9389,20 @@ delete userState[ctx.chat.id];
 
     state.harga_reseller_2ip = harga_reseller_2ip;
 
-    const { domain, auth, nama_server, quota, iplimit, batas_create_akun } = state;
+    const { domain, auth, nama_server, quota, batas_create_akun } = state;
+    const iplimit = 0;
 
     try {
       const isResellerOnly = state.is_reseller_only ? 1 : 0;
       const supportZivpn = state.support_zivpn ? 1 : 0;
       const supportUdpHttp = state.support_udp_http ? 1 : 0;
 
-      const hargaUser1 = state.harga_1ip || state.harga || 0;
-      const hargaUser2 = state.harga_2ip || state.harga || 0;
-      const hargaRes1 = state.harga_reseller_1ip || state.harga_reseller || state.harga || 0;
-      const hargaRes2 = state.harga_reseller_2ip || state.harga_reseller || state.harga || 0;
-      const hargaDasar = state.harga || hargaUser1;
-      const hargaResellerDasar = state.harga_reseller || hargaRes1;
+      const hargaUser1 = state.harga_1ip || 0;
+      const hargaUser2 = state.harga_2ip || 0;
+      const hargaRes1 = state.harga_reseller_1ip || 0;
+      const hargaRes2 = state.harga_reseller_2ip || 0;
+      const hargaDasar = hargaUser1;
+      const hargaResellerDasar = hargaRes1;
 
       db.run(
         'INSERT INTO Server (domain, auth, nama_server, quota, iplimit, batas_create_akun, harga, harga_reseller, harga_1ip, harga_2ip, harga_reseller_1ip, harga_reseller_2ip, total_create_akun, is_reseller_only, support_zivpn, support_udp_http, service) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)',
@@ -9465,7 +9435,6 @@ delete userState[ctx.chat.id];
               `• Auth: \`${auth}\`\n` +
               `• Nama Server: ${nama_server}\n` +
               `• Quota: ${quota}\n` +
-              `• Limit IP: ${iplimit}\n` +
               `• Batas Create Akun: ${batas_create_akun}\n` +
               `• Harga User 1IP: Rp ${hargaUser1}\n` +
               `• Harga User 2IP: Rp ${hargaUser2}\n` +
