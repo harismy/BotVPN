@@ -1,6 +1,5 @@
 # BotVPN 1FORCR
 Bot Telegram untuk manajemen layanan VPN yang terintegrasi dengan API AutoScript Potato.
-Referensi awal dari [arivpnstores](https://github.com/arivpnstores), based BOT: Fightertunnel.
 
 ---
 
