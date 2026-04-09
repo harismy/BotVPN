@@ -1,4 +1,4 @@
-﻿const os = require('os');
+const os = require('os');
 const sqlite3 = require('sqlite3').verbose();
 const express = require('express');
 const { Telegraf } = require('telegraf');
@@ -117,6 +117,124 @@ function getDayRange(dayOffset = 0) {
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate() + dayOffset, 0, 0, 0, 0);
   const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + dayOffset + 1, 0, 0, 0, 0);
   return { start: start.getTime(), end: end.getTime() };
+}
+
+function getMonthRange(monthOffset = 0) {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1, 0, 0, 0, 0);
+  const end = new Date(now.getFullYear(), now.getMonth() + monthOffset + 1, 1, 0, 0, 0, 0);
+  return { start: start.getTime(), end: end.getTime(), labelDate: start };
+}
+
+function formatMonthLabel(dateObj) {
+  try {
+    return dateObj.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
+  } catch (_) {
+    return `${dateObj.getMonth() + 1}/${dateObj.getFullYear()}`;
+  }
+}
+
+function getTopupIncomeNonResellerByRange(startTs, endTs) {
+  const resellerIds = (listResellersSync() || [])
+    .map((id) => Number(id))
+    .filter((id) => Number.isFinite(id) && id > 0);
+
+  return new Promise((resolve, reject) => {
+    if (resellerIds.length === 0) {
+      db.get(
+        `SELECT COALESCE(SUM(amount), 0) as total
+         FROM transactions
+         WHERE timestamp >= ? AND timestamp < ?
+           AND type = 'deposit'`,
+        [startTs, endTs],
+        (err, row) => {
+          if (err) return reject(err);
+          resolve(Number(row?.total || 0));
+        }
+      );
+      return;
+    }
+
+    const placeholders = resellerIds.map(() => '?').join(',');
+    db.get(
+      `SELECT COALESCE(SUM(amount), 0) as total
+       FROM transactions
+       WHERE timestamp >= ? AND timestamp < ?
+         AND type = 'deposit'
+         AND user_id NOT IN (${placeholders})`,
+      [startTs, endTs, ...resellerIds],
+      (err, row) => {
+        if (err) return reject(err);
+        resolve(Number(row?.total || 0));
+      }
+    );
+  });
+}
+
+function getTopupIncomeResellerByRange(startTs, endTs) {
+  const resellerIds = (listResellersSync() || [])
+    .map((id) => Number(id))
+    .filter((id) => Number.isFinite(id) && id > 0);
+
+  return new Promise((resolve, reject) => {
+    if (resellerIds.length === 0) {
+      return resolve(0);
+    }
+
+    const placeholders = resellerIds.map(() => '?').join(',');
+    db.get(
+      `SELECT COALESCE(SUM(amount), 0) as total
+       FROM transactions
+       WHERE timestamp >= ? AND timestamp < ?
+         AND type = 'deposit'
+         AND user_id IN (${placeholders})`,
+      [startTs, endTs, ...resellerIds],
+      (err, row) => {
+        if (err) return reject(err);
+        resolve(Number(row?.total || 0));
+      }
+    );
+  });
+}
+
+function getUserRoleCounts() {
+  const resellerIds = (listResellersSync() || [])
+    .map((id) => Number(id))
+    .filter((id) => Number.isFinite(id) && id > 0);
+
+  return new Promise((resolve, reject) => {
+    db.get('SELECT COUNT(*) as total FROM users', [], (totalErr, totalRow) => {
+      if (totalErr) return reject(totalErr);
+      const totalUsers = Number(totalRow?.total || 0);
+
+      if (resellerIds.length === 0) {
+        return resolve({
+          totalUsers,
+          resellerUsers: 0,
+          nonResellerUsers: totalUsers,
+          resellerListCount: 0
+        });
+      }
+
+      const placeholders = resellerIds.map(() => '?').join(',');
+      db.get(
+        `SELECT COUNT(*) as total
+         FROM users
+         WHERE user_id IN (${placeholders})`,
+        resellerIds,
+        (resErr, resRow) => {
+          if (resErr) return reject(resErr);
+          const resellerUsers = Number(resRow?.total || 0);
+          resolve({
+            totalUsers,
+            resellerUsers,
+            nonResellerUsers: Math.max(0, totalUsers - resellerUsers),
+            resellerListCount: resellerIds.length
+          });
+        }
+      );
+    });
+  });
 }
 
 function getIncomeStatsByRange(startTs, endTs) {
@@ -343,6 +461,9 @@ let MERCHANT_ID = vars.MERCHANT_ID;
 let API_KEY = vars.API_KEY;
 let RAJASERVER_API_KEY = vars.RAJASERVER_API_KEY;
 let PAYMENT_GATEWAY_BASE_URL = String(vars.PAYMENT_GATEWAY_BASE_URL || 'https://api.rajaserver.web.id/orderkuota/createpayment').trim();
+let PAYMENT_GATEWAY_MODE = String(vars.PAYMENT_GATEWAY_MODE || 'orderkuota').trim().toLowerCase();
+let GOPAY_API_BASE_URL = String(vars.GOPAY_API_BASE_URL || 'https://api-gopay.sawargipay.cloud').trim();
+let GOPAY_API_KEY = String(vars.GOPAY_API_KEY || '').trim();
 const GROUP_ID = vars.GROUP_ID;
 const BW_NOTIF_GROUP_ID = vars.BW_NOTIF_GROUP_ID;
 let BW_REPORT_INTERVAL_MINUTES = Number(vars.BW_REPORT_INTERVAL_MINUTES || 180);
@@ -361,10 +482,34 @@ function reloadRuntimePaymentConfig() {
   MERCHANT_ID = current.MERCHANT_ID || '';
   API_KEY = current.API_KEY || '';
   RAJASERVER_API_KEY = current.RAJASERVER_API_KEY || '';
+  PAYMENT_GATEWAY_MODE = String(current.PAYMENT_GATEWAY_MODE || PAYMENT_GATEWAY_MODE || 'orderkuota').trim().toLowerCase();
+  if (!['orderkuota', 'gopay', 'both'].includes(PAYMENT_GATEWAY_MODE)) {
+    PAYMENT_GATEWAY_MODE = 'orderkuota';
+  }
   PAYMENT_GATEWAY_BASE_URL = normalizeHttpUrl(current.PAYMENT_GATEWAY_BASE_URL || PAYMENT_GATEWAY_BASE_URL)
     || 'https://api.rajaserver.web.id/orderkuota/createpayment';
+  GOPAY_API_BASE_URL = normalizeHttpUrl(current.GOPAY_API_BASE_URL || GOPAY_API_BASE_URL)
+    || 'https://api-gopay.sawargipay.cloud';
+  GOPAY_API_KEY = String(current.GOPAY_API_KEY || '').trim();
 }
 reloadRuntimePaymentConfig();
+
+function isGatewayEnabled(name) {
+  const mode = String(PAYMENT_GATEWAY_MODE || 'orderkuota').toLowerCase();
+  if (mode === 'both') return name === 'orderkuota' || name === 'gopay';
+  return mode === name;
+}
+
+function formatGatewayModeLabel() {
+  switch (String(PAYMENT_GATEWAY_MODE || '').toLowerCase()) {
+    case 'gopay':
+      return 'GoPay saja';
+    case 'both':
+      return 'OrderKuota + GoPay';
+    default:
+      return 'OrderKuota saja';
+  }
+}
 
 function formatDateId(date) {
   try {
@@ -736,6 +881,22 @@ db.run(`CREATE TABLE IF NOT EXISTS pending_deposits (
   if (err) {
     logger.error('Kesalahan membuat tabel pending_deposits:', err.message);
   }
+});
+
+const pendingDepositMigrations = [
+  "ALTER TABLE pending_deposits ADD COLUMN gateway_provider TEXT DEFAULT 'orderkuota'",
+  "ALTER TABLE pending_deposits ADD COLUMN provider_tx_id TEXT",
+  "ALTER TABLE pending_deposits ADD COLUMN reference_id TEXT",
+  "ALTER TABLE pending_deposits ADD COLUMN admin_fee INTEGER DEFAULT 0",
+  "ALTER TABLE pending_deposits ADD COLUMN topup_purpose TEXT DEFAULT 'regular'",
+  "ALTER TABLE pending_deposits ADD COLUMN expires_at INTEGER"
+];
+pendingDepositMigrations.forEach((sql) => {
+  db.run(sql, (err) => {
+    if (err && !String(err.message || '').toLowerCase().includes('duplicate column')) {
+      logger.warn('Migrasi pending_deposits gagal: ' + err.message);
+    }
+  });
 });
 
 db.run(`CREATE TABLE IF NOT EXISTS Server (
@@ -1872,77 +2033,54 @@ bot.command('edithargareseller', async (ctx) => {
 
 bot.command('checkpaymentconfig', async (ctx) => {
   const userId = ctx.message.from.id;
-  
-  // Hanya admin
   if (!adminIds.includes(userId)) {
-    return ctx.reply('🚫 Anda tidak memiliki izin untuk menggunakan perintah ini.');
+    return ctx.reply('Anda tidak memiliki izin untuk menggunakan perintah ini.');
   }
-  
-  await ctx.reply('🔍 Memeriksa konfigurasi pembayaran...');
-  
+
+  await ctx.reply('Memeriksa konfigurasi payment gateway...');
+
   try {
     reloadRuntimePaymentConfig();
-    const { buildPayload, API_URL } = require('./api-cekpayment-orkut');
-    const qs = require('qs');
-    const payload = buildPayload();
-    const decoded = qs.parse(payload);
-    
-    let message = `🔧 *KONFIGURASI PEMBAYARAN*\n\n`;
-    message += `🌐 Gateway URL: \`${PAYMENT_GATEWAY_BASE_URL}\`\n`;
-    message += `🔑 RajaServer API Key: \`${maskSecret(RAJASERVER_API_KEY)}\`\n`;
-    message += `🧾 DATA_QRIS: \`${DATA_QRIS ? '✅ Tersimpan' : '❌ Belum diisi'}\`\n`;
-    message += `📡 API URL: \`${API_URL}\`\n`;
-    message += `👤 Username: \`${decoded.username}\`\n`;
-    message += `🔑 Token: \`${decoded.token ? '••••••' + decoded.token.substring(decoded.token.length - 10) : 'empty'}\`\n\n`;
-    
-    const isDefault = decoded.username === 'yantoxxx' || 
-                     (decoded.token && decoded.token.includes('xxxxx'));
-    
-    if (isDefault) {
-      message += `❌ *STATUS: DEFAULT CREDENTIAL!*\n\n`;
-      message += `⚠️ Sistem pembayaran TIDAK AKAN BEKERJA!\n\n`;
-      message += `📺 *Tutorial Ambil Username & Token:*\n`;
-      message += `[🎬 Klik di sini untuk lihat video tutorial](https://drive.google.com/file/d/1ugR_N5gEtcLx8TDsf7ecTFqYY3zrlHn-/view)\n\n`;
-      message += `📝 *Langkah Perbaikan:*\n`;
-      message += `1. Tonton video tutorial di atas\n`;
-      message += `2. Login ke orderkuota.com\n`;
-      message += `3. Ambil username & token API\n`;
-      message += `4. Buka menu admin: *Setting Payment Gateway*\n`;
-      message += `5. Isi Gateway URL, API Key, dan parameter lain\n`;
-      message += `6. Jika ubah username/token, update di \`.vars.json\` lalu restart bot\n\n`;
-      message += `🔄 Setelah selesai, cek lagi dengan: /checkpaymentconfig`;
-    } else {
-      message += `✅ *STATUS: TERKONFIGURASI*\n`;
-      message += `Sistem pembayaran siap digunakan.\n\n`;
-      message += `📊 *Test API Connection...*\n`;
-      
+
+    let message = '*KONFIGURASI PAYMENT GATEWAY*\n\n';
+    message += `Mode aktif: \`${formatGatewayModeLabel()}\`\n\n`;
+
+    message += '*OrderKuota*\n';
+    message += `- Aktif: ${isGatewayEnabled('orderkuota') ? 'YA' : 'TIDAK'}\n`;
+    message += `- Gateway URL: \`${PAYMENT_GATEWAY_BASE_URL}\`\n`;
+    message += `- RajaServer API Key: \`${maskSecret(RAJASERVER_API_KEY)}\`\n`;
+    message += `- DATA_QRIS: \`${DATA_QRIS ? 'Tersimpan' : 'Belum diisi'}\`\n\n`;
+
+    message += '*GoPay*\n';
+    message += `- Aktif: ${isGatewayEnabled('gopay') ? 'YA' : 'TIDAK'}\n`;
+    message += `- Base URL: \`${GOPAY_API_BASE_URL}\`\n`;
+    message += `- API Key: \`${maskSecret(GOPAY_API_KEY)}\`\n`;
+
+    if (isGatewayEnabled('gopay') && GOPAY_API_KEY) {
       try {
-        const { headers } = require('./api-cekpayment-orkut');
-        const response = await axios.post(API_URL, payload, { 
-          headers, 
-          timeout: 8000 
-        });
-        
-        const blocks = response.data.split('------------------------').filter(Boolean);
-        message += `✅ Berhasil: ${blocks.length} transaksi ditemukan\n`;
-        message += `🎉 Sistem pembayaran AKTIF dan bekerja!`;
-        
-      } catch (apiError) {
-        message += `❌ *Test GAGAL:* ${apiError.message}\n`;
-        message += `Periksa koneksi atau credential.`;
+        const testRes = await axios.post(
+          `${normalizeHttpUrl(GOPAY_API_BASE_URL) || 'https://api-gopay.sawargipay.cloud'}/transactions`,
+          {},
+          {
+            headers: {
+              Authorization: `Bearer ${GOPAY_API_KEY}`,
+              'Content-Type': 'application/json'
+            },
+            timeout: 8000
+          }
+        );
+        const count = Number(testRes?.data?.data?.transactions?.length || 0);
+        message += `- Test API: Berhasil (transaksi terbaca: ${count})\n`;
+      } catch (err) {
+        message += `- Test API: Gagal (${String(err.message || 'unknown error')})\n`;
       }
     }
-    
-    await ctx.reply(message, { parse_mode: 'Markdown', disable_web_page_preview: false });
-    
+
+    await ctx.reply(message, { parse_mode: 'Markdown' });
   } catch (error) {
-    await ctx.reply(
-      `❌ *Gagal memeriksa:*\n\`${error.message}\``,
-      { parse_mode: 'Markdown' }
-    );
+    await ctx.reply(`Gagal memeriksa konfigurasi: ${error.message}`);
   }
 });
-
 
 bot.command('syncservernow', async (ctx) => {
   const userId = ctx.message.from.id;
@@ -4014,6 +4152,7 @@ async function sendAdminSaldoMenu(ctx) {
     ],
     [{ text: '🎁 Bonus Topup', callback_data: 'bonus_topup_menu' }],
     [{ text: 'Pendapatan Hari Ini & Kemarin', callback_data: 'admin_income_summary' }],
+    [{ text: 'Pendapatan Topup Bulanan', callback_data: 'admin_income_monthly_non_reseller' }],
     [{ text: autoLabel, callback_data: 'toggle_topup_auto' }],
     [{ text: manualLabel, callback_data: 'toggle_topup_manual' }],
     [{ text: '🔙 Kembali', callback_data: 'admin_menu' }]
@@ -4525,6 +4664,50 @@ bot.action('admin_income_summary', async (ctx) => {
   }
 });
 
+bot.action('admin_income_monthly_non_reseller', async (ctx) => {
+  await ctx.answerCbQuery();
+  const adminId = ctx.from.id;
+  if (!adminIds.includes(adminId)) {
+    return ctx.reply('Anda tidak memiliki izin untuk mengakses menu ini.');
+  }
+
+  try {
+    const thisMonth = getMonthRange(0);
+    const prevMonth = getMonthRange(-1);
+    const [thisMonthTopupNonReseller, prevMonthTopupNonReseller, thisMonthTopupReseller, prevMonthTopupReseller, roleCounts] = await Promise.all([
+      getTopupIncomeNonResellerByRange(thisMonth.start, thisMonth.end),
+      getTopupIncomeNonResellerByRange(prevMonth.start, prevMonth.end),
+      getTopupIncomeResellerByRange(thisMonth.start, thisMonth.end),
+      getTopupIncomeResellerByRange(prevMonth.start, prevMonth.end),
+      getUserRoleCounts()
+    ]);
+
+    const thisMonthTopupTotal = thisMonthTopupNonReseller + thisMonthTopupReseller;
+    const prevMonthTopupTotal = prevMonthTopupNonReseller + prevMonthTopupReseller;
+
+    const message =
+      '*TOPUP BULANAN*\n\n' +
+      `*${formatMonthLabel(thisMonth.labelDate)}*\n` +
+      '- Total topup (gabungan): ' + formatRupiah(thisMonthTopupTotal) + '\n' +
+      '- Topup non-reseller: ' + formatRupiah(thisMonthTopupNonReseller) + '\n' +
+      '- Topup reseller: ' + formatRupiah(thisMonthTopupReseller) + '\n\n' +
+      `*${formatMonthLabel(prevMonth.labelDate)}*\n` +
+      '- Total topup (gabungan): ' + formatRupiah(prevMonthTopupTotal) + '\n' +
+      '- Topup non-reseller: ' + formatRupiah(prevMonthTopupNonReseller) + '\n' +
+      '- Topup reseller: ' + formatRupiah(prevMonthTopupReseller) + '\n\n' +
+      '*JUMLAH USER*\n' +
+      `- Reseller: ${roleCounts.resellerUsers}\n` +
+      `- Non-reseller: ${roleCounts.nonResellerUsers}\n` +
+      `- Total user: ${roleCounts.totalUsers}\n` +
+      `- Total ID reseller terdaftar: ${roleCounts.resellerListCount}`;
+
+    await ctx.reply(message, { parse_mode: 'Markdown' });
+  } catch (error) {
+    logger.error('Gagal mengambil pendapatan topup bulanan non-reseller:', error.message);
+    await ctx.reply('Gagal mengambil data pendapatan topup bulanan. Coba lagi.');
+  }
+});
+
 bot.action('bonus_topup_menu', async (ctx) => {
   await ctx.answerCbQuery();
   const adminId = ctx.from.id;
@@ -4685,25 +4868,35 @@ bot.action('payment_gateway_settings_menu', async (ctx) => {
   await ctx.answerCbQuery();
   const adminId = ctx.from.id;
   if (!adminIds.includes(adminId)) {
-    return ctx.reply('🚫 Anda tidak memiliki izin untuk mengakses menu ini.');
+    return ctx.reply('Anda tidak memiliki izin untuk mengakses menu ini.');
   }
 
   reloadRuntimePaymentConfig();
   const message =
-    '*💳 SETTING PAYMENT GATEWAY*\n\n' +
+    '*SETTING PAYMENT GATEWAY*\n\n' +
+    `Mode Gateway: \`${formatGatewayModeLabel()}\`\n\n` +
+    '*OrderKuota*\n' +
     `Gateway URL: \`${PAYMENT_GATEWAY_BASE_URL || '-'}\`\n` +
     `RajaServer API Key: \`${maskSecret(RAJASERVER_API_KEY)}\`\n` +
-    `QRIS String: \`${DATA_QRIS ? '✅ Tersimpan' : '❌ Belum diisi'}\`\n` +
+    `QRIS String: \`${DATA_QRIS ? 'Tersimpan' : 'Belum diisi'}\`\n` +
     `Merchant ID: \`${MERCHANT_ID || '-'}\`\n` +
     `API Key (legacy): \`${maskSecret(API_KEY)}\`\n\n` +
+    '*GoPay*\n' +
+    `GoPay API Base URL: \`${GOPAY_API_BASE_URL || '-'}\`\n` +
+    `GoPay API Key: \`${maskSecret(GOPAY_API_KEY)}\`\n\n` +
     'Pilih parameter yang ingin diubah.';
 
   const keyboard = [
+    [{ text: 'Mode: OrderKuota saja', callback_data: 'payment_gateway_mode_orderkuota' }],
+    [{ text: 'Mode: GoPay saja', callback_data: 'payment_gateway_mode_gopay' }],
+    [{ text: 'Mode: Keduanya (fallback)', callback_data: 'payment_gateway_mode_both' }],
     [{ text: 'Set Gateway URL/Domain', callback_data: 'payment_gateway_set_url' }],
     [{ text: 'Set RajaServer API Key', callback_data: 'payment_gateway_set_raja_api_key' }],
     [{ text: 'Set QRIS String', callback_data: 'payment_gateway_set_qris' }],
     [{ text: 'Set Merchant ID', callback_data: 'payment_gateway_set_merchant_id' }],
     [{ text: 'Set API Key (legacy)', callback_data: 'payment_gateway_set_api_key' }],
+    [{ text: 'Set GoPay API Base URL', callback_data: 'payment_gateway_set_gopay_base_url' }],
+    [{ text: 'Set GoPay API Key', callback_data: 'payment_gateway_set_gopay_api_key' }],
     [{ text: 'Kembali', callback_data: 'admin_menu_tools' }]
   ];
 
@@ -4713,41 +4906,70 @@ bot.action('payment_gateway_settings_menu', async (ctx) => {
   });
 });
 
+async function setPaymentGatewayMode(ctx, mode) {
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('Anda tidak memiliki izin.');
+  const allowed = ['orderkuota', 'gopay', 'both'];
+  if (!allowed.includes(mode)) return ctx.reply('Mode gateway tidak valid.');
+  const nextVars = loadVars();
+  nextVars.PAYMENT_GATEWAY_MODE = mode;
+  saveVars(nextVars);
+  reloadRuntimePaymentConfig();
+  await ctx.answerCbQuery('Mode gateway tersimpan.');
+  return ctx.reply(`Mode gateway aktif: ${formatGatewayModeLabel()}`);
+}
+
+bot.action('payment_gateway_mode_orderkuota', async (ctx) => setPaymentGatewayMode(ctx, 'orderkuota'));
+bot.action('payment_gateway_mode_gopay', async (ctx) => setPaymentGatewayMode(ctx, 'gopay'));
+bot.action('payment_gateway_mode_both', async (ctx) => setPaymentGatewayMode(ctx, 'both'));
+
 bot.action('payment_gateway_set_url', async (ctx) => {
   await ctx.answerCbQuery();
-  if (!adminIds.includes(ctx.from.id)) return ctx.reply('🚫 Anda tidak memiliki izin.');
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('Anda tidak memiliki izin.');
   userState[ctx.chat.id] = { step: 'payment_gateway_url_input' };
-  await ctx.reply('Kirim URL/domain payment gateway.\nContoh:\n`api.rajaserver.web.id/orderkuota/createpayment`\nKetik "batal" untuk membatalkan.', { parse_mode: 'Markdown' });
+  await ctx.reply('Kirim URL/domain payment gateway. Contoh: api.rajaserver.web.id/orderkuota/createpayment. Ketik "batal" untuk membatalkan.');
 });
 
 bot.action('payment_gateway_set_raja_api_key', async (ctx) => {
   await ctx.answerCbQuery();
-  if (!adminIds.includes(ctx.from.id)) return ctx.reply('🚫 Anda tidak memiliki izin.');
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('Anda tidak memiliki izin.');
   userState[ctx.chat.id] = { step: 'payment_gateway_raja_api_key_input' };
-  await ctx.reply('Kirim RajaServer API Key baru.\nKetik "batal" untuk membatalkan.');
+  await ctx.reply('Kirim RajaServer API Key baru. Ketik "batal" untuk membatalkan.');
 });
 
 bot.action('payment_gateway_set_qris', async (ctx) => {
   await ctx.answerCbQuery();
-  if (!adminIds.includes(ctx.from.id)) return ctx.reply('🚫 Anda tidak memiliki izin.');
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('Anda tidak memiliki izin.');
   userState[ctx.chat.id] = { step: 'payment_gateway_qris_input' };
-  await ctx.reply('Kirim DATA_QRIS string baru.\nKetik "batal" untuk membatalkan.');
+  await ctx.reply('Kirim DATA_QRIS string baru. Ketik "batal" untuk membatalkan.');
 });
 
 bot.action('payment_gateway_set_merchant_id', async (ctx) => {
   await ctx.answerCbQuery();
-  if (!adminIds.includes(ctx.from.id)) return ctx.reply('🚫 Anda tidak memiliki izin.');
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('Anda tidak memiliki izin.');
   userState[ctx.chat.id] = { step: 'payment_gateway_merchant_id_input' };
-  await ctx.reply('Kirim Merchant ID baru.\nKetik "batal" untuk membatalkan.');
+  await ctx.reply('Kirim Merchant ID baru. Ketik "batal" untuk membatalkan.');
 });
 
 bot.action('payment_gateway_set_api_key', async (ctx) => {
   await ctx.answerCbQuery();
-  if (!adminIds.includes(ctx.from.id)) return ctx.reply('🚫 Anda tidak memiliki izin.');
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('Anda tidak memiliki izin.');
   userState[ctx.chat.id] = { step: 'payment_gateway_api_key_input' };
-  await ctx.reply('Kirim API Key legacy baru.\nKetik "batal" untuk membatalkan.');
+  await ctx.reply('Kirim API Key legacy baru. Ketik "batal" untuk membatalkan.');
 });
 
+bot.action('payment_gateway_set_gopay_base_url', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('Anda tidak memiliki izin.');
+  userState[ctx.chat.id] = { step: 'payment_gateway_gopay_base_url_input' };
+  await ctx.reply('Kirim GoPay API base URL. Contoh: https://api-gopay.sawargipay.cloud. Ketik "batal" untuk membatalkan.');
+});
+
+bot.action('payment_gateway_set_gopay_api_key', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('Anda tidak memiliki izin.');
+  userState[ctx.chat.id] = { step: 'payment_gateway_gopay_api_key_input' };
+  await ctx.reply('Kirim GoPay API Key baru. Ketik "batal" untuk membatalkan.');
+});
 bot.action('restore_db_menu', async (ctx) => {
   await ctx.answerCbQuery();
   const adminId = ctx.from.id;
@@ -7947,6 +8169,42 @@ if (!state || !state.step) return;
   }
 
 
+  if (state.step === 'payment_gateway_gopay_base_url_input') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan payment gateway dibatalkan.');
+    }
+    const normalized = normalizeHttpUrl(text);
+    if (!normalized) {
+      return ctx.reply('URL GoPay tidak valid. Contoh: https://api-gopay.sawargipay.cloud');
+    }
+    const nextVars = loadVars();
+    nextVars.GOPAY_API_BASE_URL = normalized;
+    saveVars(nextVars);
+    reloadRuntimePaymentConfig();
+    delete userState[ctx.chat.id];
+    await ctx.reply('GoPay API Base URL berhasil disimpan.');
+    return sendAdminToolsMenu(ctx);
+  }
+
+  if (state.step === 'payment_gateway_gopay_api_key_input') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan payment gateway dibatalkan.');
+    }
+    if (text.length < 8) return ctx.reply('GoPay API key terlalu pendek.');
+    const nextVars = loadVars();
+    nextVars.GOPAY_API_KEY = text;
+    saveVars(nextVars);
+    reloadRuntimePaymentConfig();
+    delete userState[ctx.chat.id];
+    await ctx.reply('GoPay API Key berhasil disimpan.');
+    return sendAdminToolsMenu(ctx);
+  }
+
+
   if (state.step === 'delete_all_input_host') {
     const text = ctx.message.text.trim();
     if (text.toLowerCase() === 'batal') {
@@ -10958,16 +11216,21 @@ db.all('SELECT * FROM pending_deposits WHERE status = "pending"', [], (err, rows
   }
   rows.forEach(row => {
     const createdAt = row.timestamp || Date.now();
+    const expiresAt = row.expires_at || (createdAt + (5 * 60 * 1000));
     global.pendingDeposits[row.unique_code] = {
       amount: row.amount,
       originalAmount: row.original_amount,
       userId: row.user_id,
       timestamp: row.timestamp,
       status: row.status || 'pending',
-      topupPurpose: 'regular',
+      topupPurpose: row.topup_purpose || 'regular',
       qrMessageId: row.qr_message_id,
+      referenceId: row.reference_id || row.unique_code,
+      adminFee: Number(row.admin_fee || 0),
+      gatewayProvider: String(row.gateway_provider || 'orderkuota'),
+      providerTxId: row.provider_tx_id || '',
       createdAt,
-      expiresAt: createdAt + (5 * 60 * 1000)
+      expiresAt
     };
   });
   logger.info('Pending deposit loaded:', Object.keys(global.pendingDeposits).length);
@@ -10983,6 +11246,76 @@ db.all('SELECT * FROM pending_deposits WHERE status = "pending"', [], (err, rows
 */
 function generateRandomNumber(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+async function createOrderKuotaQr({ amount, qrisData, referenceId }) {
+  if (!RAJASERVER_API_KEY) {
+    throw new Error('RAJASERVER_API_KEY belum diisi di .vars.json');
+  }
+  const gatewayBase = normalizeHttpUrl(PAYMENT_GATEWAY_BASE_URL) || 'https://api.rajaserver.web.id/orderkuota/createpayment';
+  const gatewayUrl = `${gatewayBase}?${new URLSearchParams({
+    apikey: String(RAJASERVER_API_KEY || ''),
+    amount: String(amount),
+    codeqr: String(qrisData || ''),
+    reference: String(referenceId || '')
+  }).toString()}`;
+  const bayar = await axios.get(gatewayUrl, { timeout: 15000 });
+  if (bayar.data.status !== 'success') {
+    throw new Error('OrderKuota gagal create QR: ' + JSON.stringify(bayar.data));
+  }
+  const qrImageUrl = bayar.data.result?.imageqris?.url;
+  if (!qrImageUrl || qrImageUrl.includes('undefined')) {
+    throw new Error('OrderKuota mengembalikan URL QR tidak valid.');
+  }
+  return {
+    provider: 'orderkuota',
+    qrImageUrl,
+    providerTxId: String(bayar.data.result?.reference || referenceId || '')
+  };
+}
+
+async function createGoPayQr({ amount }) {
+  if (!GOPAY_API_KEY) {
+    throw new Error('GOPAY_API_KEY belum diisi di .vars.json');
+  }
+  const baseUrl = normalizeHttpUrl(GOPAY_API_BASE_URL) || 'https://api-gopay.sawargipay.cloud';
+  const response = await axios.post(
+    `${baseUrl}/qris/generate`,
+    { amount: Number(amount) },
+    {
+      headers: {
+        Authorization: `Bearer ${GOPAY_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 15000
+    }
+  );
+  const body = response?.data || {};
+  if (!body.success || !body?.data?.transaction_id || !body?.data?.qr_url) {
+    throw new Error('GoPay gagal create QR: ' + JSON.stringify(body));
+  }
+  return {
+    provider: 'gopay',
+    qrImageUrl: String(body.data.qr_url),
+    providerTxId: String(body.data.transaction_id),
+    expiryTime: body.data.expiry_time || null
+  };
+}
+
+async function createPaymentQrByMode({ amount, qrisData, referenceId }) {
+  const mode = String(PAYMENT_GATEWAY_MODE || 'orderkuota').toLowerCase();
+  if (mode === 'gopay') {
+    return createGoPayQr({ amount });
+  }
+  if (mode === 'both') {
+    try {
+      return await createOrderKuotaQr({ amount, qrisData, referenceId });
+    } catch (errOrderKuota) {
+      logger.warn('OrderKuota gagal saat mode both, fallback ke GoPay: ' + errOrderKuota.message);
+      return createGoPayQr({ amount });
+    }
+  }
+  return createOrderKuotaQr({ amount, qrisData, referenceId });
 }
 
 // Ganti fungsi processDeposit dengan versi yang lebih sederhana
@@ -11042,28 +11375,16 @@ async function processDeposit(ctx, amount, options = {}) {
     const uniqueCode = `TOPUP-${userId}-${timestamp}-${randomSuffix}`;
     const referenceId = `REF-${timestamp}-${randomSuffix}`;
 
-    // BUAT QRIS
+    // BUAT QRIS sesuai gateway aktif
     const urlQr = DATA_QRIS;
-    if (!RAJASERVER_API_KEY) {
-      throw new Error('RAJASERVER_API_KEY belum diisi di .vars.json');
-    }
-    const gatewayBase = normalizeHttpUrl(PAYMENT_GATEWAY_BASE_URL) || 'https://api.rajaserver.web.id/orderkuota/createpayment';
-    const gatewayUrl = `${gatewayBase}?${new URLSearchParams({
-      apikey: String(RAJASERVER_API_KEY || ''),
-      amount: String(finalAmount),
-      codeqr: String(urlQr || ''),
-      reference: String(referenceId || '')
-    }).toString()}`;
-    const bayar = await axios.get(gatewayUrl, { timeout: 15000 });
-    
-    if (bayar.data.status !== 'success') {
-      throw new Error('QRIS failed: ' + JSON.stringify(bayar.data));
-    }
-
-    const qrImageUrl = bayar.data.result.imageqris?.url;
-    if (!qrImageUrl || qrImageUrl.includes('undefined')) {
-      throw new Error('Invalid QR URL');
-    }
+    const paymentResult = await createPaymentQrByMode({
+      amount: finalAmount,
+      qrisData: urlQr,
+      referenceId
+    });
+    const qrImageUrl = paymentResult.qrImageUrl;
+    const gatewayProvider = String(paymentResult.provider || 'orderkuota');
+    const providerTxId = String(paymentResult.providerTxId || '');
 
     // DOWNLOAD QR
     const qrResponse = await axios.get(qrImageUrl, { responseType: 'arraybuffer', timeout: 15000 });
@@ -11093,7 +11414,8 @@ async function processDeposit(ctx, amount, options = {}) {
 • Saldo otomatis bertambah setelah terdeteksi
 
 🆔 *Referensi:* \`${referenceId}\`
-👤 *User ID:* \`${userId}\`${purposeLine}`;
+👤 *User ID:* \`${userId}\`
+💳 *Gateway:* \`${gatewayProvider === 'gopay' ? 'GoPay' : 'OrderKuota'}\`${purposeLine}`;
     
     const qrMessage = await ctx.replyWithPhoto({ source: qrBuffer }, { caption: caption, parse_mode: 'Markdown' });
 
@@ -11111,13 +11433,15 @@ async function processDeposit(ctx, amount, options = {}) {
       status: 'pending',
       topupPurpose: topupPurpose,
       qrMessageId: qrMessage.message_id,
+      gatewayProvider,
+      providerTxId,
       createdAt: Date.now(),         // Untuk expired check
       expiresAt: Date.now() + (5 * 60 * 1000) // 5 menit dari sekarang
     };
     db.run(
   `INSERT INTO pending_deposits 
-   (unique_code, user_id, amount, original_amount, timestamp, status, qr_message_id)
-   VALUES (?, ?, ?, ?, ?, ?, ?)`, // 👈 7 PARAMS
+   (unique_code, user_id, amount, original_amount, timestamp, status, qr_message_id, gateway_provider, provider_tx_id, reference_id, admin_fee, topup_purpose, expires_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   [
     uniqueCode, 
     userId, 
@@ -11125,7 +11449,13 @@ async function processDeposit(ctx, amount, options = {}) {
     amountNum, 
     Date.now(),     // timestamp
     'pending',      // status
-    qrMessage.message_id  // qr_message_id
+    qrMessage.message_id,
+    gatewayProvider,
+    providerTxId,
+    referenceId,
+    adminFee,
+    topupPurpose,
+    Date.now() + (5 * 60 * 1000)
   ],
   (err) => { 
     if (err) logger.error('❌ Save error:', err.message);
@@ -11162,103 +11492,131 @@ let lastPollErrorTime = 0;
 const POLL_INTERVAL = 10000; // Poll setiap 10 detik
 const POLL_ERROR_INTERVAL = 60000; // log error maksimal 1 menit sekali
 
+async function checkGoPayTransactionStatus(transactionId) {
+  if (!transactionId) return { settled: false, pending: true };
+  const baseUrl = normalizeHttpUrl(GOPAY_API_BASE_URL) || 'https://api-gopay.sawargipay.cloud';
+  const response = await axios.post(
+    `${baseUrl}/qris/status`,
+    { transaction_id: transactionId },
+    {
+      headers: {
+        Authorization: `Bearer ${GOPAY_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 10000
+    }
+  );
+  const body = response?.data || {};
+  const status = String(body?.data?.transaction_status || '').toLowerCase();
+  return {
+    settled: status === 'settlement' || status === 'paid' || status === 'success',
+    pending: status === 'pending' || !status,
+    status
+  };
+}
+
 async function pollBankMutations() {
   const now = Date.now();
-  
+
   if (!loadTopupAutoSetting()) {
     return;
   }
 
-  // Rate limiting polling
   if (now - lastPollTime < POLL_INTERVAL) {
     return;
   }
-  
+
   lastPollTime = now;
-  
+
   try {
-    // Ambil semua deposit yang masih pending
     const pendingDeposits = Object.entries(global.pendingDeposits)
       .filter(([_, deposit]) => deposit.status === 'pending');
-    
+
     if (pendingDeposits.length === 0) {
       return;
     }
-    
-    logger.info(`🔍 Polling ${pendingDeposits.length} pending deposits`);
-    
-    // Ambil mutasi dari API
-    const data = buildPayload();
-    const resultcek = await axios.post(API_URL, data, { 
-      headers, 
-      timeout: 10000 
+
+    logger.info(`?? Polling ${pendingDeposits.length} pending deposits`);
+
+    const pendingOrderKuota = pendingDeposits.filter(([_, deposit]) => {
+      const provider = String(deposit.gatewayProvider || 'orderkuota').toLowerCase();
+      return provider !== 'gopay';
     });
-    
-    const responseText = resultcek.data;
-    const blocks = responseText.split('------------------------').filter(Boolean);
-    
-    // Parse mutasi dengan cara sederhana
+
     const mutations = [];
-    for (const block of blocks) {
-      try {
-        const kreditMatch = block.match(/Kredit\s*:\s*([\d.,]+)/);
-        if (kreditMatch) {
-          const kreditStr = kreditMatch[1].replace(/\./g, '');
-          const kredit = parseInt(kreditStr);
-          
-          if (!isNaN(kredit)) {
-            mutations.push({
-              amount: kredit,
-              raw: block.substring(0, 200) // Simpan sedikit untuk debug
-            });
+    if (pendingOrderKuota.length > 0) {
+      const data = buildPayload();
+      const resultcek = await axios.post(API_URL, data, {
+        headers,
+        timeout: 10000
+      });
+
+      const responseText = resultcek.data;
+      const blocks = responseText.split('------------------------').filter(Boolean);
+      for (const block of blocks) {
+        try {
+          const kreditMatch = block.match(/Kredit\s*:\s*([\d.,]+)/);
+          if (kreditMatch) {
+            const kreditStr = kreditMatch[1].replace(/\./g, '');
+            const kredit = parseInt(kreditStr, 10);
+            if (!isNaN(kredit)) {
+              mutations.push({ amount: kredit, raw: block.substring(0, 200) });
+            }
           }
-        }
-      } catch (e) {
-        // Skip block yang error
+        } catch (_e) {}
       }
+      logger.info(`?? Found ${mutations.length} mutations in bank statement`);
     }
-    
-    logger.info(`📊 Found ${mutations.length} mutations in bank statement`);
-    
-    // PROSES SETIAP DEPOSIT PENDING
+
     for (const [uniqueCode, deposit] of pendingDeposits) {
       try {
-        // CEK EXPIRED
         const expiresAt = deposit.expiresAt || (deposit.timestamp ? deposit.timestamp + (5 * 60 * 1000) : 0);
         if (expiresAt && now > expiresAt) {
-          logger.info(`⏰ Deposit expired: ${uniqueCode}`);
+          logger.info(`? Deposit expired: ${uniqueCode}`);
           await handleExpiredDeposit(deposit, uniqueCode);
           continue;
         }
-        
-        // CARI MUTASI YANG COCOK NOMINALNYA
-        const matchingMutation = mutations.find(m => m.amount === deposit.amount);
-        
-        if (matchingMutation) {
-          logger.info(`✅ Found matching mutation for ${uniqueCode}: ${deposit.amount}`);
-          await processSuccessfulPayment(deposit, uniqueCode);
+
+        const provider = String(deposit.gatewayProvider || 'orderkuota').toLowerCase();
+
+        if (provider === 'gopay') {
+          if (!GOPAY_API_KEY) {
+            logger.warn('GoPay aktif pada pending deposit, tapi GOPAY_API_KEY belum diisi.');
+            continue;
+          }
+          const status = await checkGoPayTransactionStatus(deposit.providerTxId);
+          if (status.settled) {
+            logger.info(`? GoPay settlement detected for ${uniqueCode}`);
+            await processSuccessfulPayment(deposit, uniqueCode);
+          } else if (!status.pending && (status.status === 'expire' || status.status === 'cancel')) {
+            logger.info(`? GoPay transaction ${uniqueCode} ${status.status}, diperlakukan sebagai expired.`);
+            await handleExpiredDeposit(deposit, uniqueCode);
+          } else if (Math.random() < 0.1) {
+            logger.debug(`? GoPay pending: ${uniqueCode}`);
+          }
         } else {
-          // Tidak ada mutasi yang cocok, lanjut polling berikutnya
-          if (Math.random() < 0.1) { // Log 10% dari waktu untuk mengurangi spam
-            logger.debug(`⏳ Still waiting for payment: ${uniqueCode}, Amount: ${deposit.amount}`);
+          const matchingMutation = mutations.find((m) => m.amount === deposit.amount);
+          if (matchingMutation) {
+            logger.info(`? Found matching mutation for ${uniqueCode}: ${deposit.amount}`);
+            await processSuccessfulPayment(deposit, uniqueCode);
+          } else if (Math.random() < 0.1) {
+            logger.debug(`? Still waiting for payment: ${uniqueCode}, Amount: ${deposit.amount}`);
           }
         }
-        
       } catch (error) {
-        logger.error(`❌ Error processing deposit ${uniqueCode}:`, error.message);
+        logger.error(`? Error processing deposit ${uniqueCode}:`, error.message);
       }
     }
-    
   } catch (error) {
     const errMsg = error && error.message ? error.message : String(error);
     const nowErr = Date.now();
     if (nowErr - lastPollErrorTime > POLL_ERROR_INTERVAL) {
-      logger.error('❌ Polling error:', errMsg);
+      logger.error('? Polling error:', errMsg);
       lastPollErrorTime = nowErr;
     }
-    // Tidak perlu throw error, polling akan coba lagi nanti
   }
 }
+
 
 // =================== FUNGSI BANTUAN ===================
 
@@ -12258,6 +12616,3 @@ const adminMessage =
     cleanupOldBroadcastPolls();
   }, 10000);
 });
-
-
-
