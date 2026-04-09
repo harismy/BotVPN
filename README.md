@@ -75,6 +75,21 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1 && sysctl -w net.ipv6.conf.default.di
 ---
 
 ## Update Terbaru
+- Payment gateway multi-provider:
+  - Mode `OrderKuota saja`
+  - Mode `GoPay saja`
+  - Mode `Keduanya (fallback)` -> OrderKuota dulu, jika gagal create QR otomatis fallback ke GoPay.
+- Menu admin `Setting Payment Gateway` ditambah:
+  - set mode gateway,
+  - set `GoPay API Base URL`,
+  - set `GoPay API Key`,
+  - tetap mendukung setting OrderKuota lama.
+- `/checkpaymentconfig` sekarang menampilkan status kedua gateway (OrderKuota + GoPay) dan mode aktif.
+- Verifikasi pembayaran sekarang mendukung 2 jalur:
+  - OrderKuota: polling mutasi bank (existing),
+  - GoPay: polling status transaksi `/qris/status` (tanpa webhook).
+- Penyimpanan pending deposit diperluas (auto-migration) untuk metadata gateway: provider, provider transaction id, reference id, expiry, dll.
+
 - Notifikasi ke grup saat akun dihapus (self delete dan menu delete reseller/admin).
 - Fitur hapus akun manual by username pada menu `Hapus Akun Saya` dihapus demi keamanan.
 - Menu user baru: `Cek Masa Aktif Akun Saya`.
