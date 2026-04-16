@@ -11208,6 +11208,8 @@ global.depositState = {};
 global.pendingDeposits = {};
 let lastRequestTime = 0;
 const requestInterval = 1000; 
+const PAYMENT_QR_EXPIRE_MINUTES = 15;
+const PAYMENT_QR_EXPIRE_MS = PAYMENT_QR_EXPIRE_MINUTES * 60 * 1000;
 
 db.all('SELECT * FROM pending_deposits WHERE status = "pending"', [], (err, rows) => {
   if (err) {
@@ -11216,7 +11218,7 @@ db.all('SELECT * FROM pending_deposits WHERE status = "pending"', [], (err, rows
   }
   rows.forEach(row => {
     const createdAt = row.timestamp || Date.now();
-    const expiresAt = row.expires_at || (createdAt + (5 * 60 * 1000));
+    const expiresAt = row.expires_at || (createdAt + PAYMENT_QR_EXPIRE_MS);
     global.pendingDeposits[row.unique_code] = {
       amount: row.amount,
       originalAmount: row.original_amount,
@@ -11409,7 +11411,7 @@ async function processDeposit(ctx, amount, options = {}) {
 4. Sistem otomatis verifikasi dalam 1-2 menit
 
 ⚠️ *PERHATIAN:*
-• QR Code berlaku 5 menit
+• QR Code berlaku ${PAYMENT_QR_EXPIRE_MINUTES} menit
 • Transfer harus sesuai nominal di atas
 • Saldo otomatis bertambah setelah terdeteksi
 
@@ -11436,7 +11438,7 @@ async function processDeposit(ctx, amount, options = {}) {
       gatewayProvider,
       providerTxId,
       createdAt: Date.now(),         // Untuk expired check
-      expiresAt: Date.now() + (5 * 60 * 1000) // 5 menit dari sekarang
+      expiresAt: Date.now() + PAYMENT_QR_EXPIRE_MS
     };
     db.run(
   `INSERT INTO pending_deposits 
@@ -11455,7 +11457,7 @@ async function processDeposit(ctx, amount, options = {}) {
     referenceId,
     adminFee,
     topupPurpose,
-    Date.now() + (5 * 60 * 1000)
+    Date.now() + PAYMENT_QR_EXPIRE_MS
   ],
   (err) => { 
     if (err) logger.error('❌ Save error:', err.message);
@@ -11570,7 +11572,7 @@ async function pollBankMutations() {
 
     for (const [uniqueCode, deposit] of pendingDeposits) {
       try {
-        const expiresAt = deposit.expiresAt || (deposit.timestamp ? deposit.timestamp + (5 * 60 * 1000) : 0);
+        const expiresAt = deposit.expiresAt || (deposit.timestamp ? deposit.timestamp + PAYMENT_QR_EXPIRE_MS : 0);
         if (expiresAt && now > expiresAt) {
           logger.info(`? Deposit expired: ${uniqueCode}`);
           await handleExpiredDeposit(deposit, uniqueCode);
@@ -11762,11 +11764,11 @@ async function handleExpiredDeposit(deposit, uniqueCode) {
     await bot.telegram.sendMessage(
       deposit.userId,
       '❌ *QR CODE EXPIRED*\n\n' +
-      `QR Code sudah tidak berlaku (5 menit).\n` +
+      `QR Code sudah tidak berlaku (${PAYMENT_QR_EXPIRE_MINUTES} menit).\n` +
       `💰 Nominal: Rp ${deposit.originalAmount.toLocaleString('id-ID')}\n` +
       `💵 Total: Rp ${deposit.amount.toLocaleString('id-ID')}\n\n` +
       `Silakan buat permintaan top-up baru.`+
-      `Jika sudah terlanjur bayar diatas 5 menit dan saldo ga masuk hubungi admin lewat WA: ${getAdminWhatsappNumber() || '-'} atau Telegram: ${getAdminTelegramUsername()}`,
+      `Jika sudah terlanjur bayar diatas ${PAYMENT_QR_EXPIRE_MINUTES} menit dan saldo ga masuk hubungi admin lewat WA: ${getAdminWhatsappNumber() || '-'} atau Telegram: ${getAdminTelegramUsername()}`,
       { parse_mode: 'Markdown' }
     );
     
@@ -12616,3 +12618,4 @@ const adminMessage =
     cleanupOldBroadcastPolls();
   }, 10000);
 });
+
