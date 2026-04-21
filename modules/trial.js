@@ -2,7 +2,7 @@ const axios = require('axios');
 const { exec } = require('child_process');
 const sqlite3 = require('sqlite3').verbose();
 const db = new sqlite3.Database('./sellvpn.db');
-async function trialssh(username, password, exp, iplimit, serverId) {
+async function trialssh(username, password, exp, iplimit, serverId, telegramUserId = '', telegramChatId = '') {
   console.log(`Creating SSH account for ${username} with expiry ${exp} days, IP limit ${iplimit}, and password ${password}`);
 
   // Validasi username
@@ -27,9 +27,11 @@ async function trialssh(username, password, exp, iplimit, serverId) {
 
   const curlCommand = `curl -s -X POST "${web_URL}" \
 -H "Authorization: ${AUTH_TOKEN}" \
+-H "X-Telegram-User-Id: ${telegramUserId}" \
+-H "X-Telegram-Chat-Id: ${telegramChatId}" \
 -H "Content-Type: application/json" \
 -H "Accept: application/json" \
--d '{"timelimit":"1h"}'`;
+-d '{"timelimit":"1h","telegram_user_id":"${telegramUserId}","telegram_chat_id":"${telegramChatId}"}'`;
 
       exec(curlCommand, (_, stdout) => {
         let d;
@@ -101,7 +103,7 @@ http://${s.hostname}:81/myvpn-config.zip
   });
 }
 
-async function trialudphttp(username, password, exp, iplimit, serverId) {
+async function trialudphttp(username, password, exp, iplimit, serverId, telegramUserId = '', telegramChatId = '') {
   console.log(`Creating UDP HTTP Custom trial for ${username} with expiry ${exp} days, IP limit ${iplimit}, and password ${password}`);
 
   if (/\s/.test(username) || /[^a-zA-Z0-9]/.test(username)) {
@@ -122,9 +124,11 @@ async function trialudphttp(username, password, exp, iplimit, serverId) {
 
       const curlCommand = `curl -s -X POST "${web_URL}" \
 -H "Authorization: ${AUTH_TOKEN}" \
+-H "X-Telegram-User-Id: ${telegramUserId}" \
+-H "X-Telegram-Chat-Id: ${telegramChatId}" \
 -H "Content-Type: application/json" \
 -H "Accept: application/json" \
--d '{"timelimit":"1h"}'`;
+-d '{"timelimit":"1h","telegram_user_id":"${telegramUserId}","telegram_chat_id":"${telegramChatId}"}'`;
 
       exec(curlCommand, (_, stdout) => {
         let d;
@@ -165,7 +169,7 @@ async function trialudphttp(username, password, exp, iplimit, serverId) {
     });
   });
 }
-async function trialvmess(username, exp, quota, limitip, serverId) {
+async function trialvmess(username, exp, quota, limitip, serverId, telegramUserId = '', telegramChatId = '') {
   console.log(`Creating VMess account for ${username} with expiry ${exp} days, quota ${quota} GB, IP limit ${limitip}`);
 
   // Validasi username
@@ -190,9 +194,11 @@ async function trialvmess(username, exp, quota, limitip, serverId) {
 
   const curlCommand = `curl -s -X POST "${web_URL}" \
 -H "Authorization: ${AUTH_TOKEN}" \
+-H "X-Telegram-User-Id: ${telegramUserId}" \
+-H "X-Telegram-Chat-Id: ${telegramChatId}" \
 -H "Content-Type: application/json" \
 -H "Accept: application/json" \
--d '{"timelimit":"1h"}'`;
+-d '{"timelimit":"1h","telegram_user_id":"${telegramUserId}","telegram_chat_id":"${telegramChatId}"}'`;
 
       exec(curlCommand, (_, stdout) => {
         let d;
@@ -271,7 +277,7 @@ http://${s.hostname}:81/vmess-config.zip
   });
 }
 
-async function trialvless(username, exp, quota, limitip, serverId) {
+async function trialvless(username, exp, quota, limitip, serverId, telegramUserId = '', telegramChatId = '') {
   console.log(`Creating VLESS account for ${username} with expiry ${exp} days, quota ${quota} GB, limit IP ${limitip}`);
 
   // Validasi username
@@ -296,9 +302,11 @@ async function trialvless(username, exp, quota, limitip, serverId) {
 
   const curlCommand = `curl -s -X POST "${web_URL}" \
 -H "Authorization: ${AUTH_TOKEN}" \
+-H "X-Telegram-User-Id: ${telegramUserId}" \
+-H "X-Telegram-Chat-Id: ${telegramChatId}" \
 -H "Content-Type: application/json" \
 -H "Accept: application/json" \
--d '{"timelimit":"1h"}'`;
+-d '{"timelimit":"1h","telegram_user_id":"${telegramUserId}","telegram_chat_id":"${telegramChatId}"}'`;
 
       exec(curlCommand, (_, stdout) => {
         let d;
@@ -383,7 +391,7 @@ http://${s.hostname}:81/vless-config.zip
     });
   });
 }
-async function trialtrojan(username, exp, quota, limitip, serverId) {
+async function trialtrojan(username, exp, quota, limitip, serverId, telegramUserId = '', telegramChatId = '') {
   console.log(`Creating Trojan account for ${username} with expiry ${exp} days, quota ${quota} GB, limit IP ${limitip}`);
 
   // Validasi username
@@ -408,9 +416,11 @@ async function trialtrojan(username, exp, quota, limitip, serverId) {
 
   const curlCommand = `curl -s -X POST "${web_URL}" \
 -H "Authorization: ${AUTH_TOKEN}" \
+-H "X-Telegram-User-Id: ${telegramUserId}" \
+-H "X-Telegram-Chat-Id: ${telegramChatId}" \
 -H "Content-Type: application/json" \
 -H "Accept: application/json" \
--d '{"timelimit":"1h"}'`;
+-d '{"timelimit":"1h","telegram_user_id":"${telegramUserId}","telegram_chat_id":"${telegramChatId}"}'`;
 
       exec(curlCommand, (_, stdout) => {
         let d;
@@ -570,7 +580,5 @@ Save Account Link: [Save Account](https://${shadowsocksData.domain}:81/shadowsoc
 }
 
 module.exports = { trialssh, trialudphttp, trialvmess, trialvless, trialtrojan, trialshadowsocks }; 
-
-
 
 

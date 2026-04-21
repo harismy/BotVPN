@@ -2,7 +2,7 @@ const { exec } = require('child_process');
 const sqlite3 = require('sqlite3').verbose();
 const db = new sqlite3.Database('./sellvpn.db');
 
-async function createzivpn(username, password, exp, iplimit, serverId) {
+async function createzivpn(username, password, exp, iplimit, serverId, telegramUserId = '', telegramChatId = '') {
   if (/\s/.test(username) || /[^a-zA-Z0-9]/.test(username)) {
     return '❌ Username hanya boleh huruf & angka (tanpa spasi)';
   }
@@ -16,8 +16,10 @@ async function createzivpn(username, password, exp, iplimit, serverId) {
       const url = `http://${server.domain}/vps/sshvpn`;
       const cmd = `curl -s -X POST "${url}" \
       -H "Authorization: ${server.auth}" \
+      -H "X-Telegram-User-Id: ${telegramUserId}" \
+      -H "X-Telegram-Chat-Id: ${telegramChatId}" \
       -H "Content-Type: application/json" \
-      -d '{"expired":${exp},"limitip":"${iplimit}","password":"${password}","username":"${username}"}'`;
+      -d '{"expired":${exp},"limitip":"${iplimit}","password":"${password}","username":"${username}","telegram_user_id":"${telegramUserId}","telegram_chat_id":"${telegramChatId}"}'`;
 
       exec(cmd, (_, stdout) => {
         let res;

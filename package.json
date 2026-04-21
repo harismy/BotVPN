@@ -1,4 +1,7 @@
 {
+  "scripts": {
+    "start:app3": "node apps/sc1forcr-nexus-bot/app3.js"
+  },
   "dependencies": {
     "axios": "^1.12.2",
     "crypto": "^1.0.1",

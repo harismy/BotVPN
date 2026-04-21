@@ -565,7 +565,7 @@ function upsertAccountRecord(payload) {
       }
       if (row) {
         db.run(
-          'UPDATE accounts SET password = ?, server_id = ?, server_name = ?, domain = ?, link_tls = ?, link_none = ?, link_grpc = ?, link_uptls = ?, link_upntls = ?, expires_at = ? WHERE id = ?',
+          'UPDATE accounts SET password = ?, server_id = ?, server_name = ?, domain = ?, link_tls = ?, link_none = ?, link_grpc = ?, link_uptls = ?, link_upntls = ?, account_ip_package = ?, account_price_per_day = ?, expires_at = ? WHERE id = ?',
           [
             payload.password || null,
             payload.serverId,
@@ -576,13 +576,15 @@ function upsertAccountRecord(payload) {
             payload.link_grpc || null,
             payload.link_uptls || null,
             payload.link_upntls || null,
+            Number(payload.accountIpPackage || 1) === 2 ? 2 : 1,
+            Math.max(0, Number(payload.accountPricePerDay || 0)),
             payload.expiresAt,
             row.id
           ]
         );
       } else {
         db.run(
-          'INSERT INTO accounts (user_id, type, username, password, server_id, server_name, domain, link_tls, link_none, link_grpc, link_uptls, link_upntls, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          'INSERT INTO accounts (user_id, type, username, password, server_id, server_name, domain, link_tls, link_none, link_grpc, link_uptls, link_upntls, account_ip_package, account_price_per_day, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
           [
             payload.userId,
             payload.type,
@@ -596,6 +598,8 @@ function upsertAccountRecord(payload) {
             payload.link_grpc || null,
             payload.link_uptls || null,
             payload.link_upntls || null,
+            Number(payload.accountIpPackage || 1) === 2 ? 2 : 1,
+            Math.max(0, Number(payload.accountPricePerDay || 0)),
             now,
             payload.expiresAt
           ]
@@ -1145,6 +1149,10 @@ const dbRunAsync = (sql, params = []) => new Promise((resolve, reject) => {
   });
 });
 
+const dbGetAsync = (sql, params = []) => new Promise((resolve, reject) => {
+  db.get(sql, params, (err, row) => (err ? reject(err) : resolve(row || null)));
+});
+
 async function reserveAccountChargeAtomic(userId, amount, type, action = 'other') {
   const referenceId = `account-${action}-${type}-${userId}-${Date.now()}`;
 
@@ -1248,7 +1256,46 @@ async function fetchTunnelAccountSummary(server) {
   const trojan = Number(data.trojan || 0);
   const total = Number(data.total || (ssh + vmess + vless + trojan));
 
-  return { ssh, vmess, vless, trojan, total };
+  // Prioritas: hitung akun aktif non-trial dari export-accounts
+  // agar /syncservernow tidak memasukkan akun trial ke total akun aktif berbayar.
+  const normalizeStatus = (raw) => String(raw || '').trim().toUpperCase();
+  const isTrialUsername = (raw) => /^trial/i.test(String(raw || '').trim());
+  const countPaidActive = (accounts) => {
+    if (!Array.isArray(accounts)) return 0;
+    return accounts.filter((acc) => {
+      const username = String(acc?.username || '').trim();
+      if (!username || isTrialUsername(username)) return false;
+      const status = normalizeStatus(acc?.status);
+      if (!status) return true; // beberapa endpoint export tidak kirim status
+      return status === 'AKTIF' || status === 'ACTIVE';
+    }).length;
+  };
+
+  try {
+    const [sshExport, vmessExport, vlessExport, trojanExport] = await Promise.all([
+      fetchTunnelExportAccounts(server, 'ssh', 50000),
+      fetchTunnelExportAccounts(server, 'vmess', 50000),
+      fetchTunnelExportAccounts(server, 'vless', 50000),
+      fetchTunnelExportAccounts(server, 'trojan', 50000)
+    ]);
+
+    const paidSsh = countPaidActive(sshExport.accounts);
+    const paidVmess = countPaidActive(vmessExport.accounts);
+    const paidVless = countPaidActive(vlessExport.accounts);
+    const paidTrojan = countPaidActive(trojanExport.accounts);
+    const paidTotal = paidSsh + paidVmess + paidVless + paidTrojan;
+
+    return {
+      ssh: paidSsh,
+      vmess: paidVmess,
+      vless: paidVless,
+      trojan: paidTrojan,
+      total: paidTotal
+    };
+  } catch (exportErr) {
+    logger.warn(`[SyncServer] fallback summary count (export-accounts gagal): ${exportErr.message}`);
+    return { ssh, vmess, vless, trojan, total };
+  }
 }
 function buildTunnelSyncRequest(server, endpointOverride = null) {
   const host = normalizeSyncHost(server.sync_host || server.domain);
@@ -1300,6 +1347,63 @@ function calcRemainingDaysFromDateExp(dateExp) {
 
   const diffDays = Math.floor((expDay.getTime() - todayStart.getTime()) / msPerDay);
   return Math.max(0, diffDays);
+}
+
+async function fetchOwnedAccountsByTelegramFromServer(server, telegramUserId) {
+  try {
+    const userId = String(telegramUserId || '').trim();
+    if (!userId) return [];
+
+    const host = String(server?.sync_host || server?.domain || '').trim();
+    const authToken = String(server?.auth || '').trim();
+    if (!host || !authToken) return [];
+
+    const response = await axios.get(`http://${host}/vps/my-accounts`, {
+      timeout: 15000,
+      headers: {
+        Authorization: authToken,
+        'x-telegram-user-id': userId
+      },
+      params: {
+        telegram_user_id: userId
+      }
+    });
+
+    const data = response?.data || {};
+    const accounts = Array.isArray(data?.data?.accounts)
+      ? data.data.accounts
+      : Array.isArray(data?.accounts)
+        ? data.accounts
+        : [];
+
+    const serverId = Number(server?.id || 0);
+    const serverName = String(server?.nama_server || server?.domain || ('ID ' + serverId)).trim();
+    const serverDomain = String(server?.domain || '').trim();
+
+    return accounts.map((item) => {
+      const type = String(item?.type || 'ssh').trim().toLowerCase() || 'ssh';
+      const username = String(item?.username || '').trim();
+      const dateExp = String(item?.date_exp || '').trim();
+      const expiresAt = Number(item?.expires_at || 0) || parseDateExpToTimestamp(dateExp);
+      return {
+        id: null,
+        type,
+        username,
+        password: String(item?.password || '').trim(),
+        server_id: serverId,
+        server_name: serverName,
+        domain: String(item?.domain || serverDomain).trim(),
+        date_exp: dateExp,
+        expires_at: expiresAt || null,
+        quota: Number(item?.quota || 0),
+        limitip: Number(item?.limitip || 0),
+        status: String(item?.status || '').trim().toUpperCase()
+      };
+    }).filter((item) => item.username);
+  } catch (e) {
+    logger.warn(`Gagal fetch owned accounts dari server ${server?.id || '-'}: ${e.message}`);
+    return [];
+  }
 }
 
 async function fetchTunnelAccountExpiryByUsername(server, username) {
@@ -5758,6 +5862,8 @@ db.run(`CREATE TABLE IF NOT EXISTS accounts (
   link_grpc TEXT,
   link_uptls TEXT,
   link_upntls TEXT,
+  account_ip_package INTEGER DEFAULT 1,
+  account_price_per_day INTEGER DEFAULT 0,
   created_at INTEGER,
   expires_at INTEGER
 )`, (err) => {
@@ -5786,6 +5892,8 @@ db.all("PRAGMA table_info(accounts)", (err, rows) => {
   if (!cols.includes('link_grpc')) db.run("ALTER TABLE accounts ADD COLUMN link_grpc TEXT");
   if (!cols.includes('link_uptls')) db.run("ALTER TABLE accounts ADD COLUMN link_uptls TEXT");
   if (!cols.includes('link_upntls')) db.run("ALTER TABLE accounts ADD COLUMN link_upntls TEXT");
+  if (!cols.includes('account_ip_package')) db.run("ALTER TABLE accounts ADD COLUMN account_ip_package INTEGER DEFAULT 1");
+  if (!cols.includes('account_price_per_day')) db.run("ALTER TABLE accounts ADD COLUMN account_price_per_day INTEGER DEFAULT 0");
 });
 
 bot.action('view_accounts', async (ctx) => {
@@ -5850,6 +5958,30 @@ function getEffectiveServerPackagePrice(serverRow, isReseller, ipPackage) {
 
 function getEffectiveServerPrice(serverRow, isReseller) {
   return getEffectiveServerPackagePrice(serverRow, isReseller, 1);
+}
+
+function resolveAccountIpPackage(accountRow) {
+  const storedPkg = Number(accountRow?.account_ip_package ?? accountRow?.accountIpPackage ?? 0);
+  if (storedPkg === 2) return 2;
+  if (storedPkg === 1) return 1;
+
+  const type = accountRow?.type || accountRow?.service || '';
+  const iplimitCandidate =
+    accountRow?.accountIpLimit ??
+    accountRow?.limitip ??
+    accountRow?.iplimit ??
+    accountRow?.server_iplimit ??
+    0;
+  return inferIpPackageByAccount(type, iplimitCandidate);
+}
+
+function resolveAccountPricePerDay(serverRow, isReseller, accountRow, preferStored = true) {
+  const storedPrice = Number(accountRow?.account_price_per_day ?? accountRow?.accountPricePerDay ?? 0);
+  if (preferStored && Number.isFinite(storedPrice) && storedPrice > 0) {
+    return storedPrice;
+  }
+  const pkg = resolveAccountIpPackage(accountRow);
+  return getEffectiveServerPackagePrice(serverRow, isReseller, pkg);
 }
 
 function isStrongCreateUsername(username) {
@@ -5949,6 +6081,42 @@ bot.action('delete_my_account_select_server', async (ctx) => {
     }
   );
 });
+
+async function renderRemoteDeleteAccountPage(ctx, page = 0) {
+  const state = userState[ctx.chat.id]?.remote_delete_accounts;
+  if (!state || !Array.isArray(state.rows) || state.rows.length === 0) {
+    return ctx.reply('Tidak ada akun remote untuk ditampilkan.');
+  }
+
+  const pageSize = Number(state.pageSize || 10);
+  const total = state.rows.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.max(0, Math.min(Number(page) || 0, totalPages - 1));
+  const start = safePage * pageSize;
+  const end = Math.min(start + pageSize, total);
+  const rows = state.rows.slice(start, end);
+
+  const keyboard = rows.map((row, idx) => {
+    const absIndex = start + idx;
+    const remainingDays = row.expires_at ? calcRemainingDays(row.expires_at) : calcRemainingDaysFromDateExp(row.date_exp);
+    return [{
+      text: `${row.username} (${String(row.type || '-').toUpperCase()}, ${remainingDays} hari)`,
+      callback_data: `delete_my_account_remote_pick_${absIndex}`
+    }];
+  });
+
+  const nav = [];
+  if (safePage > 0) nav.push({ text: 'Sebelumnya', callback_data: `delete_my_account_remote_page_${safePage - 1}` });
+  if (safePage < totalPages - 1) nav.push({ text: 'Selanjutnya', callback_data: `delete_my_account_remote_page_${safePage + 1}` });
+  if (nav.length) keyboard.push(nav);
+  keyboard.push([{ text: 'Pilih Server', callback_data: 'delete_my_account_select_server' }]);
+
+  return ctx.reply(
+    `Pilih akun yang ingin dihapus (data server):\nServer: ${state.serverName}\nHalaman ${safePage + 1}/${totalPages}`,
+    { reply_markup: { inline_keyboard: keyboard } }
+  );
+}
+
 bot.action(/delete_my_account_server_(\d+)/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const userId = ctx.from.id;
@@ -5989,14 +6157,39 @@ bot.action(/delete_my_account_server_(\d+)/, async (ctx) => {
       }
 
       if (!rows || rows.length === 0) {
-        return ctx.reply('Tidak ada akun aktif yang terhubung ke server ini di data bot.', {
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: 'Pilih Server Lain', callback_data: 'delete_my_account_select_server' }],
-              [{ text: 'Kembali', callback_data: 'send_main_menu' }]
-            ]
-          }
-        });
+        const serverRow = await dbGetAsync('SELECT id, nama_server, domain, sync_host, auth FROM Server WHERE id = ?', [serverId]).catch(() => null);
+        if (!serverRow) {
+          return ctx.reply('Server tidak ditemukan.', {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: 'Pilih Server Lain', callback_data: 'delete_my_account_select_server' }],
+                [{ text: 'Kembali', callback_data: 'send_main_menu' }]
+              ]
+            }
+          });
+        }
+
+        const remoteRowsRaw = await fetchOwnedAccountsByTelegramFromServer(serverRow, userId);
+        const remoteRows = remoteRowsRaw.filter((r) => !r.expires_at || r.expires_at > now);
+        if (remoteRows.length === 0) {
+          return ctx.reply('Tidak ada akun aktif yang terhubung ke server ini.', {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: 'Pilih Server Lain', callback_data: 'delete_my_account_select_server' }],
+                [{ text: 'Kembali', callback_data: 'send_main_menu' }]
+              ]
+            }
+          });
+        }
+
+        userState[ctx.chat.id] = userState[ctx.chat.id] || {};
+        userState[ctx.chat.id].remote_delete_accounts = {
+          serverId,
+          serverName: serverRow.nama_server || serverRow.domain || ('ID ' + serverId),
+          rows: remoteRows,
+          pageSize: 10
+        };
+        return renderRemoteDeleteAccountPage(ctx, 0);
       }
 
       const keyboard = rows.map((row) => {
@@ -6014,6 +6207,108 @@ bot.action(/delete_my_account_server_(\d+)/, async (ctx) => {
     }
   );
 });
+
+bot.action(/delete_my_account_remote_page_(\d+)/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const page = Number(ctx.match[1] || 0);
+  await renderRemoteDeleteAccountPage(ctx, Number.isFinite(page) ? page : 0);
+});
+
+bot.action(/delete_my_account_remote_pick_(\d+)/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const idx = Number(ctx.match[1] || -1);
+  const state = userState[ctx.chat.id]?.remote_delete_accounts;
+  if (!state || !Array.isArray(state.rows) || idx < 0 || idx >= state.rows.length) {
+    return ctx.reply('Data akun tidak ditemukan, silakan pilih ulang.');
+  }
+
+  const row = state.rows[idx];
+  const isReseller = await isUserReseller(ctx.from.id).catch(() => false);
+  const remainingDays = row.expires_at ? calcRemainingDays(row.expires_at) : calcRemainingDaysFromDateExp(row.date_exp);
+  const serverData = await dbGetAsync('SELECT * FROM Server WHERE id = ?', [row.server_id]).catch(() => null);
+  const accountPkg = resolveAccountIpPackage({
+    type: row.type,
+    account_ip_package: row.account_ip_package,
+    limitip: row.limitip || row.iplimit
+  });
+  const pricePerDay = resolveAccountPricePerDay(serverData || {}, isReseller, {
+    account_ip_package: accountPkg,
+    account_price_per_day: row.account_price_per_day
+  }, true);
+  const refund = Math.max(0, remainingDays * pricePerDay);
+
+  await ctx.reply(
+    'Konfirmasi Hapus Akun\n\n' +
+    `- <b>Username:</b> ${escapeHtml(row.username || '-')}\n` +
+    `- <b>Layanan:</b> ${escapeHtml(String(row.type || '-').toUpperCase())}\n` +
+    `- <b>Server:</b> ${escapeHtml(row.server_name || row.domain || '-')}\n` +
+    `- <b>Sisa hari:</b> ${remainingDays} hari\n` +
+    `- <b>Konversi saldo:</b> Rp ${Number(refund).toLocaleString('id-ID')}\n\n` +
+    (remainingDays < 2 ? 'Akun ini belum bisa dihapus. Minimal sisa masa aktif 2 hari.' : 'Akun akan dihapus permanen dari server.'),
+    {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          ...((remainingDays >= 2) ? [[{ text: 'Ya, Hapus Akun Ini', callback_data: `delete_my_account_remote_confirm_${idx}` }]] : []),
+          [{ text: 'Batal', callback_data: 'delete_my_account_select_server' }]
+        ]
+      }
+    }
+  );
+});
+
+bot.action(/delete_my_account_remote_confirm_(\d+)/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const idx = Number(ctx.match[1] || -1);
+  const state = userState[ctx.chat.id]?.remote_delete_accounts;
+  if (!state || !Array.isArray(state.rows) || idx < 0 || idx >= state.rows.length) {
+    return ctx.reply('Data akun tidak ditemukan, silakan pilih ulang.');
+  }
+
+  const row = state.rows[idx];
+  const isReseller = await isUserReseller(ctx.from.id).catch(() => false);
+  const remainingDays = row.expires_at ? calcRemainingDays(row.expires_at) : calcRemainingDaysFromDateExp(row.date_exp);
+  if (remainingDays < 2) {
+    return ctx.reply('Akun belum bisa dihapus. Minimal sisa masa aktif 2 hari.');
+  }
+
+  const deleteFn = SELF_DELETE_TYPE_HANDLERS[row.type] || SELF_DELETE_TYPE_HANDLERS.ssh;
+  const result = await deleteFn(row.username, 'none', 'none', 'none', row.server_id);
+  const resultText = typeof result === 'string' ? result : JSON.stringify(result || {});
+  if (/gagal|error|failed|tidak\s+ditemukan|not\s+found/i.test(resultText)) {
+    return ctx.reply(`Gagal hapus akun dari server.\n\n${resultText}`);
+  }
+
+  const serverData = await dbGetAsync('SELECT * FROM Server WHERE id = ?', [row.server_id]).catch(() => null);
+  const accountPkg = resolveAccountIpPackage({
+    type: row.type,
+    account_ip_package: row.account_ip_package,
+    limitip: row.limitip || row.iplimit
+  });
+  const pricePerDay = resolveAccountPricePerDay(serverData || {}, isReseller, {
+    account_ip_package: accountPkg,
+    account_price_per_day: row.account_price_per_day
+  }, true);
+  const refund = Math.max(0, remainingDays * pricePerDay);
+  if (refund > 0) {
+    await dbRunAsync('INSERT OR IGNORE INTO users (user_id, saldo) VALUES (?, 0)', [ctx.from.id]).catch(() => {});
+    await dbRunAsync('UPDATE users SET saldo = saldo + ? WHERE user_id = ?', [refund, ctx.from.id]).catch(() => {});
+    await dbRunAsync(
+      'INSERT INTO transactions (user_id, amount, type, reference_id, timestamp) VALUES (?, ?, ?, ?, ?)',
+      [ctx.from.id, refund, 'delete_refund', `delete_refund_remote_${Date.now()}`, Date.now()]
+    ).catch(() => {});
+  }
+
+  state.rows.splice(idx, 1);
+  await ctx.reply(
+    `Akun berhasil dihapus.\n` +
+    `- Username: ${row.username}\n` +
+    `- Layanan: ${String(row.type || '-').toUpperCase()}\n` +
+    `- Server: ${row.server_name || row.domain || '-'}\n` +
+    `- Konversi ke saldo: Rp ${Number(refund).toLocaleString('id-ID')}`
+  );
+});
+
 bot.action(/delete_my_account_pick_(\d+)/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const userId = ctx.from.id;
@@ -6038,7 +6333,8 @@ bot.action(/delete_my_account_pick_(\d+)/, async (ctx) => {
       const remainingDays = calcRemainingDays(row.expires_at);
       const accountAgeMs = Date.now() - Number(row.created_at || 0);
       const lockDelete24h = !isReseller && (!Number.isFinite(accountAgeMs) || accountAgeMs < (24 * 60 * 60 * 1000));
-      const refund = Math.max(0, remainingDays * getEffectiveServerPrice(row, isReseller));
+      const pricePerDay = resolveAccountPricePerDay(row, isReseller, row, true);
+      const refund = Math.max(0, remainingDays * pricePerDay);
       const serverLabel = row.server_name || row.domain || '-';
 
       await ctx.reply(
@@ -6114,7 +6410,8 @@ bot.action(/delete_my_account_confirm_(\d+)/, async (ctx) => {
     if (!isReseller && (!Number.isFinite(accountAgeMs) || accountAgeMs < (24 * 60 * 60 * 1000))) {
       return ctx.reply('Akun belum bisa dihapus. Akun harus aktif minimal 24 jam.');
     }
-    const refund = Math.max(0, remainingDays * getEffectiveServerPrice(row, isReseller));
+    const pricePerDay = resolveAccountPricePerDay(row, isReseller, row, true);
+    const refund = Math.max(0, remainingDays * pricePerDay);
 
     await dbRun('DELETE FROM accounts WHERE id = ? AND user_id = ?', [accountId, userId]);
 
@@ -6160,6 +6457,251 @@ bot.action(/delete_my_account_confirm_(\d+)/, async (ctx) => {
     await ctx.reply('❌ Terjadi kesalahan saat menghapus akun.');
   }
 });
+async function renderRemoteOwnedAccountsPage(ctx, page = 0) {
+  const state = userState[ctx.chat.id]?.remote_owned_accounts;
+  if (!state || !Array.isArray(state.rows) || state.rows.length === 0) {
+    return ctx.reply('Tidak ada akun remote untuk ditampilkan.');
+  }
+
+  const pageSize = Number(state.pageSize || 10);
+  const total = state.rows.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.max(0, Math.min(Number(page) || 0, totalPages - 1));
+  const start = safePage * pageSize;
+  const end = Math.min(start + pageSize, total);
+  const rows = state.rows.slice(start, end);
+
+  const lines = rows.map((row, idx) => {
+    const no = start + idx + 1;
+    const expText = row.expires_at
+      ? formatDateId(new Date(row.expires_at))
+      : (row.date_exp || '-');
+    return (
+      `${no}. ${String(row.type || '-').toUpperCase()} - ${row.username}\n` +
+      `   Server: ${row.server_name || row.domain || '-'}\n` +
+      `   Expired: ${expText}`
+    );
+  });
+
+  const keyboard = [];
+  const nav = [];
+  if (safePage > 0) nav.push({ text: 'Sebelumnya', callback_data: `view_accounts_remote_page_${safePage - 1}` });
+  if (safePage < totalPages - 1) nav.push({ text: 'Selanjutnya', callback_data: `view_accounts_remote_page_${safePage + 1}` });
+  if (nav.length) keyboard.push(nav);
+  keyboard.push([{ text: 'Kembali', callback_data: 'view_accounts' }]);
+
+  return ctx.reply(
+    `Daftar akun dari server (halaman ${safePage + 1}/${totalPages})\n\n${lines.join('\n\n')}`,
+    { reply_markup: { inline_keyboard: keyboard } }
+  );
+}
+
+function normalizeRenewAccountType(rawType) {
+  const value = String(rawType || '').trim().toLowerCase();
+  if (value === 'udp') return 'udp_http';
+  if (value === 'ovpn') return 'ssh';
+  return value;
+}
+
+function inferIpPackageByAccount(type, iplimit) {
+  const normalizedType = normalizeRenewAccountType(type);
+  const ip = Number(iplimit || 0);
+  if (!Number.isFinite(ip) || ip <= 0) return 1;
+  if (normalizedType === 'udp_http') {
+    // Kompatibel dengan mapping lama (1IP=5,2IP=6) dan mapping baru (1IP=3,2IP=4)
+    if (ip >= 6) return 2;
+    if (ip === 5) return 1;
+    return ip >= 4 ? 2 : 1;
+  }
+  // Untuk akun reguler: paket 1IP dikirim sebagai limit 2, paket 2IP sebagai limit 3.
+  return ip >= 3 ? 2 : 1;
+}
+
+async function findRenewCandidatesByUsername(ctx, rawUsername) {
+  const userId = ctx.from.id;
+  const username = String(rawUsername || '').trim().toLowerCase();
+  if (!username) return [];
+
+  const localRows = await dbAllAsync(
+    `SELECT a.*, s.iplimit AS server_iplimit, s.quota AS server_quota,
+            COALESCE(NULLIF(s.nama_server, ''), s.domain, a.server_name, a.domain, '-') AS resolved_server_name,
+            COALESCE(NULLIF(s.domain, ''), a.domain, '-') AS resolved_domain
+     FROM accounts a
+     LEFT JOIN Server s ON s.id = a.server_id
+     WHERE a.user_id = ?
+       AND LOWER(TRIM(COALESCE(a.username, ''))) = LOWER(TRIM(?))
+     ORDER BY a.id DESC`,
+    [userId, username]
+  ).catch(() => []);
+
+  const candidates = [];
+  const seen = new Set();
+  const now = Date.now();
+
+  const pushCandidate = (item) => {
+    const normalizedType = normalizeRenewAccountType(item.type);
+    const supportedTypes = new Set(['vmess', 'vless', 'trojan', 'shadowsocks', 'ssh', 'zivpn', 'udp_http']);
+    if (!supportedTypes.has(normalizedType)) return;
+    if (!Number.isFinite(item.serverId) || item.serverId <= 0) return;
+
+    const key = `${item.serverId}|${normalizedType}|${String(item.username || '').toLowerCase()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+
+    const expiresAtNum = Number(item.expiresAt || 0);
+    const remainingDays = expiresAtNum > 0
+      ? calcRemainingDays(expiresAtNum)
+      : calcRemainingDaysFromDateExp(item.dateExp || '');
+
+    candidates.push({
+      username: String(item.username || '').trim(),
+      type: normalizedType,
+      serverId: Number(item.serverId),
+      serverName: String(item.serverName || '-').trim() || '-',
+      domain: String(item.domain || '-').trim() || '-',
+      iplimit: Number(item.iplimit || 0),
+      quota: Number(item.quota || 0),
+      expiresAt: expiresAtNum > 0 ? expiresAtNum : null,
+      dateExp: String(item.dateExp || '').trim(),
+      status: String(item.status || '').trim().toUpperCase(),
+      source: String(item.source || 'local'),
+      remainingDays,
+      selectedIpPackage: Number(item.accountIpPackage || inferIpPackageByAccount(normalizedType, item.iplimit)) === 2 ? 2 : 1,
+      accountPricePerDay: Math.max(0, Number(item.accountPricePerDay || 0))
+    });
+  };
+
+  for (const row of localRows) {
+    pushCandidate({
+      username: row.username,
+      type: row.type,
+      serverId: Number(row.server_id || 0),
+      serverName: row.resolved_server_name || row.server_name || row.domain || '-',
+      domain: row.resolved_domain || row.domain || '-',
+      iplimit: Number(row.server_iplimit || 0),
+      quota: Number(row.server_quota || 0),
+      accountIpPackage: Number(row.account_ip_package || 0),
+      accountPricePerDay: Number(row.account_price_per_day || 0),
+      expiresAt: Number(row.expires_at || 0) || null,
+      dateExp: row.expires_at ? formatDateYmdLocal(new Date(Number(row.expires_at))) : '',
+      status: (Number(row.expires_at || 0) > now) ? 'ACTIVE' : 'EXPIRED',
+      source: 'local'
+    });
+  }
+
+  if (candidates.length > 0) {
+    return candidates;
+  }
+
+  const isReseller = await isUserReseller(userId).catch(() => false);
+  const servers = await dbAllAsync(
+    `SELECT id, nama_server, domain, sync_host, auth
+     FROM Server
+     WHERE (COALESCE(is_reseller_only, 0) = 0 OR ? = 1)
+     ORDER BY nama_server COLLATE NOCASE ASC`,
+    [isReseller ? 1 : 0]
+  ).catch(() => []);
+
+  for (const server of servers) {
+    const owned = await fetchOwnedAccountsByTelegramFromServer(server, userId);
+    for (const row of owned) {
+      if (String(row.username || '').trim().toLowerCase() !== username) continue;
+      pushCandidate({
+        username: row.username,
+        type: row.type,
+        serverId: Number(server.id || row.server_id || 0),
+        serverName: server.nama_server || server.domain || row.server_name || '-',
+        domain: server.domain || row.domain || '-',
+        iplimit: Number(row.limitip || 0),
+        quota: Number(row.quota || 0),
+        accountIpPackage: inferIpPackageByAccount(row.type, row.limitip),
+        expiresAt: Number(row.expires_at || 0) || null,
+        dateExp: String(row.date_exp || '').trim(),
+        status: row.status || ((Number(row.expires_at || 0) > now) ? 'ACTIVE' : 'EXPIRED'),
+        source: 'remote'
+      });
+    }
+  }
+
+  return candidates;
+}
+
+async function renderRenewLookupList(ctx, page = 0) {
+  const state = userState[ctx.chat.id]?.renew_lookup;
+  if (!state || !Array.isArray(state.rows) || state.rows.length === 0) {
+    return ctx.reply('Data akun tidak tersedia. Silakan mulai ulang perpanjang akun.');
+  }
+
+  const pageSize = Number(state.pageSize || 8);
+  const total = state.rows.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.max(0, Math.min(Number(page) || 0, totalPages - 1));
+  const start = safePage * pageSize;
+  const rows = state.rows.slice(start, start + pageSize);
+
+  const keyboard = rows.map((row, idx) => {
+    const absIndex = start + idx;
+    return [{
+      text: `${row.username} | ${String(row.type || '-').toUpperCase()} | ${row.serverName}`,
+      callback_data: `renew_lookup_pick_${absIndex}`
+    }];
+  });
+
+  const nav = [];
+  if (safePage > 0) nav.push({ text: 'Sebelumnya', callback_data: `renew_lookup_page_${safePage - 1}` });
+  if (safePage < totalPages - 1) nav.push({ text: 'Selanjutnya', callback_data: `renew_lookup_page_${safePage + 1}` });
+  if (nav.length > 0) keyboard.push(nav);
+  keyboard.push([{ text: 'Menu Utama', callback_data: 'send_main_menu' }]);
+
+  return ctx.reply(
+    `Ditemukan ${total} akun dengan username "${state.username}". Pilih akun yang ingin diperpanjang.\nHalaman ${safePage + 1}/${totalPages}`,
+    { reply_markup: { inline_keyboard: keyboard } }
+  );
+}
+
+async function sendRenewAccountDetail(ctx, rowIndex) {
+  const state = userState[ctx.chat.id]?.renew_lookup;
+  if (!state || !Array.isArray(state.rows) || rowIndex < 0 || rowIndex >= state.rows.length) {
+    return ctx.reply('Data akun tidak ditemukan, silakan cari ulang.');
+  }
+
+  const row = state.rows[rowIndex];
+  const expText = row.expiresAt
+    ? formatDateId(new Date(row.expiresAt))
+    : (row.dateExp || '-');
+  const statusText = row.status || (row.remainingDays > 0 ? 'ACTIVE' : 'EXPIRED');
+  const pkgText = Number(row.selectedIpPackage || 1) === 2 ? '2 IP' : '1 IP';
+  const hargaPerHariText = Number(row.accountPricePerDay || 0) > 0
+    ? `Rp ${Number(row.accountPricePerDay).toLocaleString('id-ID')}`
+    : '-';
+
+  const text =
+    'Detail akun ditemukan:\n\n' +
+    `- Username: ${row.username}\n` +
+    `- Layanan: ${String(row.type || '-').toUpperCase()}\n` +
+    `- Server: ${row.serverName || '-'}\n` +
+    `- Domain: ${row.domain || '-'}\n` +
+    `- Paket IP: ${pkgText}\n` +
+    `- Limit IP: ${Number(row.iplimit || 0)}\n` +
+    `- Quota: ${Number(row.quota || 0)} GB\n` +
+    `- Harga/Hari Tersimpan: ${hargaPerHariText}\n` +
+    `- Expired: ${expText}\n` +
+    `- Sisa aktif: ${Number(row.remainingDays || 0)} hari\n` +
+    `- Status: ${statusText}`;
+
+  const keyboard = [
+    [{ text: 'Perpanjang akun ini', callback_data: `renew_lookup_extend_${rowIndex}` }]
+  ];
+  if ((state.rows || []).length > 1) {
+    keyboard.push([{ text: 'Pilih akun lain', callback_data: 'renew_lookup_page_0' }]);
+  }
+  keyboard.push([{ text: 'Menu Utama', callback_data: 'send_main_menu' }]);
+
+  return ctx.reply(text, {
+    reply_markup: { inline_keyboard: keyboard }
+  });
+}
+
 async function sendAccountList(ctx, isExpired, limit = 10) {
   const userId = ctx.from.id;
   const now = Date.now();
@@ -6184,6 +6726,40 @@ async function sendAccountList(ctx, isExpired, limit = 10) {
       return ctx.reply('❌ Terjadi kesalahan saat mengambil data akun.');
     }
     if (!rows || rows.length === 0) {
+      if (!isExpired) {
+        const isReseller = await isUserReseller(userId).catch(() => false);
+        const servers = await dbAllAsync(
+          `SELECT id, nama_server, domain, sync_host, auth
+           FROM Server
+           WHERE (COALESCE(is_reseller_only, 0) = 0 OR ? = 1)
+           ORDER BY nama_server COLLATE NOCASE ASC`,
+          [isReseller ? 1 : 0]
+        ).catch(() => []);
+
+        const remoteRows = [];
+        for (const server of servers) {
+          const owned = await fetchOwnedAccountsByTelegramFromServer(server, userId);
+          for (const item of owned) {
+            if (item.expires_at && item.expires_at <= now) continue;
+            remoteRows.push(item);
+          }
+        }
+
+        const unique = [];
+        const seen = new Set();
+        for (const item of remoteRows) {
+          const key = `${item.server_id}|${String(item.type || '').toLowerCase()}|${String(item.username || '').toLowerCase()}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          unique.push(item);
+        }
+
+        if (unique.length > 0) {
+          userState[ctx.chat.id] = userState[ctx.chat.id] || {};
+          userState[ctx.chat.id].remote_owned_accounts = { rows: unique, pageSize: 10 };
+          return renderRemoteOwnedAccountsPage(ctx, 0);
+        }
+      }
       return ctx.reply(isExpired ? '📭 Tidak ada akun expired.' : '📭 Tidak ada akun aktif.');
     }
 
@@ -6255,6 +6831,55 @@ bot.action('view_accounts_active_all', async (ctx) => {
 bot.action('view_accounts_expired', async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   await sendAccountList(ctx, true, 0);
+});
+
+bot.action(/view_accounts_remote_page_(\d+)/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const page = Number(ctx.match[1] || 0);
+  await renderRemoteOwnedAccountsPage(ctx, Number.isFinite(page) ? page : 0);
+});
+
+bot.action(/renew_lookup_page_(\d+)/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const page = Number(ctx.match[1] || 0);
+  await renderRenewLookupList(ctx, Number.isFinite(page) ? page : 0);
+});
+
+bot.action(/renew_lookup_pick_(\d+)/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const rowIndex = Number(ctx.match[1] || -1);
+  await sendRenewAccountDetail(ctx, rowIndex);
+});
+
+bot.action(/renew_lookup_extend_(\d+)/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const rowIndex = Number(ctx.match[1] || -1);
+  const lookupState = userState[ctx.chat.id]?.renew_lookup;
+  if (!lookupState || !Array.isArray(lookupState.rows) || rowIndex < 0 || rowIndex >= lookupState.rows.length) {
+    return ctx.reply('Data akun tidak ditemukan, silakan mulai ulang proses perpanjang.');
+  }
+
+  const row = lookupState.rows[rowIndex];
+  userState[ctx.chat.id] = {
+    step: `exp_renew_${row.type}`,
+    action: 'renew',
+    type: row.type,
+    username: row.username,
+    serverId: row.serverId,
+    selectedIpPackage: row.selectedIpPackage || 1,
+    accountIpPackage: row.selectedIpPackage || 1,
+    accountPricePerDay: Number(row.accountPricePerDay || 0),
+    accountIpLimit: Number(row.iplimit || 0),
+    accountQuota: Number(row.quota || 0),
+    serverName: row.serverName || '',
+    serverDomain: row.domain || ''
+  };
+
+  await ctx.reply(
+    `Akun ${row.username} dipilih untuk diperpanjang.\n` +
+    'Masukkan mau berapa hari perpanjangnya:',
+    { parse_mode: 'Markdown' }
+  );
 });
 
 async function sendToolsMenu(ctx) {
@@ -7129,10 +7754,17 @@ bot.action('service_create', async (ctx) => {
 });
 
 bot.action('service_renew', async (ctx) => {
-  if (!ctx || !ctx.match) {
+  if (!ctx) {
     return ctx.reply('❌ *GAGAL!* Terjadi kesalahan saat memproses permintaan Anda. Silakan coba lagi nanti.', { parse_mode: 'Markdown' });
   }
-  await handleServiceAction(ctx, 'renew');
+  await ctx.answerCbQuery().catch(() => {});
+  userState[ctx.chat.id] = userState[ctx.chat.id] || {};
+  userState[ctx.chat.id].step = 'renew_lookup_username';
+  await ctx.reply(
+    'Masukkan username akun yang ingin diperpanjang.\n' +
+    'Ketik `batal` untuk membatalkan.',
+    { parse_mode: 'Markdown' }
+  );
 });
 
 bot.action('service_del', async (ctx) => {
@@ -9050,27 +9682,29 @@ if (action === 'trial') {
   const exp = '1';       // 1 hari
   const quota = '500';    // 1 GB (sesuaikan)
   const iplimit = '1';  // 1 IP
+  const telegramUserId = String(ctx.from?.id || '');
+  const telegramChatId = String(ctx.chat?.id || '');
 
   let msg;
 
   if (type === 'ssh') {
     const password = '1';
-    msg = await trialssh(username, password, exp, iplimit, serverId);
+    msg = await trialssh(username, password, exp, iplimit, serverId, telegramUserId, telegramChatId);
 
   } else if (type === 'vmess') {
-    msg = await trialvmess(username, exp, quota, iplimit, serverId);
+    msg = await trialvmess(username, exp, quota, iplimit, serverId, telegramUserId, telegramChatId);
 
   } else if (type === 'vless') {
-    msg = await trialvless(username, exp, quota, iplimit, serverId);
+    msg = await trialvless(username, exp, quota, iplimit, serverId, telegramUserId, telegramChatId);
 
   } else if (type === 'trojan') {
-    msg = await trialtrojan(username, exp, quota, iplimit, serverId);
+    msg = await trialtrojan(username, exp, quota, iplimit, serverId, telegramUserId, telegramChatId);
 
   } else if (type === 'zivpn') {
-    msg = await trialzivpn(serverId);
+    msg = await trialzivpn(serverId, telegramUserId, telegramChatId);
   } else if (type === 'udp_http') {
     const password = '1';
-    msg = await trialudphttp(username, password, exp, iplimit, serverId);
+    msg = await trialudphttp(username, password, exp, iplimit, serverId, telegramUserId, telegramChatId);
   }
 
   await saveTrialAccess(ctx.from.id);
@@ -9269,6 +9903,37 @@ if (action === 'trial') {
     }});
     return; // Penting! Jangan lanjut ke case lain
   }
+  if (state.step === 'renew_lookup_username') {
+    const input = ctx.message.text.trim();
+    if (input.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Perpanjang akun dibatalkan.');
+    }
+    if (!/^[a-z0-9]{3,20}$/.test(input)) {
+      return ctx.reply('❌ Username tidak valid. Gunakan huruf kecil dan angka (3-20 karakter).');
+    }
+
+    const candidates = await findRenewCandidatesByUsername(ctx, input);
+    if (!candidates || candidates.length === 0) {
+      return ctx.reply(
+        `Akun dengan username "${input}" tidak ditemukan.\n` +
+        'Kirim ulang username lain atau ketik `batal`.',
+        { parse_mode: 'Markdown' }
+      );
+    }
+
+    userState[ctx.chat.id] = userState[ctx.chat.id] || {};
+    userState[ctx.chat.id].renew_lookup = {
+      username: input,
+      rows: candidates,
+      pageSize: 8
+    };
+
+    if (candidates.length === 1) {
+      return sendRenewAccountDetail(ctx, 0);
+    }
+    return renderRenewLookupList(ctx, 0);
+  }
   if (state.step.startsWith('username_')) {
     state.username = text;
 
@@ -9344,10 +10009,17 @@ if (exp > 365) {
         return ctx.reply('❌ *Server tidak ditemukan.*', { parse_mode: 'Markdown' });
       }
 
-      state.quota = server.quota;
-      if (state.type === 'udp_http' && state.action === 'create') {
+      state.quota = Number(state.accountQuota || 0) > 0 ? Number(state.accountQuota) : server.quota;
+      if (state.action === 'renew' && Number(state.accountIpLimit) > 0) {
+        state.iplimit = Number(state.accountIpLimit);
+      } else if (state.type === 'udp_http' && state.action === 'create') {
         const selectedPkg = Number(state.selectedIpPackage || 1);
-        state.iplimit = selectedPkg === 2 ? 6 : 5;
+        // Mapping internal UDP HC ke server: 1IP -> 3, 2IP -> 4
+        state.iplimit = selectedPkg === 2 ? 4 : 3;
+      } else if (state.action === 'create') {
+        const selectedPkg = Number(state.selectedIpPackage || 1);
+        // Mapping internal ke server: 1IP -> 2, 2IP -> 3
+        state.iplimit = selectedPkg === 2 ? 3 : 2;
       } else {
         state.iplimit = state.selectedIpPackage || server.iplimit;
       }
@@ -9369,7 +10041,20 @@ if (exp > 365) {
         }
 
         const isResellerUser = await isUserReseller(ctx.from.id).catch(() => false);
-        const selectedPackage = state.selectedIpPackage || 1;
+        const selectedPackage = (() => {
+          if (state.action === 'renew') {
+            const renewPkg = Number(
+              state.accountIpPackage ||
+              state.selectedIpPackage ||
+              inferIpPackageByAccount(
+                state.type,
+                state.accountIpLimit || state.iplimit || server.iplimit
+              )
+            );
+            return renewPkg === 2 ? 2 : 1;
+          }
+          return Number(state.selectedIpPackage || 1) === 2 ? 2 : 1;
+        })();
         const harga = getEffectiveServerPackagePrice(server, isResellerUser, selectedPackage);
         const totalHarga = harga * state.exp; 
         db.get('SELECT saldo FROM users WHERE user_id = ?', [ctx.from.id], async (err, user) => {
@@ -9397,22 +10082,24 @@ if (exp > 365) {
           }
 
           if (action === 'create') {
+            const telegramUserId = String(ctx.from?.id || '');
+            const telegramChatId = String(ctx.chat?.id || '');
             if (type === 'vmess') {
-              msg = await createvmess(username, exp, quota, iplimit, serverId);
+              msg = await createvmess(username, exp, quota, iplimit, serverId, telegramUserId, telegramChatId);
             } else if (type === 'vless') {
-              msg = await createvless(username, exp, quota, iplimit, serverId);
+              msg = await createvless(username, exp, quota, iplimit, serverId, telegramUserId, telegramChatId);
             } else if (type === 'trojan') {
-              msg = await createtrojan(username, exp, quota, iplimit, serverId);
+              msg = await createtrojan(username, exp, quota, iplimit, serverId, telegramUserId, telegramChatId);
             } else if (type === 'shadowsocks') {
               msg = await createshadowsocks(username, exp, quota, iplimit, serverId);
             } else if (type === 'ssh') {
-              msg = await createssh(username, password, exp, iplimit, serverId);
+              msg = await createssh(username, password, exp, iplimit, serverId, telegramUserId, telegramChatId);
             } else if (type === 'zivpn') {
               const randomPassword = Math.random().toString(36).slice(-8);
               usedPassword = randomPassword;
-              msg = await createzivpn(username, randomPassword, exp, iplimit, serverId);
+              msg = await createzivpn(username, randomPassword, exp, iplimit, serverId, telegramUserId, telegramChatId);
             } else if (type === 'udp_http') {
-              msg = await createudphttp(username, password, exp, iplimit, serverId);
+              msg = await createudphttp(username, password, exp, iplimit, serverId, telegramUserId, telegramChatId);
             }
 
             logger.info(`Account created for user ${ctx.from.id}, type: ${type}`);
@@ -9525,6 +10212,8 @@ upsertAccountRecord({
   serverId,
   serverName: state.serverName,
   domain: state.serverDomain,
+  accountIpPackage: selectedPackage,
+  accountPricePerDay: harga,
   expiresAt,
   ...linkPayload
 });
