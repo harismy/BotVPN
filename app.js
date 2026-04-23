@@ -5960,6 +5960,28 @@ function getEffectiveServerPrice(serverRow, isReseller) {
   return getEffectiveServerPackagePrice(serverRow, isReseller, 1);
 }
 
+function normalizeCreateAccountMessageForDisplay(message, selectedPackage) {
+  const pkg = Number(selectedPackage || 1) === 2 ? 2 : 1;
+  const text = String(message || '');
+  if (!text.trim()) return text;
+
+  // Paksa info IP yang tampil ke user tetap 1IP/2IP (bukan limit internal server).
+  // Line-based agar format markdown seperti "*IP Limit* : 3 device" tetap ter-handle.
+  const lines = text.split('\n');
+  const normalized = lines.map((line) => {
+    if (!/ip\s*limit|limit\s*ip|max(?:imum)?\s*(?:login|ip)|login\s*maks/i.test(line)) {
+      return line;
+    }
+
+    const replaced = line.replace(/([:=]\s*`?)(\d+)(\s*(?:`)?(?:\s*(?:ip|device|devices|pengguna))?)/i, `$1${pkg}$3`);
+    if (replaced !== line) return replaced;
+
+    return line.replace(/(\D)(\d+)(\D*)$/, `$1${pkg}$3`);
+  });
+
+  return normalized.join('\n');
+}
+
 function resolveAccountIpPackage(accountRow) {
   const storedPkg = Number(accountRow?.account_ip_package ?? accountRow?.accountIpPackage ?? 0);
   if (storedPkg === 2) return 2;
@@ -10243,7 +10265,10 @@ if (action === 'create') {
   }
 }
 
-await ctx.reply(msg, { parse_mode: 'Markdown' });
+const msgToUser = action === 'create'
+  ? normalizeCreateAccountMessageForDisplay(msg, selectedPackage)
+  : msg;
+await ctx.reply(msgToUser, { parse_mode: 'Markdown' });
 delete userState[ctx.chat.id];
 //SALDO DATABES
           });
@@ -13307,4 +13332,3 @@ const adminMessage =
     cleanupOldBroadcastPolls();
   }, 10000);
 });
-
