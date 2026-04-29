@@ -6,7 +6,7 @@ function normalizeApiBase(rawDomain) {
   const value = String(rawDomain || '').trim();
   if (!value) return '';
   if (/^https?:\/\//i.test(value)) return value.replace(/\/+$/, '');
-  return `http://${value}`.replace(/\/+$/, '');
+  return `https://${value}`.replace(/\/+$/, '');
 }
 
 function normalizeAuthToken(rawAuth) {
