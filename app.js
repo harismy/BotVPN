@@ -511,6 +511,27 @@ function formatGatewayModeLabel() {
   }
 }
 
+function isOrderKuotaCredentialDefault() {
+  try {
+    const { buildPayload } = require('./api-cekpayment-orkut');
+    const qs = require('qs');
+    const payload = buildPayload();
+    const decoded = qs.parse(payload);
+    return (
+      decoded.username === 'yantoxxx' ||
+      decoded.username === 'AKUN_DEFAULT' ||
+      (decoded.token && (
+        decoded.token.includes('xxxxx') ||
+        decoded.token.includes('TOKEN_DEFAULT') ||
+        decoded.token.includes('contoh')
+      ))
+    );
+  } catch (err) {
+    logger.warn('Gagal membaca credential OrderKuota: ' + err.message);
+    return true;
+  }
+}
+
 function formatDateId(date) {
   try {
     return date.toLocaleDateString('id-ID', { timeZone: 'Asia/Jakarta' });
@@ -5695,39 +5716,21 @@ bot.action('topup_saldo', async (ctx) => {
       return;
     }
     
-    // Cek credential OrderKuota REAL-TIME
-    const { buildPayload } = require('./api-cekpayment-orkut');
-    const qs = require('qs');
-    const payload = buildPayload();
-    const decoded = qs.parse(payload);
-    
-    // Cek apakah masih pakai credential default
-    const isDefaultCredential = 
-      decoded.username === 'yantoxxx' || 
-      (decoded.token && (
-        decoded.token.includes('xxxxx') ||
-        decoded.token.includes('TOKEN_DEFAULT') ||
-        decoded.token.includes('contoh')
-      ));
-    
-// Di dalam topup_saldo handler - bagian if (isDefaultCredential):
-if (isDefaultCredential) {
-  // ❌ MODE DISABLED - Credential masih default
-  await ctx.reply(
-    '❌ *TOP-UP OTOMATIS SEMENTARA TIDAK TERSEDIA*\n\n' +
-    'Admin belum mengkonfigurasi sistem pembayaran.\n' +
-    'Sistem tidak dapat memverifikasi pembayaran Anda.\n\n' +
-    `📞 Hubungi admin: ${ADMIN_USERNAME}\n\n` +
-    '🔧 *Admin bisa cek konfigurasi dengan:*\n' +
-    '`/checkpaymentconfig`\n\n' +
-    '_Admin sudah mendapatkan notifikasi untuk segera memperbaiki sistem._',
-    { parse_mode: 'Markdown' }
-  );
-  
-  // Log warning
-  logger.warn(`User ${ctx.from.id} mencoba topup tapi credential masih default`);
-  return;
-}      
+    // Cek credential OrderKuota hanya saat mode memakai OrderKuota
+    if (isGatewayEnabled('orderkuota') && isOrderKuotaCredentialDefault()) {
+      await ctx.reply(
+        '❌ *TOP-UP OTOMATIS SEMENTARA TIDAK TERSEDIA*\n\n' +
+        'Admin belum mengkonfigurasi sistem pembayaran.\n' +
+        'Sistem tidak dapat memverifikasi pembayaran Anda.\n\n' +
+        `📞 Hubungi admin: ${ADMIN_USERNAME}\n\n` +
+        '🔧 *Admin bisa cek konfigurasi dengan:*\n' +
+        '`/checkpaymentconfig`\n\n' +
+        '_Admin sudah mendapatkan notifikasi untuk segera memperbaiki sistem._',
+        { parse_mode: 'Markdown' }
+      );
+      logger.warn(`User ${ctx.from.id} mencoba topup tapi credential OrderKuota masih default`);
+      return;
+    }
     
     // ✅ MODE ENABLED - Credential sudah benar
     const userId = ctx.from.id;
@@ -13500,23 +13503,10 @@ app.listen(port, async () => {
   try {
     logger.info('🔧 Memeriksa konfigurasi pembayaran...');
     
-    const { buildPayload } = require('./api-cekpayment-orkut');
-    const qs = require('qs');
-    const payload = buildPayload();
-    const decoded = qs.parse(payload);
-    
-    // Cek credential default
-    const isDefaultCredential = 
-      decoded.username === 'yantoxxx' || 
-      (decoded.token && decoded.token.includes('xxxxx')) ||
-      decoded.username === 'AKUN_DEFAULT';
-    
-    if (isDefaultCredential) {
+    if (isGatewayEnabled('orderkuota') && isOrderKuotaCredentialDefault()) {
       logger.error('❌ ❌ ❌ PERINGATAN KRITIS! ❌ ❌ ❌');
       logger.error('Credential OrderKuota masih DEFAULT!');
       logger.error('User TIDAK BISA top-up otomatis!');
-      logger.error(`Username: "${decoded.username}"`);
-      logger.error(`Token: "${decoded.token ? decoded.token.substring(0, 30) + '...' : 'empty'}"`);
       
       // Nonaktifkan fitur topup otomatis
       bot.action('topup_saldo', async (ctx) => {
@@ -13558,7 +13548,7 @@ const adminMessage =
       }
       
     } else {
-      logger.info(`✅ Credential valid (username: ${decoded.username.substring(0, 3)}***)`);
+      logger.info('✅ Validasi konfigurasi payment startup: OK');
     }
   } catch (error) {
     logger.error('❌ Gagal validasi payment config:', error.message);
