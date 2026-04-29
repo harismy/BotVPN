@@ -2,6 +2,19 @@
 const sqlite3 = require('sqlite3').verbose();
 const db = new sqlite3.Database('./sellvpn.db');
 
+function normalizeApiBase(rawDomain) {
+  const value = String(rawDomain || '').trim();
+  if (!value) return '';
+  if (/^https?:\/\//i.test(value)) return value.replace(/\/+$/, '');
+  return `http://${value}`.replace(/\/+$/, '');
+}
+
+function normalizeAuthToken(rawAuth) {
+  const value = String(rawAuth || '').trim();
+  if (!value) return '';
+  return value.replace(/^Bearer\s+/i, '').trim();
+}
+
 async function trialzivpn(serverId, telegramUserId = '', telegramChatId = '') {
   return new Promise((resolve) => {
     db.get('SELECT * FROM Server WHERE id = ?', [serverId], (err, server) => {
@@ -9,9 +22,14 @@ async function trialzivpn(serverId, telegramUserId = '', telegramChatId = '') {
         return resolve('Server tidak ditemukan');
       }
 
-      const url = `http://${server.domain}/vps/trialsshvpn`;
+      const baseUrl = normalizeApiBase(server.domain);
+      const authToken = normalizeAuthToken(server.auth);
+      if (!baseUrl) return resolve('Domain server tidak valid');
+      if (!authToken) return resolve('Auth token server kosong/tidak valid');
+
+      const url = `${baseUrl}/vps/trialsshvpn`;
       const cmd = `curl -s -X POST "${url}" \
-      -H "Authorization: ${server.auth}" \
+      -H "Authorization: ${authToken}" \
       -H "X-Telegram-User-Id: ${telegramUserId}" \
       -H "X-Telegram-Chat-Id: ${telegramChatId}" \
       -H "Content-Type: application/json" \

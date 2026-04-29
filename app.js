@@ -1,4 +1,4 @@
-const os = require('os');
+﻿const os = require('os');
 const sqlite3 = require('sqlite3').verbose();
 const express = require('express');
 const { Telegraf } = require('telegraf');
@@ -939,6 +939,21 @@ db.run(`CREATE TABLE IF NOT EXISTS Server (
     logger.error('Kesalahan membuat tabel Server:', err.message);
   } else {
     logger.info('Server table created or already exists');
+  }
+});
+
+db.run(`CREATE TABLE IF NOT EXISTS server_iplimit_rules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  server_id INTEGER NOT NULL,
+  protocol TEXT NOT NULL,
+  ip_package INTEGER NOT NULL,
+  iplimit INTEGER DEFAULT 0,
+  created_at INTEGER DEFAULT 0,
+  updated_at INTEGER DEFAULT 0,
+  UNIQUE(server_id, protocol, ip_package)
+)`, (err) => {
+  if (err) {
+    logger.error('Kesalahan membuat tabel server_iplimit_rules:', err.message);
   }
 });
 
@@ -4192,6 +4207,49 @@ async function sendAdminMenu(ctx) {
   }
 }
 
+async function sendServerIpLimitProtocolMenu(ctx, serverId, serverName) {
+  const server = await dbGetAsync('SELECT id, nama_server, domain FROM Server WHERE id = ?', [serverId]).catch(() => null);
+  if (!server) {
+    return ctx.reply('Server tidak ditemukan.');
+  }
+
+  const currentRows = await dbAllAsync(
+    'SELECT protocol, ip_package, iplimit FROM server_iplimit_rules WHERE server_id = ?',
+    [serverId]
+  ).catch(() => []);
+
+  const currentMap = new Map();
+  currentRows.forEach((row) => {
+    const protocol = normalizeIpLimitProtocol(row.protocol);
+    const pkg = Number(row.ip_package || 0) === 2 ? 2 : 1;
+    if (!currentMap.has(protocol)) currentMap.set(protocol, {});
+    currentMap.get(protocol)[pkg] = Number(row.iplimit || 0);
+  });
+
+  const lines = SERVER_IPLIMIT_PROTOCOLS.map((item) => {
+    const values = currentMap.get(item.key) || {};
+    const oneIp = Number.isFinite(values[1]) && values[1] >= 0 ? values[1] : getDefaultServerIpLimit(item.key, 1);
+    const twoIp = Number.isFinite(values[2]) && values[2] >= 0 ? values[2] : getDefaultServerIpLimit(item.key, 2);
+    return `- ${item.label}: 1IP=${oneIp}, 2IP=${twoIp}`;
+  });
+
+  const keyboard = [];
+  for (let i = 0; i < SERVER_IPLIMIT_PROTOCOLS.length; i += 2) {
+    keyboard.push(SERVER_IPLIMIT_PROTOCOLS.slice(i, i + 2).map((item) => ({
+      text: item.label,
+      callback_data: `edit_server_iplimit_rules_protocol_${serverId}_${item.key}`
+    })));
+  }
+  keyboard.push([{ text: '🔙 Kembali', callback_data: 'editserver_iplimit_rules' }]);
+
+  await ctx.reply(
+    `Pilih protocol untuk server:\n*${serverName || server.nama_server || server.domain || `ID ${serverId}`}*\n\n` +
+    'Saat ini:\n' + lines.join('\n') + '\n\n' +
+    'Setelah pilih protocol, kirim nilai IP untuk paket 1IP lalu 2IP.',
+    { parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } }
+  );
+}
+
 bot.action('admin_menu', async (ctx) => {
   await ctx.answerCbQuery();
   await sendAdminMenu(ctx);
@@ -4226,6 +4284,9 @@ async function sendAdminServerMenu(ctx) {
     [
       { text: '📋 List Server', callback_data: 'listserver' },
       { text: 'ℹ️ Detail Server', callback_data: 'detailserver' }
+    ],
+    [
+      { text: '⚙️ Atur Limit IP Paket', callback_data: 'editserver_iplimit_rules' }
     ],
     [
       { text: '❌ Hapus Server', callback_data: 'deleteserver' },
@@ -5958,6 +6019,91 @@ function getEffectiveServerPackagePrice(serverRow, isReseller, ipPackage) {
 
 function getEffectiveServerPrice(serverRow, isReseller) {
   return getEffectiveServerPackagePrice(serverRow, isReseller, 1);
+}
+
+const SERVER_IPLIMIT_PROTOCOLS = [
+  { key: 'ssh', label: 'SSH / OVPN' },
+  { key: 'zivpn', label: 'ZIVPN' },
+  { key: 'vmess', label: 'VMESS' },
+  { key: 'vless', label: 'VLESS' },
+  { key: 'trojan', label: 'TROJAN' },
+  { key: 'shadowsocks', label: 'SHADOWSOCKS' },
+  { key: 'udp_http', label: 'UDP HTTP' }
+];
+
+function normalizeIpLimitProtocol(raw) {
+  const value = String(raw || '').trim().toLowerCase();
+  if (!value) return 'ssh';
+  if (value === 'udp' || value === 'udp_http' || value === 'udp-http' || value === 'udphc' || value === 'udp_http_custom') {
+    return 'udp_http';
+  }
+  if (value === 'ovpn' || value === 'openvpn') {
+    return 'ssh';
+  }
+  if (SERVER_IPLIMIT_PROTOCOLS.some((item) => item.key === value)) {
+    return value;
+  }
+  return value;
+}
+
+function getDefaultServerIpLimit(protocol, ipPackage) {
+  const pkg = Number(ipPackage || 1) === 2 ? 2 : 1;
+  return normalizeIpLimitProtocol(protocol) === 'udp_http'
+    ? (pkg === 2 ? 4 : 3)
+    : (pkg === 2 ? 3 : 2);
+}
+
+async function getServerIpLimitRuleMap(serverId, protocol) {
+  const normalizedProtocol = normalizeIpLimitProtocol(protocol);
+  const rows = await dbAllAsync(
+    'SELECT ip_package, iplimit FROM server_iplimit_rules WHERE server_id = ? AND protocol = ?',
+    [serverId, normalizedProtocol]
+  ).catch(() => []);
+
+  const result = { 1: getDefaultServerIpLimit(normalizedProtocol, 1), 2: getDefaultServerIpLimit(normalizedProtocol, 2) };
+  rows.forEach((row) => {
+    const pkg = Number(row?.ip_package || 0) === 2 ? 2 : 1;
+    const limit = Number(row?.iplimit);
+    if (Number.isFinite(limit) && limit >= 0) {
+      result[pkg] = limit;
+    }
+  });
+  return result;
+}
+
+async function getServerIpLimitRule(serverId, protocol, ipPackage) {
+  const normalizedProtocol = normalizeIpLimitProtocol(protocol);
+  const pkg = Number(ipPackage || 1) === 2 ? 2 : 1;
+  const row = await dbGetAsync(
+    'SELECT iplimit FROM server_iplimit_rules WHERE server_id = ? AND protocol = ? AND ip_package = ?',
+    [serverId, normalizedProtocol, pkg]
+  ).catch(() => null);
+
+  if (row) {
+    const limit = Number(row.iplimit);
+    if (Number.isFinite(limit) && limit >= 0) {
+      return limit;
+    }
+  }
+  return getDefaultServerIpLimit(normalizedProtocol, pkg);
+}
+
+async function saveServerIpLimitRule(serverId, protocol, ipPackage, iplimit) {
+  const normalizedProtocol = normalizeIpLimitProtocol(protocol);
+  const pkg = Number(ipPackage || 1) === 2 ? 2 : 1;
+  const limit = Number(iplimit);
+  if (!Number.isFinite(limit) || limit < 0) {
+    throw new Error('Limit IP harus angka 0 atau lebih.');
+  }
+
+  const now = Date.now();
+  await dbRunAsync(
+    `INSERT INTO server_iplimit_rules (server_id, protocol, ip_package, iplimit, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(server_id, protocol, ip_package)
+     DO UPDATE SET iplimit = excluded.iplimit, updated_at = excluded.updated_at`,
+    [serverId, normalizedProtocol, pkg, limit, now, now]
+  );
 }
 
 function normalizeCreateAccountMessageForDisplay(message, selectedPackage) {
@@ -8304,9 +8450,9 @@ bot.action(/(create|renew)_username_(vmess|vless|trojan|shadowsocks|ssh|zivpn|ud
         `Pilih paket IP untuk server:\n`+
         `*${server.nama_server || server.domain}*:\n\n` +
         `- Paket 1IP: Rp ${harga1.toLocaleString('id-ID')}\n`+
-        `Maksimal dipake 1 orang atau 1 device(hp), lebih dari itu akun akan *otomatis di banned* oleh sistem.\n\n` +
+        `Maksimal dipake 1 orang atau 1 device(hp), lebih dari itu akun akan *otomatis expired dan disconnect*!!\n\n` +
         `- Paket 2IP: Rp ${harga2.toLocaleString('id-ID')}\n`+
-        `Maksimal dipake 2 orang atau 2 device(hp), lebih dari itu akun akan *otomatis di banned* oleh sistem.\n\n`,
+        `Maksimal dipake 2 orang atau 2 device(hp), lebih dari itu akun akan *otomatis expired dan disconnect*!!\n\n`,
         { parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } }
       );
     } else {
@@ -8399,6 +8545,70 @@ bot.action(/(lock)_username_(vmess|vless|trojan|shadowsocks|ssh|udp_http)_(.+)/,
 bot.on('text', async (ctx) => {
   const state = userState[ctx.chat.id];
 if (!state || !state.step) return;
+
+  if (state.step === 'server_iplimit_rule_1ip') {
+    const text = (ctx.message.text || '').trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan limit IP paket dibatalkan.');
+    }
+
+    const limit = Number(text);
+    if (!Number.isInteger(limit) || limit < 0) {
+      return ctx.reply('Limit IP harus angka 0 atau lebih.');
+    }
+
+    state.rule1 = limit;
+    state.step = 'server_iplimit_rule_2ip';
+    userState[ctx.chat.id] = state;
+
+    return ctx.reply(
+      `Server: *${state.serverName || `ID ${state.serverId}`}*\n` +
+      `Protocol: *${String(state.protocol || '').toUpperCase()}*\n` +
+      `Limit paket *1IP* tersimpan: *${limit}*\n\n` +
+      `Sekarang masukkan limit IP untuk paket *2IP*.\n` +
+      `Ketik *batal* untuk membatalkan.`,
+      { parse_mode: 'Markdown' }
+    );
+  }
+
+  if (state.step === 'server_iplimit_rule_2ip') {
+    const text = (ctx.message.text || '').trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan limit IP paket dibatalkan.');
+    }
+
+    const limit = Number(text);
+    if (!Number.isInteger(limit) || limit < 0) {
+      return ctx.reply('Limit IP harus angka 0 atau lebih.');
+    }
+
+    const serverId = Number(state.serverId || 0);
+    const protocol = normalizeIpLimitProtocol(state.protocol);
+    const rule1 = Number(state.rule1);
+    const rule2 = limit;
+
+    try {
+      await saveServerIpLimitRule(serverId, protocol, 1, rule1);
+      await saveServerIpLimitRule(serverId, protocol, 2, rule2);
+      delete userState[ctx.chat.id];
+
+      await ctx.reply(
+        `✅ Limit IP paket tersimpan.\n` +
+        `Server: *${state.serverName || `ID ${serverId}`}*\n` +
+        `Protocol: *${protocol.toUpperCase()}*\n` +
+        `1IP -> ${rule1}\n` +
+        `2IP -> ${rule2}`,
+        { parse_mode: 'Markdown' }
+      );
+
+      return sendServerIpLimitProtocolMenu(ctx, serverId, state.serverName || `ID ${serverId}`);
+    } catch (error) {
+      logger.error('Error menyimpan limit IP paket:', error.message);
+      return ctx.reply('Gagal menyimpan limit IP paket.');
+    }
+  }
 
   if (state.step === 'edit_domain_pick_server') {
     const text = (ctx.message.text || '').trim();
@@ -10034,14 +10244,14 @@ if (exp > 365) {
       state.quota = Number(state.accountQuota || 0) > 0 ? Number(state.accountQuota) : server.quota;
       if (state.action === 'renew' && Number(state.accountIpLimit) > 0) {
         state.iplimit = Number(state.accountIpLimit);
-      } else if (state.type === 'udp_http' && state.action === 'create') {
-        const selectedPkg = Number(state.selectedIpPackage || 1);
-        // Mapping internal UDP HC ke server: 1IP -> 3, 2IP -> 4
-        state.iplimit = selectedPkg === 2 ? 4 : 3;
       } else if (state.action === 'create') {
         const selectedPkg = Number(state.selectedIpPackage || 1);
-        // Mapping internal ke server: 1IP -> 2, 2IP -> 3
-        state.iplimit = selectedPkg === 2 ? 3 : 2;
+        try {
+          state.iplimit = await getServerIpLimitRule(server.id, state.type, selectedPkg);
+        } catch (limitErr) {
+          logger.warn(`Gagal ambil limit IP rule server ${server.id}: ${limitErr.message}`);
+          state.iplimit = getDefaultServerIpLimit(state.type, selectedPkg);
+        }
       } else {
         state.iplimit = state.selectedIpPackage || server.iplimit;
       }
@@ -10119,7 +10329,7 @@ if (exp > 365) {
             } else if (type === 'zivpn') {
               const randomPassword = Math.random().toString(36).slice(-8);
               usedPassword = randomPassword;
-              msg = await createzivpn(username, randomPassword, exp, iplimit, serverId, telegramUserId, telegramChatId);
+              msg = await createzivpn(username, randomPassword, exp, iplimit, serverId, telegramUserId, telegramChatId, selectedPackage);
             } else if (type === 'udp_http') {
               msg = await createudphttp(username, password, exp, iplimit, serverId, telegramUserId, telegramChatId);
             }
@@ -10186,7 +10396,20 @@ const isErrorMsg = [
   'forbidden',
   'invalid'
 ].some((needle) => msgLower.includes(needle));
-if (isErrorMsg) {
+const isRenewSuccessMsg =
+  action === 'renew' &&
+  (
+    msgLower.includes('akun berhasil diperpanjang') ||
+    msgLower.includes('renew ssh account success') ||
+    msgLower.includes('renew udp http custom success') ||
+    msgLower.includes('renew vmess account success') ||
+    msgLower.includes('renew vless account success') ||
+    msgLower.includes('renew trojan account success') ||
+    msgLower.includes('renew shadowsocks premium') ||
+    msgLower.includes('renew zivpn success')
+  );
+const shouldRollback = isErrorMsg || (action === 'renew' && !isRenewSuccessMsg);
+if (shouldRollback) {
   const cancelErr = await cancelReservedAccountCharge(ctx.from.id, totalHarga, reserveResult.referenceId);
   if (!cancelErr.ok) {
     logger.error(`Gagal refund reserve error create/renew user ${ctx.from.id}, ref: ${reserveResult.referenceId}, err: ${cancelErr.error}`);
@@ -11006,6 +11229,79 @@ bot.action('editserver_limit_ip', async (ctx) => {
   } catch (error) {
     logger.error('❌ Kesalahan saat memulai proses edit limit IP server:', error);
     await ctx.reply(`❌ *${error}*`, { parse_mode: 'Markdown' });
+  }
+});
+bot.action('editserver_iplimit_rules', async (ctx) => {
+  try {
+    await ctx.answerCbQuery();
+    const servers = await dbAllAsync(
+      'SELECT id, nama_server, domain FROM Server ORDER BY nama_server COLLATE NOCASE ASC',
+      []
+    ).catch(() => []);
+
+    if (!servers.length) {
+      return ctx.reply('Tidak ada server yang tersedia.');
+    }
+
+    const buttons = servers.map((server) => [{
+      text: server.nama_server || server.domain || `ID ${server.id}`,
+      callback_data: `edit_server_iplimit_rules_server_${server.id}`
+    }]);
+    buttons.push([{ text: '🔙 Kembali', callback_data: 'admin_menu_server' }]);
+
+    await ctx.reply('Pilih server untuk mengatur limit IP per protocol:', {
+      reply_markup: { inline_keyboard: buttons }
+    });
+  } catch (error) {
+    logger.error('Error membuka menu limit IP paket:', error.message);
+    await ctx.reply('Terjadi kesalahan saat membuka menu limit IP paket.');
+  }
+});
+bot.action(/edit_server_iplimit_rules_server_(\d+)/, async (ctx) => {
+  try {
+    await ctx.answerCbQuery();
+    const serverId = Number(ctx.match[1]);
+    const server = await dbGetAsync('SELECT id, nama_server, domain FROM Server WHERE id = ?', [serverId]).catch(() => null);
+    if (!server) {
+      return ctx.reply('Server tidak ditemukan.');
+    }
+
+    await sendServerIpLimitProtocolMenu(ctx, serverId, server.nama_server || server.domain || `ID ${serverId}`);
+  } catch (error) {
+    logger.error('Error memilih server limit IP paket:', error.message);
+    await ctx.reply('Terjadi kesalahan saat memilih server.');
+  }
+});
+bot.action(/edit_server_iplimit_rules_protocol_(\d+)_(.+)/, async (ctx) => {
+  try {
+    await ctx.answerCbQuery();
+    const serverId = Number(ctx.match[1]);
+    const protocol = normalizeIpLimitProtocol(ctx.match[2]);
+    const server = await dbGetAsync('SELECT id, nama_server, domain FROM Server WHERE id = ?', [serverId]).catch(() => null);
+    if (!server) {
+      return ctx.reply('Server tidak ditemukan.');
+    }
+
+    const current = await getServerIpLimitRuleMap(serverId, protocol);
+    userState[ctx.chat.id] = {
+      step: 'server_iplimit_rule_1ip',
+      serverId,
+      protocol,
+      serverName: server.nama_server || server.domain || `ID ${serverId}`,
+      rule1: current[1],
+      rule2: current[2]
+    };
+
+    await ctx.reply(
+      `Server: *${server.nama_server || server.domain || `ID ${serverId}`}*\n` +
+      `Protocol: *${protocol.toUpperCase()}*\n\n` +
+      `Masukkan limit IP untuk paket *1IP*.\n` +
+      `Ketik *batal* untuk membatalkan.`,
+      { parse_mode: 'Markdown' }
+    );
+  } catch (error) {
+    logger.error('Error memilih protocol limit IP paket:', error.message);
+    await ctx.reply('Terjadi kesalahan saat memilih protocol.');
   }
 });
 bot.action('editserver_batas_create_akun', async (ctx) => {

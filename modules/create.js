@@ -1,4 +1,4 @@
-const axios = require('axios');
+﻿const axios = require('axios');
 const { exec } = require('child_process');
 const sqlite3 = require('sqlite3').verbose();
 const db = new sqlite3.Database('./sellvpn.db');
@@ -8,6 +8,12 @@ function normalizeApiBase(rawDomain) {
   if (!value) return '';
   if (/^https?:\/\//i.test(value)) return value.replace(/\/+$/, '');
   return `http://${value}`.replace(/\/+$/, '');
+}
+
+function normalizeAuthToken(rawAuth) {
+  const value = String(rawAuth || '').trim();
+  if (!value) return '';
+  return value.replace(/^Bearer\s+/i, '').trim();
 }
 
 function parseJsonFromCurlOutput(stdout) {
@@ -33,20 +39,23 @@ async function createssh(username, password, exp, iplimit, serverId, telegramUse
 
   // Validasi username
   if (/\s/.test(username) || /[^a-zA-Z0-9]/.test(username)) {
-    return 'âŒ Username tidak valid. Mohon gunakan hanya huruf dan angka tanpa spasi.';
+    return 'Ã¢ÂÅ’ Username tidak valid. Mohon gunakan hanya huruf dan angka tanpa spasi.';
   }
 
   return new Promise((resolve) => {
     db.get('SELECT * FROM Server WHERE id = ?', [serverId], (err, server) => {
       if (err || !server) {
-        console.error('âŒ Error fetching server:', err?.message || 'server null');
-        return resolve('âŒ Server tidak ditemukan. Silakan coba lagi.');
+        console.error('Ã¢ÂÅ’ Error fetching server:', err?.message || 'server null');
+        return resolve('Ã¢ÂÅ’ Server tidak ditemukan. Silakan coba lagi.');
       }
 
       const domain = normalizeApiBase(server.domain);
       const param = `/vps/sshvpn`;
       const web_URL = `${domain}${param}`; // misalnya: http://idnusastb.domain.web.id/vps/sshvpn
-      const AUTH_TOKEN = server.auth;
+      const AUTH_TOKEN = normalizeAuthToken(server.auth);
+      if (!AUTH_TOKEN) {
+        return resolve('Auth token server kosong/tidak valid.');
+      }
       const days = exp;
       const KUOTA = "0"; // jika perlu di-hardcode, bisa diubah jadi parameter juga
       const LIMIT_IP = iplimit;
@@ -65,13 +74,13 @@ async function createssh(username, password, exp, iplimit, serverId, telegramUse
           if (errExec) console.error('Curl request gagal:', errExec.message);
           if (stderr) console.error('Curl stderr:', stderr);
           console.error('Output:', stdout);
-          return resolve('âŒ Format respon dari server tidak valid.');
+          return resolve('Ã¢ÂÅ’ Format respon dari server tidak valid.');
         }
 
         if (d?.meta?.code !== 200 || !d.data) {
-          console.error('âŒ Respons error:', d);
+          console.error('Ã¢ÂÅ’ Respons error:', d);
           const errMsg = d?.message || d?.meta?.message || JSON.stringify(d, null, 2);
-          return resolve(`âŒ Respons error:\n${errMsg}`);
+          return resolve(`Ã¢ÂÅ’ Respons error:\n${errMsg}`);
         }
 
         const s = d.data;
@@ -113,13 +122,8 @@ async function createssh(username, password, exp, iplimit, serverId, telegramUse
 ------------------------------
 \`PATCH /ssh-ws HTTP/1.1[crlf]Host: [host][crlf]Host: www.google.com[crlf]Upgrade: websocket[crlf]Connection:
 Upgrade[crlf]User-Agent: [ua][crlf][crlf][split]HTTP/1.1 200 OK[crlf][crlf]\`
-
-*[ DOWNLOAD CONFIG ]*
 ------------------------------
-http://${s.hostname}:81/myvpn-config.zip
-
-------------------------------
-*Â© Telegram Bots 1forcr - 2025*
+*Telegram Bots 1forcr - 2026*
 *Terima kasih telah menggunakan layanan kami.*
 `;
 
@@ -133,20 +137,23 @@ async function createudphttp(username, password, exp, iplimit, serverId, telegra
   console.log(`Creating UDP HTTP Custom account for ${username} with expiry ${exp} days, IP limit ${iplimit}, and password ${password}`);
 
   if (/\s/.test(username) || /[^a-zA-Z0-9]/.test(username)) {
-    return 'âŒ Username tidak valid. Mohon gunakan hanya huruf dan angka tanpa spasi.';
+    return 'Ã¢ÂÅ’ Username tidak valid. Mohon gunakan hanya huruf dan angka tanpa spasi.';
   }
 
   return new Promise((resolve) => {
     db.get('SELECT * FROM Server WHERE id = ?', [serverId], (err, server) => {
       if (err || !server) {
-        console.error('âŒ Error fetching server:', err?.message || 'server null');
-        return resolve('âŒ Server tidak ditemukan. Silakan coba lagi.');
+        console.error('Ã¢ÂÅ’ Error fetching server:', err?.message || 'server null');
+        return resolve('Ã¢ÂÅ’ Server tidak ditemukan. Silakan coba lagi.');
       }
 
       const domain = normalizeApiBase(server.domain);
       const param = `/vps/sshvpn`;
       const web_URL = `${domain}${param}`;
-      const AUTH_TOKEN = server.auth;
+      const AUTH_TOKEN = normalizeAuthToken(server.auth);
+      if (!AUTH_TOKEN) {
+        return resolve('Auth token server kosong/tidak valid.');
+      }
       const days = exp;
       const KUOTA = "0";
       const LIMIT_IP = iplimit;
@@ -165,13 +172,13 @@ async function createudphttp(username, password, exp, iplimit, serverId, telegra
           if (errExec) console.error('Curl request gagal:', errExec.message);
           if (stderr) console.error('Curl stderr:', stderr);
           console.error('Output:', stdout);
-          return resolve('âŒ Format respon dari server tidak valid.');
+          return resolve('Ã¢ÂÅ’ Format respon dari server tidak valid.');
         }
 
         if (d?.meta?.code !== 200 || !d.data) {
-          console.error('âŒ Respons error:', d);
+          console.error('Ã¢ÂÅ’ Respons error:', d);
           const errMsg = d?.message || d?.meta?.message || JSON.stringify(d, null, 2);
-          return resolve(`âŒ Respons error:\n${errMsg}`);
+          return resolve(`Ã¢ÂÅ’ Respons error:\n${errMsg}`);
         }
 
         const s = d.data;
@@ -202,20 +209,23 @@ async function createvmess(username, exp, quota, limitip, serverId, telegramUser
 
   // Validasi username
   if (/\s/.test(username) || /[^a-zA-Z0-9]/.test(username)) {
-    return 'âŒ Username tidak valid. Mohon gunakan hanya huruf dengan awalan tidak kapital dan angka tanpa spasi.';
+    return 'Username tidak valid. Mohon gunakan hanya huruf dan angka tanpa spasi.';
   }
 
   return new Promise((resolve) => {
     db.get('SELECT * FROM Server WHERE id = ?', [serverId], (err, server) => {
       if (err || !server) {
-        console.error('âŒ Error fetching server:', err?.message || 'server null');
-        return resolve('âŒ Server tidak ditemukan. Silakan coba lagi.');
+        console.error('Error fetching server:', err?.message || 'server null');
+        return resolve('Server tidak ditemukan. Silakan coba lagi.');
       }
 
       const domain = normalizeApiBase(server.domain);
       const param = `/vps/vmessall`;
-      const web_URL = `${domain}${param}`; // contoh: http://idnusastb.domain.web.id/vps/vmess
-      const AUTH_TOKEN = server.auth;
+      const web_URL = `${domain}${param}`;
+      const AUTH_TOKEN = normalizeAuthToken(server.auth);
+      if (!AUTH_TOKEN) {
+        return resolve('Auth token server kosong/tidak valid.');
+      }
       const days = exp;
       const KUOTA = quota;
       const LIMIT_IP = limitip;
@@ -231,16 +241,16 @@ async function createvmess(username, exp, quota, limitip, serverId, telegramUser
       exec(curlCommand, (errExec, stdout, stderr) => {
         const d = parseJsonFromCurlOutput(stdout);
         if (!d) {
-          if (errExec) console.error('Curl request gagal:', errExec.message);
+          if (errExec) console.error('Curl request failed:', errExec.message);
           if (stderr) console.error('Curl stderr:', stderr);
           console.error('Output:', stdout);
-          return resolve('âŒ Format respon dari server tidak valid.');
+          return resolve('Format respon dari server tidak valid.');
         }
 
         if (d?.meta?.code !== 200 || !d.data) {
-          console.error('âŒ Respons error:', d);
+          console.error('Response error:', d);
           const errMsg = d?.message || d?.meta?.message || JSON.stringify(d, null, 2);
-          return resolve(`âŒ Respons error:\n${errMsg}`);
+          return resolve(`Respons error:\n${errMsg}`);
         }
 
         const s = d.data;
@@ -250,7 +260,9 @@ async function createvmess(username, exp, quota, limitip, serverId, telegramUser
         const isp = s.isp || s.org || s.organization || '-';
         const pathWs = (s.path && (s.path.ws || s.path.stn)) || s.path || '/vmess';
         const serviceName = s.serviceName || 'vmess';
-        const pathUpgrade = s.path && (s.path.upgrade || s.path.up || s.path.upws) ? (s.path.upgrade || s.path.up || s.path.upws) : '/upvmess';
+        const pathUpgrade = s.path && (s.path.upgrade || s.path.up || s.path.upws)
+          ? (s.path.upgrade || s.path.up || s.path.upws)
+          : '/upvmess';
         const portTls = s.port?.tls || '-';
         const portNone = s.port?.none || '-';
         const portAny = s.port?.any || '-';
@@ -261,42 +273,64 @@ async function createvmess(username, exp, quota, limitip, serverId, telegramUser
         const linkUpTls = s.link?.uptls || s.link?.upgrade_tls || s.link?.upgrade || '-';
         const linkUpNone = s.link?.upntls || s.link?.upgrade_none || s.link?.upgrade_ntls || '-';
 
-        const msg =
-`â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”
+        const msg = `
+=============================
+        *VMESS ACCOUNT*
+=============================
 
-           XRAY VMESS
+*[ VMESS DETAILS ]*
+-----------------------------
+*REMARKS*     : \`${remarks}\`
+*HOST*        : \`${s.hostname}\`
+*PORT TLS*    : \`${portTls}\`
+*PORT NTLS*   : \`${portNone}\`
+*PORT GRPC*   : \`${portGrpc}\`
+*PORT ANY*    : \`${portAny}\`
+*UUID*        : \`${s.uuid}\`
+*ALTER ID*    : \`0\`
+*SECURITY*    : \`auto\`
+*NETWORK*     : \`ws, grpc, upgrade\`
+*PATH WS*     : \`${pathWs}\`
+*SERVICE*     : \`${serviceName}\`
+*PATH UPGRADE*: \`${pathUpgrade}\`
+*EXPIRED*     : \`${s.expired || '-'}\` - \`${s.time || '-'}\`
+*QUOTA*       : \`${KUOTA === "0" ? "Unlimited" : KUOTA} GB\`
+*IP LIMIT*    : \`${LIMIT_IP === "0" ? "Unlimited" : LIMIT_IP} pengguna\`
 
-â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”
+*[ VMESS URL ]*
+-----------------------------
+TLS:
+\`${linkTls}\`
 
-VMESS
+Non-TLS:
+\`${linkNone}\`
 
-Remarks       : ${remarks}
-Domain        : ${s.hostname}
-Port TLS      : ${portTls},${portGrpc}
-Port none TLS : ${portNone}
-Port any      : ${portAny}
-id            : ${s.uuid}
-alterId       : 0
-Security      : auto
-network       : ws,grpc,upgrade
-path ws       : ${pathWs}
-serviceName   : ${serviceName}
-path upgrade  : ${pathUpgrade}
-limit         : ${LIMIT_IP === "0" ? "Unlimited" : LIMIT_IP}
+gRPC:
+\`${linkGrpc}\`
 
-â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”
-link TLS          : ${linkTls}
-â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”
-link none TLS     : ${linkNone}
-â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”
-link GRPC         : ${linkGrpc}
-â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”
-link Upgrade TLS  : ${linkUpTls}
-â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”
-link Upgrade nTLS : ${linkUpNone}
-â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”
-Expired  :  ${s.expired || '-'}
-â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”â€”`;
+Up TLS:
+\`${linkUpTls}\`
+
+Up Non-TLS:
+\`${linkUpNone}\`
+
+*[ HOST INFORMATION ]*
+-----------------------------
+*Domain*      : \`${s.hostname}\`
+*SNI*         : \`${s.hostname}\`
+*City*        : \`${city}\`
+*ISP*         : \`${isp}\`
+
+*[ PORTS ]*
+-----------------------------
+*WS TLS*      : \`${portTls}\`
+*WS NTLS*     : \`${portNone}\`
+*GRPC TLS*    : \`${portGrpc}\`
+*ANY PORT*    : \`${portAny}\`
+-----------------------------
+*Telegram Bots 1forcr - 2026*
+*Terima kasih telah menggunakan layanan kami.*
+`;
 
         return resolve(msg);
       });
@@ -309,20 +343,23 @@ async function createvless(username, exp, quota, limitip, serverId, telegramUser
 
   // Validasi username
   if (/\s/.test(username) || /[^a-zA-Z0-9]/.test(username)) {
-    return 'âŒ Username tidak valid. Mohon gunakan hanya huruf dan angka tanpa spasi.';
+    return 'Ã¢ÂÅ’ Username tidak valid. Mohon gunakan hanya huruf dan angka tanpa spasi.';
   }
 
   return new Promise((resolve) => {
     db.get('SELECT * FROM Server WHERE id = ?', [serverId], (err, server) => {
       if (err || !server) {
-        console.error('âŒ Error fetching server:', err?.message || 'server null');
-        return resolve('âŒ Server tidak ditemukan. Silakan coba lagi.');
+        console.error('Ã¢ÂÅ’ Error fetching server:', err?.message || 'server null');
+        return resolve('Ã¢ÂÅ’ Server tidak ditemukan. Silakan coba lagi.');
       }
 
       const domain = normalizeApiBase(server.domain);
       const param = `/vps/vlessall`;
       const web_URL = `${domain}${param}`; // Contoh: http://domainmu.com/vps/vless
-      const AUTH_TOKEN = server.auth;
+      const AUTH_TOKEN = normalizeAuthToken(server.auth);
+      if (!AUTH_TOKEN) {
+        return resolve('Auth token server kosong/tidak valid.');
+      }
       const days = exp;
       const KUOTA = quota;
       const LIMIT_IP = limitip;
@@ -341,13 +378,13 @@ async function createvless(username, exp, quota, limitip, serverId, telegramUser
           if (errExec) console.error('Curl request gagal:', errExec.message);
           if (stderr) console.error('Curl stderr:', stderr);
           console.error('Output:', stdout);
-          return resolve('âŒ Format respon dari server tidak valid.');
+          return resolve('Ã¢ÂÅ’ Format respon dari server tidak valid.');
         }
 
         if (d?.meta?.code !== 200 || !d.data) {
-          console.error('âŒ Respons error:', d);
+          console.error('Ã¢ÂÅ’ Respons error:', d);
           const errMsg = d?.message || d?.meta?.message || JSON.stringify(d, null, 2);
-          return resolve(`âŒ Respons error:\n${errMsg}`);
+          return resolve(`Ã¢ÂÅ’ Respons error:\n${errMsg}`);
         }
 
         const s = d.data;
@@ -396,19 +433,8 @@ Up Non-TLS:
 *WS TLS*      : \`${s.port.tls}\`
 *WS NTLS*     : \`${s.port.none}\`
 *ANY PORT*    : \`${s.port.any}\`
-
-*[ SUGGESTED SNI / BUG ]*
 -----------------------------
-\`${s.hostname}\`
-\`www.google.com\`
-\`www.bing.com\`
-
-*[ DOWNLOAD CONFIG ]*
------------------------------
-http://${s.hostname}:81/vless-config.zip
-
------------------------------
-*Â© Telegram Bots 1forcr - 2025*
+*Telegram Bots 1forcr - 2026*
 *Terima kasih telah menggunakan layanan kami.*
 `;
 
@@ -422,20 +448,23 @@ async function createtrojan(username, exp, quota, limitip, serverId, telegramUse
 
   // Validasi username
   if (/\s/.test(username) || /[^a-zA-Z0-9]/.test(username)) {
-    return 'âŒ Username tidak valid. Mohon gunakan hanya huruf dan angka tanpa spasi.';
+    return 'Ã¢ÂÅ’ Username tidak valid. Mohon gunakan hanya huruf dan angka tanpa spasi.';
   }
 
   return new Promise((resolve) => {
     db.get('SELECT * FROM Server WHERE id = ?', [serverId], (err, server) => {
       if (err || !server) {
-        console.error('âŒ Error fetching server:', err?.message || 'server null');
-        return resolve('âŒ Server tidak ditemukan. Silakan coba lagi.');
+        console.error('Ã¢ÂÅ’ Error fetching server:', err?.message || 'server null');
+        return resolve('Ã¢ÂÅ’ Server tidak ditemukan. Silakan coba lagi.');
       }
 
       const domain = normalizeApiBase(server.domain);
       const param = `/vps/trojanall`;
       const web_URL = `${domain}${param}`; // contoh: http://domainmu.com/vps/trojan
-      const AUTH_TOKEN = server.auth;
+      const AUTH_TOKEN = normalizeAuthToken(server.auth);
+      if (!AUTH_TOKEN) {
+        return resolve('Auth token server kosong/tidak valid.');
+      }
       const days = exp;
       const KUOTA = quota;
       const LIMIT_IP = limitip;
@@ -454,13 +483,13 @@ async function createtrojan(username, exp, quota, limitip, serverId, telegramUse
           if (errExec) console.error('Curl request gagal:', errExec.message);
           if (stderr) console.error('Curl stderr:', stderr);
           console.error('Output:', stdout);
-          return resolve('âŒ Format respon dari server tidak valid.');
+          return resolve('Ã¢ÂÅ’ Format respon dari server tidak valid.');
         }
 
         if (d?.meta?.code !== 200 || !d.data) {
-          console.error('âŒ Respons error:', d);
+          console.error('Ã¢ÂÅ’ Respons error:', d);
           const errMsg = d?.message || d?.meta?.message || JSON.stringify(d, null, 2);
-          return resolve(`âŒ Respons error:\n${errMsg}`);
+          return resolve(`Ã¢ÂÅ’ Respons error:\n${errMsg}`);
         }
 
         const s = d.data;
@@ -504,19 +533,8 @@ Up TLS:
 *WS NTLS*     : \`${s.port.none}\`
 *ANY PORT*    : \`${s.port.any}\`
 *GRPC TLS*    : \`${s.port.grpc}\`
-
-*[ SUGGESTED SNI / BUG ]*
 -----------------------------
-\`${s.hostname}\`
-\`www.google.com\`
-\`www.bing.com\`
-
-*[ DOWNLOAD CONFIG ]*
------------------------------
-http://${s.hostname}:81/trojan-config.zip
-
------------------------------
-*Â© Telegram Bots 1forcr - 2025*
+*Telegram Bots 1forcr - 2026*
 *Terima kasih telah menggunakan layanan kami.*
 `;
 
@@ -533,7 +551,7 @@ async function createshadowsocks(username, exp, quota, limitip, serverId) {
 
   // Validasi username
   if (/\s/.test(username) || /[^a-zA-Z0-9]/.test(username)) {
-    return 'âŒ Username tidak valid. Mohon gunakan hanya huruf dan angka tanpa spasi.';
+    return 'Ã¢ÂÅ’ Username tidak valid. Mohon gunakan hanya huruf dan angka tanpa spasi.';
   }
 
   // Ambil domain dari database
@@ -541,13 +559,14 @@ async function createshadowsocks(username, exp, quota, limitip, serverId) {
     db.get('SELECT * FROM Server WHERE id = ?', [serverId], (err, server) => {
       if (err) {
         console.error('Error fetching server:', err.message);
-        return resolve('âŒ Server tidak ditemukan. Silakan coba lagi.');
+        return resolve('Ã¢ÂÅ’ Server tidak ditemukan. Silakan coba lagi.');
       }
 
-      if (!server) return resolve('âŒ Server tidak ditemukan. Silakan coba lagi.');
+      if (!server) return resolve('Ã¢ÂÅ’ Server tidak ditemukan. Silakan coba lagi.');
 
       const domain = normalizeApiBase(server.domain);
-      const auth = server.auth;
+      const auth = normalizeAuthToken(server.auth);
+      if (!auth) return resolve('Ã¢ÂÅ’ Auth token server kosong/tidak valid.');
       const param = `:5888/createshadowsocks?user=${username}&exp=${exp}&quota=${quota}&iplimit=${limitip}&auth=${auth}`;
       const url = `${domain}${param}`;
       axios.get(url)
@@ -555,51 +574,51 @@ async function createshadowsocks(username, exp, quota, limitip, serverId) {
           if (response.data.status === "success") {
             const shadowsocksData = response.data.data;
             const msg = `
-ðŸŒŸ *AKUN SHADOWSOCKS PREMIUM* ðŸŒŸ
+Ã°Å¸Å’Å¸ *AKUN SHADOWSOCKS PREMIUM* Ã°Å¸Å’Å¸
 
-ðŸ”¹ *Informasi Akun*
-â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-â”‚ *Username* : \`${shadowsocksData.username}\`
-â”‚ *Domain*   : \`${shadowsocksData.domain}\`
-â”‚ *NS*       : \`${shadowsocksData.ns_domain}\`
-â”‚ *Port TLS* : \`443\`
-â”‚ *Port HTTP*: \`80\`
-â”‚ *Alter ID* : \`0\`
-â”‚ *Security* : \`Auto\`
-â”‚ *Network*  : \`Websocket (WS)\`
-â”‚ *Path*     : \`/shadowsocks\`
-â”‚ *Path GRPC*: \`shadowsocks-grpc\`
-â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-ðŸ” *URL SHADOWSOCKS TLS*
+Ã°Å¸â€Â¹ *Informasi Akun*
+Ã¢â€Å’Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+Ã¢â€â€š *Username* : \`${shadowsocksData.username}\`
+Ã¢â€â€š *Domain*   : \`${shadowsocksData.domain}\`
+Ã¢â€â€š *NS*       : \`${shadowsocksData.ns_domain}\`
+Ã¢â€â€š *Port TLS* : \`443\`
+Ã¢â€â€š *Port HTTP*: \`80\`
+Ã¢â€â€š *Alter ID* : \`0\`
+Ã¢â€â€š *Security* : \`Auto\`
+Ã¢â€â€š *Network*  : \`Websocket (WS)\`
+Ã¢â€â€š *Path*     : \`/shadowsocks\`
+Ã¢â€â€š *Path GRPC*: \`shadowsocks-grpc\`
+Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+Ã°Å¸â€Â *URL SHADOWSOCKS TLS*
 \`\`\`
 ${shadowsocksData.ss_link_ws}
 \`\`\`
-ðŸ”’ *URL SHADOWSOCKS GRPC*
+Ã°Å¸â€â€™ *URL SHADOWSOCKS GRPC*
 \`\`\`
 ${shadowsocksData.ss_link_grpc}
 \`\`\`
-ðŸ”’ *PUBKEY*
+Ã°Å¸â€â€™ *PUBKEY*
 \`\`\`
 ${shadowsocksData.pubkey}
 \`\`\`
-â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-â”‚ Expiry: \`${shadowsocksData.expired}\`
-â”‚ Quota: \`${shadowsocksData.quota === '0 GB' ? 'Unlimited' : shadowsocksData.quota}\`
-â”‚ IP Limit: \`${shadowsocksData.ip_limit === '0' ? 'Unlimited' : shadowsocksData.ip_limit} IP\`
-â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Ã¢â€Å’Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+Ã¢â€â€š Expiry: \`${shadowsocksData.expired}\`
+Ã¢â€â€š Quota: \`${shadowsocksData.quota === '0 GB' ? 'Unlimited' : shadowsocksData.quota}\`
+Ã¢â€â€š IP Limit: \`${shadowsocksData.ip_limit === '0' ? 'Unlimited' : shadowsocksData.ip_limit} IP\`
+Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 Save Account Link: [Save Account](https://${shadowsocksData.domain}:81/shadowsocks-${shadowsocksData.username}.txt)
-âœ¨ Selamat menggunakan layanan kami! âœ¨
+Ã¢Å“Â¨ Selamat menggunakan layanan kami! Ã¢Å“Â¨
 `;
             console.log('Shadowsocks account created successfully');
             return resolve(msg);
           } else {
             console.log('Error creating Shadowsocks account');
-            return resolve(`âŒ Terjadi kesalahan: ${response.data.message}`);
+            return resolve(`Ã¢ÂÅ’ Terjadi kesalahan: ${response.data.message}`);
           }
         })
         .catch(error => {
           console.error('Error saat membuat Shadowsocks:', error);
-          return resolve('âŒ Terjadi kesalahan saat membuat Shadowsocks. Silakan coba lagi nanti.');
+          return resolve('Ã¢ÂÅ’ Terjadi kesalahan saat membuat Shadowsocks. Silakan coba lagi nanti.');
         });
     });
   });

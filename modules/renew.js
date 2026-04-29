@@ -7,6 +7,19 @@ function isValidUsername(username) {
   return !(/\s/.test(username) || /[^a-zA-Z0-9]/.test(username));
 }
 
+function normalizeApiBase(rawDomain) {
+  const value = String(rawDomain || '').trim();
+  if (!value) return '';
+  if (/^https?:\/\//i.test(value)) return value.replace(/\/+$/, '');
+  return `http://${value}`.replace(/\/+$/, '');
+}
+
+function normalizeAuthToken(rawAuth) {
+  const value = String(rawAuth || '').trim();
+  if (!value) return '';
+  return value.replace(/^Bearer\s+/i, '').trim();
+}
+
 function getServer(serverId) {
   return new Promise((resolve) => {
     db.get('SELECT * FROM Server WHERE id = ?', [serverId], (err, server) => {
@@ -62,8 +75,11 @@ async function renewByEndpoint({ username, exp, quota = 0, serverId, endpoint, t
     return '❌ Server tidak ditemukan. Silakan coba lagi.';
   }
 
-  const webURL = `http://${server.domain}${endpoint}/${username}/${exp}`;
-  const authToken = server.auth;
+  const baseUrl = normalizeApiBase(server.domain);
+  const authToken = normalizeAuthToken(server.auth);
+  if (!baseUrl) return '❌ Domain server tidak valid.';
+  if (!authToken) return '❌ Auth token server kosong/tidak valid.';
+  const webURL = `${baseUrl}${endpoint}/${username}/${exp}`;
 
   const curlCommand = `curl -s -X PATCH "${webURL}" \
 -H "Authorization: ${authToken}" \
@@ -155,8 +171,12 @@ async function renewshadowsocks(username, exp, quota, limitip, serverId) {
     return '❌ Server tidak ditemukan. Silakan coba lagi.';
   }
 
-  const param = `:5888/renewshadowsocks?user=${username}&exp=${exp}&quota=${quota}&iplimit=${limitip}&auth=${server.auth}`;
-  const url = `http://${server.domain}${param}`;
+  const baseUrl = normalizeApiBase(server.domain);
+  const authToken = normalizeAuthToken(server.auth);
+  if (!baseUrl) return '❌ Domain server tidak valid.';
+  if (!authToken) return '❌ Auth token server kosong/tidak valid.';
+  const param = `:5888/renewshadowsocks?user=${username}&exp=${exp}&quota=${quota}&iplimit=${limitip}&auth=${authToken}`;
+  const url = `${baseUrl}${param}`;
 
   try {
     const response = await axios.get(url);

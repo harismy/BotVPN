@@ -9,6 +9,12 @@ function normalizeApiBase(rawDomain) {
   return `http://${value}`.replace(/\/+$/, '');
 }
 
+function normalizeAuthToken(rawAuth) {
+  const value = String(rawAuth || '').trim();
+  if (!value) return '';
+  return value.replace(/^Bearer\s+/i, '').trim();
+}
+
 function parseJsonFromCurlOutput(stdout) {
   const raw = String(stdout || '').trim();
   if (!raw) return null;
@@ -29,6 +35,7 @@ function parseJsonFromCurlOutput(stdout) {
 }
 
 async function createzivpn(username, password, exp, iplimit, serverId, telegramUserId = '', telegramChatId = '') {
+  const selectedIpPackage = arguments.length >= 8 ? Number(arguments[7] || 1) : 1;
   if (/\s/.test(username) || /[^a-zA-Z0-9]/.test(username)) {
     return 'Username hanya boleh huruf & angka (tanpa spasi)';
   }
@@ -41,15 +48,32 @@ async function createzivpn(username, password, exp, iplimit, serverId, telegramU
 
       const baseUrl = normalizeApiBase(server.domain);
       const url = `${baseUrl}/vps/sshvpn`;
-      const cmd = `curl -sS -L --connect-timeout 10 --max-time 30 -X POST "${url}" \
-      -H "Authorization: ${server.auth}" \
+      const authToken = normalizeAuthToken(server.auth);
+      const effectivePackage = Number(selectedIpPackage) === 2 ? 2 : 1;
+
+      if (!authToken) {
+        return resolve('Auth token server kosong/tidak valid');
+      }
+
+      db.get(
+        'SELECT iplimit FROM server_iplimit_rules WHERE server_id = ? AND protocol = ? AND ip_package = ?',
+        [serverId, 'zivpn', effectivePackage],
+        (ruleErr, ruleRow) => {
+          const configuredLimit = Number(ruleRow?.iplimit);
+          const finalIpLimit = Number.isFinite(configuredLimit) && configuredLimit >= 0
+            ? configuredLimit
+            : Number(iplimit);
+          const resolvedIpLimit = Number.isFinite(finalIpLimit) && finalIpLimit >= 0 ? finalIpLimit : Number(iplimit || 0);
+
+          const cmd = `curl -sS -L --connect-timeout 10 --max-time 30 -X POST "${url}" \
+      -H "Authorization: ${authToken}" \
       -H "X-Telegram-User-Id: ${telegramUserId}" \
       -H "X-Telegram-Chat-Id: ${telegramChatId}" \
       -H "Content-Type: application/json" \
       -H "Accept: application/json" \
-      -d '{"expired":${exp},"limitip":"${iplimit}","password":"${password}","username":"${username}","telegram_user_id":"${telegramUserId}","telegram_chat_id":"${telegramChatId}"}'`;
+      -d '{"expired":${exp},"limitip":"${resolvedIpLimit}","password":"${password}","username":"${username}","telegram_user_id":"${telegramUserId}","telegram_chat_id":"${telegramChatId}"}'`;
 
-      exec(cmd, (errExec, stdout, stderr) => {
+          exec(cmd, (errExec, stdout, stderr) => {
         const res = parseJsonFromCurlOutput(stdout);
         if (!res) {
           if (errExec) console.error('ZIVPN curl error:', errExec.message);
@@ -77,10 +101,12 @@ ZIVPN SSH ACCOUNT
 - udp password : \`${s.username || username}\`
 - Hostname : \`${s.hostname || '-'}\`
 - Expired  : \`${s.exp || s.expired || '-'}\`
-- IP Limit : ${iplimit} device
+- IP Limit : ${resolvedIpLimit} device
 `;
         resolve(msg);
       });
+        }
+      );
     });
   });
 }
