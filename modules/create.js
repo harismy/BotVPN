@@ -45,6 +45,10 @@ function splitCurlOutput(rawOut) {
   const statusCode = Number.parseInt(codeRaw, 10);
   return { body, statusCode: Number.isFinite(statusCode) ? statusCode : 0 };
 }
+
+function isHttp2xx(statusCode) {
+  return Number(statusCode) >= 200 && Number(statusCode) < 300;
+}
 async function createssh(username, password, exp, iplimit, serverId, telegramUserId = '', telegramChatId = '') {
   console.log(`Creating SSH account for ${username} with expiry ${exp} days, IP limit ${iplimit}, and password ${password}`);
 
@@ -84,7 +88,7 @@ async function createssh(username, password, exp, iplimit, serverId, telegramUse
         const { body, statusCode } = splitCurlOutput(stdout);
         const d = parseJsonFromCurlOutput(body);
         if (!d) {
-          if (statusCode === 200) {
+          if (isHttp2xx(statusCode)) {
             return resolve(`✅ Akun SSH berhasil dibuat\nUsername: \`${username}\`\nExpired: \`${days} hari\`\nIP Limit: \`${LIMIT_IP}\``);
           }
           if (errExec) console.error('Curl request gagal:', errExec.message);
@@ -187,7 +191,7 @@ async function createudphttp(username, password, exp, iplimit, serverId, telegra
         const { body, statusCode } = splitCurlOutput(stdout);
         const d = parseJsonFromCurlOutput(body);
         if (!d) {
-          if (statusCode === 200) {
+          if (isHttp2xx(statusCode)) {
             return resolve(`✅ Akun UDP HTTP berhasil dibuat\nUsername: \`${username}\`\nExpired: \`${days} hari\`\nIP Limit: \`${LIMIT_IP}\``);
           }
           if (errExec) console.error('Curl request gagal:', errExec.message);
@@ -264,7 +268,7 @@ async function createvmess(username, exp, quota, limitip, serverId, telegramUser
         const { body, statusCode } = splitCurlOutput(stdout);
         const d = parseJsonFromCurlOutput(body);
         if (!d) {
-          if (statusCode === 200) {
+          if (isHttp2xx(statusCode)) {
             return resolve(`✅ Akun VMESS berhasil dibuat\nUsername: \`${username}\`\nExpired: \`${days} hari\`\nQuota: \`${KUOTA} GB\`\nIP Limit: \`${LIMIT_IP}\``);
           }
           if (errExec) console.error('Curl request failed:', errExec.message);
@@ -403,7 +407,7 @@ async function createvless(username, exp, quota, limitip, serverId, telegramUser
         const { body, statusCode } = splitCurlOutput(stdout);
         const d = parseJsonFromCurlOutput(body);
         if (!d) {
-          if (statusCode === 200) {
+          if (isHttp2xx(statusCode)) {
             return resolve(`✅ Akun VLESS berhasil dibuat\nUsername: \`${username}\`\nExpired: \`${days} hari\`\nQuota: \`${KUOTA} GB\`\nIP Limit: \`${LIMIT_IP}\``);
           }
           if (errExec) console.error('Curl request gagal:', errExec.message);
@@ -513,7 +517,7 @@ async function createtrojan(username, exp, quota, limitip, serverId, telegramUse
         const { body, statusCode } = splitCurlOutput(stdout);
         const d = parseJsonFromCurlOutput(body);
         if (!d) {
-          if (statusCode === 200) {
+          if (isHttp2xx(statusCode)) {
             return resolve(`✅ Akun TROJAN berhasil dibuat\nUsername: \`${username}\`\nExpired: \`${days} hari\`\nQuota: \`${KUOTA} GB\`\nIP Limit: \`${LIMIT_IP}\``);
           }
           if (errExec) console.error('Curl request gagal:', errExec.message);
@@ -661,6 +665,5 @@ Save Account Link: [Save Account](https://${shadowsocksData.domain}:81/shadowsoc
 }
 
 module.exports = { createssh, createudphttp, createvmess, createvless, createtrojan, createshadowsocks };
-
 
 

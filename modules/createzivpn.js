@@ -122,7 +122,8 @@ async function createzivpn(username, password, exp, iplimit, serverId, telegramU
 }
 
 function finalize(errExec, stderr, stdout, res, statusCode, resolve, resolvedIpLimit, username) {
-  if (!res && statusCode === 200) {
+  const isHttp2xx = statusCode >= 200 && statusCode < 300;
+  if (!res && isHttp2xx) {
     return resolve(`
 ZIVPN SSH ACCOUNT
 
@@ -136,11 +137,13 @@ ZIVPN SSH ACCOUNT
   if (!res) {
     if (errExec) console.error('ZIVPN curl error:', errExec.message);
     if (stderr) console.error('ZIVPN curl stderr:', stderr);
+    console.error('ZIVPN http status:', statusCode);
     console.error('ZIVPN raw output:', stdout);
     return resolve('Response server tidak valid');
   }
 
-  if (res?.meta?.code !== 200) {
+  const apiCode = Number(res?.meta?.code || 0);
+  if (!isHttp2xx && apiCode !== 200) {
     const rawMessage = String(res?.message || res?.meta?.message || 'unknown error');
     const haystack = (rawMessage || JSON.stringify(res) || '').toLowerCase();
     if (
