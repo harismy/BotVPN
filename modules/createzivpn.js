@@ -65,37 +65,70 @@ async function createzivpn(username, password, exp, iplimit, serverId, telegramU
             : Number(iplimit);
           const resolvedIpLimit = Number.isFinite(finalIpLimit) && finalIpLimit >= 0 ? finalIpLimit : Number(iplimit || 0);
 
-          const cmd = `curl -sS -L --connect-timeout 10 --max-time 30 -X POST "${url}" \
-      -H "Authorization: ${authToken}" \
+          const runCreate = (authorizationHeader, done) => {
+            const cmd = `curl -sS -L --connect-timeout 10 --max-time 30 -X POST "${url}" \
+      -H "Authorization: ${authorizationHeader}" \
       -H "X-Telegram-User-Id: ${telegramUserId}" \
       -H "X-Telegram-Chat-Id: ${telegramChatId}" \
       -H "Content-Type: application/json" \
       -H "Accept: application/json" \
       -d '{"expired":${exp},"limitip":"${resolvedIpLimit}","password":"${password}","username":"${username}","telegram_user_id":"${telegramUserId}","telegram_chat_id":"${telegramChatId}"}'`;
 
-          exec(cmd, (errExec, stdout, stderr) => {
-        const res = parseJsonFromCurlOutput(stdout);
-        if (!res) {
-          if (errExec) console.error('ZIVPN curl error:', errExec.message);
-          if (stderr) console.error('ZIVPN curl stderr:', stderr);
-          console.error('ZIVPN raw output:', stdout);
-          return resolve('Response server tidak valid');
-        }
+            exec(cmd, (errExec, stdout, stderr) => {
+              const res = parseJsonFromCurlOutput(stdout);
+              done(errExec, stderr, stdout, res);
+            });
+          };
 
-        if (res?.meta?.code !== 200) {
-          const rawMessage = String(res?.message || res?.meta?.message || 'unknown error');
-          const haystack = (rawMessage || JSON.stringify(res) || '').toLowerCase();
-          if (
-            (haystack.includes('username') || haystack.includes('client')) &&
-            (haystack.includes('exist') || haystack.includes('exists') || haystack.includes('already') || haystack.includes('try another'))
-          ) {
-            return resolve('username sudah ada mohon ulangi dengan username yang unik');
-          }
-          return resolve(`Gagal membuat akun ZIVPN: ${rawMessage}`);
-        }
+          const tokenRaw = authToken;
+          const tokenBearer = `Bearer ${authToken}`;
 
-        const s = res.data || {};
-        const msg = `
+          runCreate(tokenRaw, (errExec1, stderr1, stdout1, res1) => {
+            const unauthorizedText1 = String(
+              res1?.message || res1?.meta?.message || stdout1 || ''
+            ).toLowerCase();
+            const shouldRetryBearer = !res1 || unauthorizedText1.includes('unauthorized');
+
+            if (shouldRetryBearer) {
+              return runCreate(tokenBearer, (errExec2, stderr2, stdout2, res2) => {
+                const finalErr = errExec2 || errExec1;
+                const finalStderr = stderr2 || stderr1;
+                const finalStdout = stdout2 || stdout1;
+                const finalRes = res2 || res1;
+                return finalize(finalErr, finalStderr, finalStdout, finalRes, resolve, resolvedIpLimit, username);
+              });
+            }
+
+            return finalize(errExec1, stderr1, stdout1, res1, resolve, resolvedIpLimit, username);
+          });
+        }
+      );
+    });
+  });
+}
+
+function finalize(errExec, stderr, stdout, res, resolve, resolvedIpLimit, username) {
+  if (!res) {
+    if (errExec) console.error('ZIVPN curl error:', errExec.message);
+    if (stderr) console.error('ZIVPN curl stderr:', stderr);
+    console.error('ZIVPN raw output:', stdout);
+    return resolve('Response server tidak valid');
+  }
+
+  if (res?.meta?.code !== 200) {
+    const rawMessage = String(res?.message || res?.meta?.message || 'unknown error');
+    const haystack = (rawMessage || JSON.stringify(res) || '').toLowerCase();
+    if (
+      (haystack.includes('username') || haystack.includes('client')) &&
+      (haystack.includes('exist') || haystack.includes('exists') || haystack.includes('already') || haystack.includes('try another'))
+    ) {
+      return resolve('username sudah ada mohon ulangi dengan username yang unik');
+    }
+    return resolve(`Gagal membuat akun ZIVPN: ${rawMessage}`);
+  }
+
+  const s = res.data || {};
+  const msg = `
 ZIVPN SSH ACCOUNT
 
 - udp password : \`${s.username || username}\`
@@ -103,12 +136,7 @@ ZIVPN SSH ACCOUNT
 - Expired  : \`${s.exp || s.expired || '-'}\`
 - IP Limit : ${resolvedIpLimit} device
 `;
-        resolve(msg);
-      });
-        }
-      );
-    });
-  });
+  resolve(msg);
 }
 
 module.exports = { createzivpn };
