@@ -7,7 +7,7 @@ function normalizeApiBase(rawDomain) {
   const value = String(rawDomain || '').trim();
   if (!value) return '';
   if (/^https?:\/\//i.test(value)) return value.replace(/\/+$/, '');
-  return `http://${value}`.replace(/\/+$/, '');
+  return `https://${value}`.replace(/\/+$/, '');
 }
 
 function normalizeAuthToken(rawAuth) {
@@ -33,6 +33,17 @@ function parseJsonFromCurlOutput(stdout) {
     }
     return null;
   }
+}
+
+function splitCurlOutput(rawOut) {
+  const raw = String(rawOut || '');
+  const marker = '__HTTP_STATUS__:';
+  const idx = raw.lastIndexOf(marker);
+  if (idx < 0) return { body: raw.trim(), statusCode: 0 };
+  const body = raw.slice(0, idx).trim();
+  const codeRaw = raw.slice(idx + marker.length).trim();
+  const statusCode = Number.parseInt(codeRaw, 10);
+  return { body, statusCode: Number.isFinite(statusCode) ? statusCode : 0 };
 }
 async function createssh(username, password, exp, iplimit, serverId, telegramUserId = '', telegramChatId = '') {
   console.log(`Creating SSH account for ${username} with expiry ${exp} days, IP limit ${iplimit}, and password ${password}`);
@@ -66,14 +77,19 @@ async function createssh(username, password, exp, iplimit, serverId, telegramUse
 -H "X-Telegram-Chat-Id: ${telegramChatId}" \
 -H "Content-Type: application/json" \
 -H "Accept: application/json" \
--d '{"expired":${days},"kuota":"${KUOTA}","limitip":"${LIMIT_IP}","password":"${password}","username":"${username}","telegram_user_id":"${telegramUserId}","telegram_chat_id":"${telegramChatId}"}'`;
+-d '{"expired":${days},"kuota":"${KUOTA}","limitip":"${LIMIT_IP}","password":"${password}","username":"${username}","telegram_user_id":"${telegramUserId}","telegram_chat_id":"${telegramChatId}"}' \
+-w "\\n__HTTP_STATUS__:%{http_code}"`;
 
       exec(curlCommand, (errExec, stdout, stderr) => {
-        const d = parseJsonFromCurlOutput(stdout);
+        const { body, statusCode } = splitCurlOutput(stdout);
+        const d = parseJsonFromCurlOutput(body);
         if (!d) {
+          if (statusCode === 200) {
+            return resolve(`✅ Akun SSH berhasil dibuat\nUsername: \`${username}\`\nExpired: \`${days} hari\`\nIP Limit: \`${LIMIT_IP}\``);
+          }
           if (errExec) console.error('Curl request gagal:', errExec.message);
           if (stderr) console.error('Curl stderr:', stderr);
-          console.error('Output:', stdout);
+          console.error('Output:', body);
           return resolve('Ã¢ÂÅ’ Format respon dari server tidak valid.');
         }
 
@@ -164,14 +180,19 @@ async function createudphttp(username, password, exp, iplimit, serverId, telegra
 -H "X-Telegram-Chat-Id: ${telegramChatId}" \
 -H "Content-Type: application/json" \
 -H "Accept: application/json" \
--d '{"expired":${days},"kuota":"${KUOTA}","limitip":"${LIMIT_IP}","password":"${password}","username":"${username}","telegram_user_id":"${telegramUserId}","telegram_chat_id":"${telegramChatId}"}'`;
+-d '{"expired":${days},"kuota":"${KUOTA}","limitip":"${LIMIT_IP}","password":"${password}","username":"${username}","telegram_user_id":"${telegramUserId}","telegram_chat_id":"${telegramChatId}"}' \
+-w "\\n__HTTP_STATUS__:%{http_code}"`;
 
       exec(curlCommand, (errExec, stdout, stderr) => {
-        const d = parseJsonFromCurlOutput(stdout);
+        const { body, statusCode } = splitCurlOutput(stdout);
+        const d = parseJsonFromCurlOutput(body);
         if (!d) {
+          if (statusCode === 200) {
+            return resolve(`✅ Akun UDP HTTP berhasil dibuat\nUsername: \`${username}\`\nExpired: \`${days} hari\`\nIP Limit: \`${LIMIT_IP}\``);
+          }
           if (errExec) console.error('Curl request gagal:', errExec.message);
           if (stderr) console.error('Curl stderr:', stderr);
-          console.error('Output:', stdout);
+          console.error('Output:', body);
           return resolve('Ã¢ÂÅ’ Format respon dari server tidak valid.');
         }
 
@@ -236,14 +257,19 @@ async function createvmess(username, exp, quota, limitip, serverId, telegramUser
 -H "X-Telegram-Chat-Id: ${telegramChatId}" \
 -H "Content-Type: application/json" \
 -H "Accept: application/json" \
--d '{"expired":${days},"kuota":"${KUOTA}","limitip":"${LIMIT_IP}","username":"${username}","telegram_user_id":"${telegramUserId}","telegram_chat_id":"${telegramChatId}"}'`;
+-d '{"expired":${days},"kuota":"${KUOTA}","limitip":"${LIMIT_IP}","username":"${username}","telegram_user_id":"${telegramUserId}","telegram_chat_id":"${telegramChatId}"}' \
+-w "\\n__HTTP_STATUS__:%{http_code}"`;
 
       exec(curlCommand, (errExec, stdout, stderr) => {
-        const d = parseJsonFromCurlOutput(stdout);
+        const { body, statusCode } = splitCurlOutput(stdout);
+        const d = parseJsonFromCurlOutput(body);
         if (!d) {
+          if (statusCode === 200) {
+            return resolve(`✅ Akun VMESS berhasil dibuat\nUsername: \`${username}\`\nExpired: \`${days} hari\`\nQuota: \`${KUOTA} GB\`\nIP Limit: \`${LIMIT_IP}\``);
+          }
           if (errExec) console.error('Curl request failed:', errExec.message);
           if (stderr) console.error('Curl stderr:', stderr);
-          console.error('Output:', stdout);
+          console.error('Output:', body);
           return resolve('Format respon dari server tidak valid.');
         }
 
@@ -370,14 +396,19 @@ async function createvless(username, exp, quota, limitip, serverId, telegramUser
 -H "X-Telegram-Chat-Id: ${telegramChatId}" \
 -H "Content-Type: application/json" \
 -H "Accept: application/json" \
--d '{"expired":${days},"kuota":"${KUOTA}","limitip":"${LIMIT_IP}","username":"${username}","telegram_user_id":"${telegramUserId}","telegram_chat_id":"${telegramChatId}"}'`;
+-d '{"expired":${days},"kuota":"${KUOTA}","limitip":"${LIMIT_IP}","username":"${username}","telegram_user_id":"${telegramUserId}","telegram_chat_id":"${telegramChatId}"}' \
+-w "\\n__HTTP_STATUS__:%{http_code}"`;
 
       exec(curlCommand, (errExec, stdout, stderr) => {
-        const d = parseJsonFromCurlOutput(stdout);
+        const { body, statusCode } = splitCurlOutput(stdout);
+        const d = parseJsonFromCurlOutput(body);
         if (!d) {
+          if (statusCode === 200) {
+            return resolve(`✅ Akun VLESS berhasil dibuat\nUsername: \`${username}\`\nExpired: \`${days} hari\`\nQuota: \`${KUOTA} GB\`\nIP Limit: \`${LIMIT_IP}\``);
+          }
           if (errExec) console.error('Curl request gagal:', errExec.message);
           if (stderr) console.error('Curl stderr:', stderr);
-          console.error('Output:', stdout);
+          console.error('Output:', body);
           return resolve('Ã¢ÂÅ’ Format respon dari server tidak valid.');
         }
 
@@ -475,14 +506,19 @@ async function createtrojan(username, exp, quota, limitip, serverId, telegramUse
 -H "X-Telegram-Chat-Id: ${telegramChatId}" \
 -H "Content-Type: application/json" \
 -H "Accept: application/json" \
--d '{"expired":${days},"kuota":"${KUOTA}","limitip":"${LIMIT_IP}","username":"${username}","telegram_user_id":"${telegramUserId}","telegram_chat_id":"${telegramChatId}"}'`;
+-d '{"expired":${days},"kuota":"${KUOTA}","limitip":"${LIMIT_IP}","username":"${username}","telegram_user_id":"${telegramUserId}","telegram_chat_id":"${telegramChatId}"}' \
+-w "\\n__HTTP_STATUS__:%{http_code}"`;
 
       exec(curlCommand, (errExec, stdout, stderr) => {
-        const d = parseJsonFromCurlOutput(stdout);
+        const { body, statusCode } = splitCurlOutput(stdout);
+        const d = parseJsonFromCurlOutput(body);
         if (!d) {
+          if (statusCode === 200) {
+            return resolve(`✅ Akun TROJAN berhasil dibuat\nUsername: \`${username}\`\nExpired: \`${days} hari\`\nQuota: \`${KUOTA} GB\`\nIP Limit: \`${LIMIT_IP}\``);
+          }
           if (errExec) console.error('Curl request gagal:', errExec.message);
           if (stderr) console.error('Curl stderr:', stderr);
-          console.error('Output:', stdout);
+          console.error('Output:', body);
           return resolve('Ã¢ÂÅ’ Format respon dari server tidak valid.');
         }
 
@@ -625,8 +661,6 @@ Save Account Link: [Save Account](https://${shadowsocksData.domain}:81/shadowsoc
 }
 
 module.exports = { createssh, createudphttp, createvmess, createvless, createtrojan, createshadowsocks };
-
-
 
 
 

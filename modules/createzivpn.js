@@ -34,6 +34,17 @@ function parseJsonFromCurlOutput(stdout) {
   }
 }
 
+function splitCurlOutput(rawOut) {
+  const raw = String(rawOut || '');
+  const marker = '__HTTP_STATUS__:';
+  const idx = raw.lastIndexOf(marker);
+  if (idx < 0) return { body: raw.trim(), statusCode: 0 };
+  const body = raw.slice(0, idx).trim();
+  const codeRaw = raw.slice(idx + marker.length).trim();
+  const statusCode = Number.parseInt(codeRaw, 10);
+  return { body, statusCode: Number.isFinite(statusCode) ? statusCode : 0 };
+}
+
 async function createzivpn(username, password, exp, iplimit, serverId, telegramUserId = '', telegramChatId = '') {
   const selectedIpPackage = arguments.length >= 8 ? Number(arguments[7] || 1) : 1;
   if (/\s/.test(username) || /[^a-zA-Z0-9]/.test(username)) {
@@ -72,34 +83,37 @@ async function createzivpn(username, password, exp, iplimit, serverId, telegramU
       -H "X-Telegram-Chat-Id: ${telegramChatId}" \
       -H "Content-Type: application/json" \
       -H "Accept: application/json" \
-      -d '{"expired":${exp},"limitip":"${resolvedIpLimit}","password":"${password}","username":"${username}","telegram_user_id":"${telegramUserId}","telegram_chat_id":"${telegramChatId}"}'`;
+      -d '{"expired":${exp},"limitip":"${resolvedIpLimit}","password":"${password}","username":"${username}","telegram_user_id":"${telegramUserId}","telegram_chat_id":"${telegramChatId}"}' \
+      -w "\\n__HTTP_STATUS__:%{http_code}"`;
 
             exec(cmd, (errExec, stdout, stderr) => {
-              const res = parseJsonFromCurlOutput(stdout);
-              done(errExec, stderr, stdout, res);
+              const { body, statusCode } = splitCurlOutput(stdout);
+              const res = parseJsonFromCurlOutput(body);
+              done(errExec, stderr, body, res, statusCode);
             });
           };
 
           const tokenRaw = authToken;
           const tokenBearer = `Bearer ${authToken}`;
 
-          runCreate(tokenRaw, (errExec1, stderr1, stdout1, res1) => {
+          runCreate(tokenRaw, (errExec1, stderr1, stdout1, res1, code1) => {
             const unauthorizedText1 = String(
               res1?.message || res1?.meta?.message || stdout1 || ''
             ).toLowerCase();
-            const shouldRetryBearer = !res1 || unauthorizedText1.includes('unauthorized');
+            const shouldRetryBearer = code1 === 401 || unauthorizedText1.includes('unauthorized');
 
             if (shouldRetryBearer) {
-              return runCreate(tokenBearer, (errExec2, stderr2, stdout2, res2) => {
+              return runCreate(tokenBearer, (errExec2, stderr2, stdout2, res2, code2) => {
                 const finalErr = errExec2 || errExec1;
                 const finalStderr = stderr2 || stderr1;
                 const finalStdout = stdout2 || stdout1;
                 const finalRes = res2 || res1;
-                return finalize(finalErr, finalStderr, finalStdout, finalRes, resolve, resolvedIpLimit, username);
+                const finalCode = code2 || code1;
+                return finalize(finalErr, finalStderr, finalStdout, finalRes, finalCode, resolve, resolvedIpLimit, username);
               });
             }
 
-            return finalize(errExec1, stderr1, stdout1, res1, resolve, resolvedIpLimit, username);
+            return finalize(errExec1, stderr1, stdout1, res1, code1, resolve, resolvedIpLimit, username);
           });
         }
       );
@@ -107,7 +121,18 @@ async function createzivpn(username, password, exp, iplimit, serverId, telegramU
   });
 }
 
-function finalize(errExec, stderr, stdout, res, resolve, resolvedIpLimit, username) {
+function finalize(errExec, stderr, stdout, res, statusCode, resolve, resolvedIpLimit, username) {
+  if (!res && statusCode === 200) {
+    return resolve(`
+ZIVPN SSH ACCOUNT
+
+- udp password : \`${username}\`
+- Hostname : \`-\`
+- Expired  : \`-\`
+- IP Limit : ${resolvedIpLimit} device
+`);
+  }
+
   if (!res) {
     if (errExec) console.error('ZIVPN curl error:', errExec.message);
     if (stderr) console.error('ZIVPN curl stderr:', stderr);
