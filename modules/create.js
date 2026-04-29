@@ -7,7 +7,7 @@ function normalizeApiBase(rawDomain) {
   const value = String(rawDomain || '').trim();
   if (!value) return '';
   if (/^https?:\/\//i.test(value)) return value.replace(/\/+$/, '');
-  return `https://${value}`.replace(/\/+$/, '');
+  return `http://${value}`.replace(/\/+$/, '');
 }
 
 function normalizeAuthToken(rawAuth) {
@@ -75,7 +75,7 @@ async function createssh(username, password, exp, iplimit, serverId, telegramUse
       const KUOTA = "0"; // jika perlu di-hardcode, bisa diubah jadi parameter juga
       const LIMIT_IP = iplimit;
 
-      const curlCommand = `curl -sS -L --connect-timeout 10 --max-time 30 -X POST "${web_URL}" \
+      const curlCommand = `curl -k -sS -L --connect-timeout 10 --max-time 30 -X POST "${web_URL}" \
 -H "Authorization: ${AUTH_TOKEN}" \
 -H "X-Telegram-User-Id: ${telegramUserId}" \
 -H "X-Telegram-Chat-Id: ${telegramChatId}" \
@@ -178,7 +178,7 @@ async function createudphttp(username, password, exp, iplimit, serverId, telegra
       const KUOTA = "0";
       const LIMIT_IP = iplimit;
 
-      const curlCommand = `curl -sS -L --connect-timeout 10 --max-time 30 -X POST "${web_URL}" \
+      const curlCommand = `curl -k -sS -L --connect-timeout 10 --max-time 30 -X POST "${web_URL}" \
 -H "Authorization: ${AUTH_TOKEN}" \
 -H "X-Telegram-User-Id: ${telegramUserId}" \
 -H "X-Telegram-Chat-Id: ${telegramChatId}" \
@@ -255,7 +255,7 @@ async function createvmess(username, exp, quota, limitip, serverId, telegramUser
       const KUOTA = quota;
       const LIMIT_IP = limitip;
 
-      const curlCommand = `curl -sS -L --connect-timeout 10 --max-time 30 -X POST "${web_URL}" \
+      const curlCommand = `curl -k -sS -L --connect-timeout 10 --max-time 30 -X POST "${web_URL}" \
 -H "Authorization: ${AUTH_TOKEN}" \
 -H "X-Telegram-User-Id: ${telegramUserId}" \
 -H "X-Telegram-Chat-Id: ${telegramChatId}" \
@@ -394,7 +394,7 @@ async function createvless(username, exp, quota, limitip, serverId, telegramUser
       const KUOTA = quota;
       const LIMIT_IP = limitip;
 
-      const curlCommand = `curl -sS -L --connect-timeout 10 --max-time 30 -X POST "${web_URL}" \
+      const curlCommand = `curl -k -sS -L --connect-timeout 10 --max-time 30 -X POST "${web_URL}" \
 -H "Authorization: ${AUTH_TOKEN}" \
 -H "X-Telegram-User-Id: ${telegramUserId}" \
 -H "X-Telegram-Chat-Id: ${telegramChatId}" \
@@ -504,7 +504,7 @@ async function createtrojan(username, exp, quota, limitip, serverId, telegramUse
       const KUOTA = quota;
       const LIMIT_IP = limitip;
 
-      const curlCommand = `curl -sS -L --connect-timeout 10 --max-time 30 -X POST "${web_URL}" \
+      const curlCommand = `curl -k -sS -L --connect-timeout 10 --max-time 30 -X POST "${web_URL}" \
 -H "Authorization: ${AUTH_TOKEN}" \
 -H "X-Telegram-User-Id: ${telegramUserId}" \
 -H "X-Telegram-Chat-Id: ${telegramChatId}" \
@@ -665,5 +665,3 @@ Save Account Link: [Save Account](https://${shadowsocksData.domain}:81/shadowsoc
 }
 
 module.exports = { createssh, createudphttp, createvmess, createvless, createtrojan, createshadowsocks };
-
-

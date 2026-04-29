@@ -6,7 +6,7 @@ function normalizeApiBase(rawDomain) {
   const value = String(rawDomain || '').trim();
   if (!value) return '';
   if (/^https?:\/\//i.test(value)) return value.replace(/\/+$/, '');
-  return `https://${value}`.replace(/\/+$/, '');
+  return `http://${value}`.replace(/\/+$/, '');
 }
 
 function normalizeAuthToken(rawAuth) {
@@ -77,7 +77,7 @@ async function createzivpn(username, password, exp, iplimit, serverId, telegramU
           const resolvedIpLimit = Number.isFinite(finalIpLimit) && finalIpLimit >= 0 ? finalIpLimit : Number(iplimit || 0);
 
           const runCreate = (authorizationHeader, done) => {
-            const cmd = `curl -sS -L --connect-timeout 10 --max-time 30 -X POST "${url}" \
+            const cmd = `curl -k -sS -L --connect-timeout 10 --max-time 30 -X POST "${url}" \
       -H "Authorization: ${authorizationHeader}" \
       -H "X-Telegram-User-Id: ${telegramUserId}" \
       -H "X-Telegram-Chat-Id: ${telegramChatId}" \
