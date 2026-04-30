@@ -473,6 +473,11 @@ if (!Number.isFinite(BW_REPORT_INTERVAL_MINUTES) || BW_REPORT_INTERVAL_MINUTES <
 if (BW_REPORT_INTERVAL_MINUTES > 1440) BW_REPORT_INTERVAL_MINUTES = 1440;
 let NOTIF_BOT_TOKEN = vars.NOTIF_BOT_TOKEN || '';
 let NOTIF_CHAT_ID = vars.NOTIF_CHAT_ID || '';
+const BOT_ACCOUNT_EVENT_WEBHOOK_TOKEN = String(
+  vars.BOT_ACCOUNT_EVENT_WEBHOOK_TOKEN ||
+  vars.SC_EVENT_WEBHOOK_TOKEN ||
+  ''
+).trim();
 let ADMIN_WHATSAPP = String(vars.ADMIN_WHATSAPP || vars.CONTACT_WA || '').replace(/\D/g, '');
 let ADMIN_TELEGRAM = String(vars.ADMIN_TELEGRAM || vars.CONTACT_TELEGRAM || '').trim().replace(/^@+/, '');
 
@@ -845,6 +850,94 @@ const bot = new Telegraf(BOT_TOKEN);
 let ADMIN_USERNAME = '';
 const adminIds = ADMIN;
 logger.info('Bot initialized');
+
+function getScEventBearerToken(req) {
+  const auth = String(req.headers?.authorization || '').trim();
+  if (/^Bearer\s+/i.test(auth)) return auth.replace(/^Bearer\s+/i, '').trim();
+  return String(req.headers?.['x-sc-event-token'] || req.body?.token || '').trim();
+}
+
+function normalizeTelegramTarget(raw) {
+  const text = String(raw || '').trim();
+  if (!text || text === '0' || text.toLowerCase() === 'null') return '';
+  return text;
+}
+
+function formatMultiLoginUserNotification(payload = {}) {
+  const service = String(payload.service || payload.layanan || '-').toUpperCase();
+  const username = String(payload.username || '-').trim() || '-';
+  const limitIp = Number(payload.limitip || payload.limit_ip || 0);
+  const detected = Number(payload.detected || payload.connected_ip || 0);
+  const unlockMinutes = Number(payload.unlock_minutes || payload.unlock || 0);
+  const ips = Array.isArray(payload.ips)
+    ? payload.ips.map((ip) => String(ip || '').trim()).filter(Boolean).slice(0, 8)
+    : [];
+  const timeText = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
+  return [
+    '⚠️ NOTIFIKASI MULTI LOGIN',
+    '',
+    `Layanan  : ${service}`,
+    `Username : ${username}`,
+    `Limit IP : ${limitIp}`,
+    `Terdeteksi: ${detected}`,
+    `IP Login : ${ips.length ? ips.join(', ') : '-'}`,
+    unlockMinutes > 0 ? `Unlock   : otomatis ${unlockMinutes} menit` : 'Unlock   : otomatis',
+    `Waktu    : ${timeText}`,
+    '',
+    'Akun dikunci sementara karena login melebihi limit IP.'
+  ].join('\n');
+}
+
+async function isValidScEventToken(token) {
+  const incoming = String(token || '').trim();
+  if (!incoming) return false;
+  if (BOT_ACCOUNT_EVENT_WEBHOOK_TOKEN && incoming === BOT_ACCOUNT_EVENT_WEBHOOK_TOKEN) return true;
+
+  try {
+    const row = await dbGetAsync(
+      'SELECT id FROM Server WHERE auth = ? LIMIT 1',
+      [incoming]
+    );
+    return !!row;
+  } catch (err) {
+    logger.warn(`Validasi token event SC gagal: ${err.message}`);
+    return false;
+  }
+}
+
+app.post('/sc1forcr/events/multi-login', async (req, res) => {
+  try {
+    const givenToken = getScEventBearerToken(req);
+    if (!(await isValidScEventToken(givenToken))) {
+      return res.status(401).json({ ok: false, message: 'unauthorized' });
+    }
+
+    const payload = req.body || {};
+    const event = String(payload.event || '').trim().toUpperCase();
+    if (event && event !== 'MULTI_LOGIN') {
+      return res.status(400).json({ ok: false, message: 'unsupported event' });
+    }
+
+    const targetChatId = normalizeTelegramTarget(
+      payload.owner_telegram_chat_id ||
+      payload.telegram_chat_id ||
+      payload.chat_id ||
+      payload.owner_telegram_id ||
+      payload.telegram_user_id
+    );
+    if (!targetChatId) {
+      return res.status(202).json({ ok: false, skipped: true, message: 'owner telegram id is empty' });
+    }
+
+    const text = formatMultiLoginUserNotification(payload);
+    await bot.telegram.sendMessage(targetChatId, text);
+    logger.info(`✅ Multi-login notif dikirim ke user ${targetChatId} (${payload.service || '-'}:${payload.username || '-'})`);
+    return res.json({ ok: true });
+  } catch (err) {
+    logger.error('❌ Gagal proses webhook multi-login:', err.message);
+    return res.status(500).json({ ok: false, message: 'internal error' });
+  }
+});
 
 async function notifyGroupAccountDeleted(payload) {
   if (!GROUP_ID_NUM) return;
