@@ -12633,12 +12633,13 @@ async function processDeposit(ctx, amount, options = {}) {
 1. Scan QR Code di atas
 2. Transfer TEPAT Rp ${finalAmount.toLocaleString('id-ID')}
 3. Jangan kurang atau lebih!
-4. ${gatewayProvider === 'orderkuota' ? 'Tekan tombol Cek Status Pembayaran setelah transfer' : 'Sistem otomatis verifikasi dalam 1-2 menit'}
+4. ${gatewayProvider === 'orderkuota' ? 'WAJIB tekan tombol Cek Status Pembayaran setelah transfer' : 'Sistem otomatis verifikasi dalam 1-2 menit'}
 
 ⚠️ *PERHATIAN:*
 • QR Code berlaku ${PAYMENT_QR_EXPIRE_MINUTES} menit
 • Transfer harus sesuai nominal di atas
 ${gatewayProvider === 'orderkuota' ? '• Cek status OrderKuota bisa ditekan 1 menit sekali\n' : ''}
+${gatewayProvider === 'orderkuota' ? '• Saat tombol ditekan, bot cek histori selama 10 detik\n' : ''}
 • ${gatewayProvider === 'orderkuota' ? 'Saldo bertambah setelah tombol cek menemukan pembayaran' : 'Saldo otomatis bertambah setelah terdeteksi'}
 
 🆔 *Referensi:* \`${referenceId}\`
@@ -12736,6 +12737,7 @@ let lastPollErrorTime = 0;
 const GOPAY_POLL_INTERVAL = 10000; // GoPay cek status tiap 10 detik
 const ORDERKUOTA_POLL_INTERVAL = 60 * 1000; // OrderKuota hanya cek manual, maksimal 1 menit sekali
 const ORDERKUOTA_RATE_LIMIT_COOLDOWN = 5 * 60 * 1000;
+const ORDERKUOTA_MANUAL_CHECK_WINDOW = 10 * 1000;
 const POLL_ERROR_INTERVAL = 60000; // log error maksimal 1 menit sekali
 
 async function checkGoPayTransactionStatus(transactionId) {
@@ -12761,16 +12763,21 @@ async function checkGoPayTransactionStatus(transactionId) {
   };
 }
 
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 function isOrderKuotaRateLimitMessage(value) {
   const text = typeof value === 'string' ? value : JSON.stringify(value || {});
   return /terlalu sering|rate.?limit|5\s*menit/i.test(text);
 }
 
-async function fetchOrderKuotaMutationsOnce() {
+async function fetchOrderKuotaMutationsOnce(options = {}) {
+  const skipNormalCooldown = Boolean(options.skipNormalCooldown);
   const now = Date.now();
   const waitMs = Math.max(
     orderKuotaPollCooldownUntil - now,
-    ORDERKUOTA_POLL_INTERVAL - (now - lastOrderKuotaPollTime),
+    skipNormalCooldown ? 0 : ORDERKUOTA_POLL_INTERVAL - (now - lastOrderKuotaPollTime),
     0
   );
 
@@ -12829,6 +12836,29 @@ async function fetchOrderKuotaMutationsOnce() {
   }
 }
 
+async function findOrderKuotaPaymentDuringWindow(deposit) {
+  const startedAt = Date.now();
+  let attempt = 0;
+  let lastMutations = [];
+
+  while (attempt < 2) {
+    attempt += 1;
+    const mutations = await fetchOrderKuotaMutationsOnce({ skipNormalCooldown: attempt > 1 });
+    lastMutations = mutations;
+    const matchingMutation = mutations.find((m) => m.amount === deposit.amount);
+    if (matchingMutation) {
+      return { found: true, matchingMutation, attempts: attempt, mutations };
+    }
+
+    if (attempt >= 2) break;
+    const nextAttemptAt = startedAt + ORDERKUOTA_MANUAL_CHECK_WINDOW;
+    const waitMs = Math.max(nextAttemptAt - Date.now(), 0);
+    await delay(waitMs);
+  }
+
+  return { found: false, attempts: attempt, mutations: lastMutations };
+}
+
 bot.action(/check_orkut_payment_(.+)/, async (ctx) => {
   const uniqueCode = String(ctx.match?.[1] || '');
   const deposit = global.pendingDeposits?.[uniqueCode];
@@ -12858,12 +12888,16 @@ bot.action(/check_orkut_payment_(.+)/, async (ctx) => {
       return;
     }
 
-    await ctx.answerCbQuery('Sedang cek histori pembayaran...', { show_alert: false });
+    await ctx.answerCbQuery('Sedang cek histori pembayaran 10 detik...', { show_alert: false });
+    await ctx.reply(
+      '🔍 *Sedang cek pembayaran OrderKuota...*\n\n' +
+      'Bot akan mengambil histori selama 10 detik. Mohon tunggu.',
+      { parse_mode: 'Markdown' }
+    );
 
-    const mutations = await fetchOrderKuotaMutationsOnce();
-    const matchingMutation = mutations.find((m) => m.amount === deposit.amount);
+    const checkResult = await findOrderKuotaPaymentDuringWindow(deposit);
 
-    if (matchingMutation) {
+    if (checkResult.found) {
       logger.info(`OrderKuota manual check matched ${uniqueCode}: ${deposit.amount}`);
       await processSuccessfulPayment(deposit, uniqueCode);
       return;
@@ -12872,6 +12906,7 @@ bot.action(/check_orkut_payment_(.+)/, async (ctx) => {
     await ctx.reply(
       '⏳ *Pembayaran belum ditemukan.*\n\n' +
       `Pastikan Anda transfer tepat Rp ${Number(deposit.amount || 0).toLocaleString('id-ID')}.\n` +
+      `Histori dicek ${checkResult.attempts}x selama 10 detik, tapi nominal pembayaran belum muncul.\n` +
       'Jika baru saja transfer, tunggu beberapa menit lalu tekan tombol cek lagi.',
       { parse_mode: 'Markdown' }
     );
