@@ -4610,6 +4610,7 @@ async function sendAdminToolsMenu(ctx) {
     [{ text: 'Atur Auto Sync Server', callback_data: 'admin_sync_server_toggle_menu' }],
     [{ text: '🔔 Notif Create (Bot)', callback_data: 'notif_settings_menu' }],
     [{ text: '🔐 Webhook Multi-Login SC', callback_data: 'sc_webhook_settings_menu' }],
+    [{ text: '🌐 Setup Nginx Webhook', callback_data: 'nginx_webhook_menu' }],
     [{ text: '📶 Notif BW Server', callback_data: 'bw_notif_settings_menu' }],
     [{ text: '💳 Setting Payment Gateway', callback_data: 'payment_gateway_settings_menu' }],
     [{ text: maintenanceLabel, callback_data: 'maintenance_menu' }],
@@ -4618,6 +4619,52 @@ async function sendAdminToolsMenu(ctx) {
   ];
 
   await ctx.editMessageText('*🧰 MENU TOOLS*', {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: keyboard }
+  });
+}
+
+function sanitizeNginxHostInput(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return '';
+  const withoutScheme = text.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').trim();
+  return withoutScheme;
+}
+
+function buildNginxWebhookConfig(host, appPort = 6969) {
+  const safeHost = sanitizeNginxHostInput(host);
+  const safePort = Number(appPort) > 0 ? Number(appPort) : 6969;
+  return (
+`server {
+    listen 80;
+    server_name ${safeHost};
+
+    location / {
+        proxy_pass http://127.0.0.1:${safePort};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}`
+  );
+}
+
+async function sendNginxWebhookMenu(ctx) {
+  const currentUrl = SC_MULTI_LOGIN_WEBHOOK_URL || '-';
+  const message =
+    '*🌐 SETUP NGINX WEBHOOK SC*\n\n' +
+    `URL webhook saat ini: \`${currentUrl}\`\n\n` +
+    'Menu ini bantu generate config Nginx untuk forward port 80 ke bot (6969), lalu set URL webhook SC.';
+
+  const keyboard = [
+    [{ text: '🧾 Generate Config Nginx', callback_data: 'nginx_webhook_generate' }],
+    [{ text: '🔗 Set URL Webhook dari Domain/IP', callback_data: 'nginx_webhook_set_url_from_host' }],
+    [{ text: '🔙 Kembali', callback_data: 'admin_menu_tools' }]
+  ];
+
+  await ctx.editMessageText(message, {
     parse_mode: 'Markdown',
     reply_markup: { inline_keyboard: keyboard }
   });
@@ -5261,6 +5308,42 @@ bot.action('sc_webhook_settings_menu', async (ctx) => {
     return ctx.reply('🚫 Anda tidak memiliki izin untuk mengakses menu ini.');
   }
   return sendScWebhookSettingsMenu(ctx);
+});
+
+bot.action('nginx_webhook_menu', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) {
+    return ctx.reply('🚫 Anda tidak memiliki izin untuk mengakses menu ini.');
+  }
+  return sendNginxWebhookMenu(ctx);
+});
+
+bot.action('nginx_webhook_generate', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) {
+    return ctx.reply('🚫 Anda tidak memiliki izin.');
+  }
+  userState[ctx.chat.id] = { step: 'nginx_webhook_host_input_generate' };
+  return ctx.reply(
+    'Kirim domain/IP publik VPS bot untuk generate config Nginx.\n' +
+    'Contoh: `47.236.58.59` atau `bot.domain.com`\n' +
+    'Ketik "batal" untuk membatalkan.',
+    { parse_mode: 'Markdown' }
+  );
+});
+
+bot.action('nginx_webhook_set_url_from_host', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) {
+    return ctx.reply('🚫 Anda tidak memiliki izin.');
+  }
+  userState[ctx.chat.id] = { step: 'nginx_webhook_host_input_seturl' };
+  return ctx.reply(
+    'Kirim domain/IP publik VPS bot untuk set URL webhook otomatis.\n' +
+    'Format URL akan jadi: `http://DOMAIN_OR_IP/sc1forcr/events/multi-login`\n' +
+    'Ketik "batal" untuk membatalkan.',
+    { parse_mode: 'Markdown' }
+  );
 });
 
 bot.action('sc_webhook_set_token', async (ctx) => {
@@ -9379,6 +9462,58 @@ if (!state || !state.step) return;
     delete userState[ctx.chat.id];
     await ctx.reply(`✅ URL webhook SC tersimpan:\n${SC_MULTI_LOGIN_WEBHOOK_URL}`);
     return sendAdminToolsMenu(ctx);
+  }
+
+  if (state.step === 'nginx_webhook_host_input_generate') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Generate config Nginx dibatalkan.');
+    }
+
+    const host = sanitizeNginxHostInput(text);
+    if (!host || !/^[a-zA-Z0-9.-]+$/.test(host)) {
+      return ctx.reply('Domain/IP tidak valid. Contoh: 47.236.58.59 atau bot.domain.com');
+    }
+
+    const nginxConfig = buildNginxWebhookConfig(host, port);
+    delete userState[ctx.chat.id];
+    await ctx.reply(
+      '*Config Nginx (copy ke `/etc/nginx/sites-available/botvpn`):*',
+      { parse_mode: 'Markdown' }
+    );
+    await ctx.reply('```nginx\n' + nginxConfig + '\n```', { parse_mode: 'Markdown' });
+    await ctx.reply(
+      'Lanjutkan di VPS:\n' +
+      '1. `ln -sf /etc/nginx/sites-available/botvpn /etc/nginx/sites-enabled/botvpn`\n' +
+      '2. `nginx -t`\n' +
+      '3. `systemctl reload nginx`\n\n' +
+      'Setelah itu, gunakan menu *Set URL Webhook dari Domain/IP*.',
+      { parse_mode: 'Markdown' }
+    );
+    return sendNginxWebhookMenu(ctx);
+  }
+
+  if (state.step === 'nginx_webhook_host_input_seturl') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Set URL webhook dibatalkan.');
+    }
+
+    const host = sanitizeNginxHostInput(text);
+    if (!host || !/^[a-zA-Z0-9.-]+$/.test(host)) {
+      return ctx.reply('Domain/IP tidak valid. Contoh: 47.236.58.59 atau bot.domain.com');
+    }
+
+    SC_MULTI_LOGIN_WEBHOOK_URL = `http://${host}/sc1forcr/events/multi-login`;
+    const nextVars = loadVars();
+    nextVars.SC_MULTI_LOGIN_WEBHOOK_URL = SC_MULTI_LOGIN_WEBHOOK_URL;
+    saveVars(nextVars);
+
+    delete userState[ctx.chat.id];
+    await ctx.reply(`✅ URL webhook SC diset otomatis:\n${SC_MULTI_LOGIN_WEBHOOK_URL}`);
+    return sendNginxWebhookMenu(ctx);
   }
 
   if (state.step === 'bw_notif_group_id') {
