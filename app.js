@@ -12772,6 +12772,94 @@ function isOrderKuotaRateLimitMessage(value) {
   return /terlalu sering|rate.?limit|5\s*menit/i.test(text);
 }
 
+function parseCurrencyNumber(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? Math.floor(value) : NaN;
+  const text = String(value || '').trim();
+  if (!text) return NaN;
+  const cleaned = text.replace(/[^\d.,-]/g, '');
+  if (!cleaned) return NaN;
+  const normalized = cleaned.includes(',')
+    ? cleaned.replace(/\./g, '').replace(',', '.')
+    : cleaned.replace(/\./g, '');
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? Math.floor(parsed) : NaN;
+}
+
+function parseOrderKuotaMutations(responseData) {
+  const mutations = [];
+  const seen = new Set();
+
+  const pushAmount = (amount, raw) => {
+    const parsed = parseCurrencyNumber(amount);
+    if (!Number.isFinite(parsed) || parsed <= 0) return;
+    const key = `${parsed}:${String(raw || '').slice(0, 80)}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    mutations.push({ amount: parsed, raw: String(raw || '').slice(0, 200) });
+  };
+
+  const scanText = (text) => {
+    const value = String(text || '');
+    if (!value) return;
+
+    const kreditRegex = /(?:Kredit|Credit|Masuk|Nominal|Amount|Jumlah|Total)\s*[:=]\s*(?:Rp\s*)?([\d.,]+)/gi;
+    let match;
+    while ((match = kreditRegex.exec(value)) !== null) {
+      pushAmount(match[1], match[0]);
+    }
+
+    const blocks = value.split('------------------------').filter(Boolean);
+    for (const block of blocks) {
+      const kreditMatch = block.match(/Kredit\s*:\s*([\d.,]+)/i);
+      if (kreditMatch) pushAmount(kreditMatch[1], block);
+    }
+  };
+
+  const scanObject = (value) => {
+    if (Array.isArray(value)) {
+      value.forEach(scanObject);
+      return;
+    }
+    if (!value || typeof value !== 'object') return;
+
+    const amountKeys = [
+      'kredit', 'credit', 'amount', 'nominal', 'jumlah', 'total',
+      'nilai', 'mutasi', 'saldo_masuk', 'debet_kredit'
+    ];
+
+    for (const [key, item] of Object.entries(value)) {
+      const lowerKey = key.toLowerCase();
+      if (amountKeys.some(amountKey => lowerKey.includes(amountKey))) {
+        pushAmount(item, JSON.stringify(value));
+      }
+      if (item && typeof item === 'object') {
+        scanObject(item);
+      } else if (typeof item === 'string' && /kredit|credit|nominal|amount|jumlah|masuk/i.test(item)) {
+        scanText(item);
+      }
+    }
+  };
+
+  if (typeof responseData === 'string') {
+    scanText(responseData);
+    try {
+      scanObject(JSON.parse(responseData));
+    } catch (_err) {}
+  } else {
+    scanObject(responseData);
+    scanText(JSON.stringify(responseData || {}));
+  }
+
+  return mutations;
+}
+
+function summarizeOrderKuotaResponse(responseData) {
+  const text = typeof responseData === 'string'
+    ? responseData
+    : JSON.stringify(responseData || {});
+  return text.replace(/\s+/g, ' ').slice(0, 300);
+}
+
 async function fetchOrderKuotaMutationsOnce(options = {}) {
   const skipNormalCooldown = Boolean(options.skipNormalCooldown);
   const now = Date.now();
@@ -12804,26 +12892,8 @@ async function fetchOrderKuotaMutationsOnce(options = {}) {
       throw error;
     }
 
-    const responseText = typeof resultcek.data === 'string'
-      ? resultcek.data
-      : JSON.stringify(resultcek.data || {});
-    const blocks = responseText.split('------------------------').filter(Boolean);
-    const mutations = [];
-
-    for (const block of blocks) {
-      try {
-        const kreditMatch = block.match(/Kredit\s*:\s*([\d.,]+)/);
-        if (kreditMatch) {
-          const kreditStr = kreditMatch[1].replace(/\./g, '');
-          const kredit = parseInt(kreditStr, 10);
-          if (!isNaN(kredit)) {
-            mutations.push({ amount: kredit, raw: block.substring(0, 200) });
-          }
-        }
-      } catch (_e) {}
-    }
-
-    logger.info(`OrderKuota manual check found ${mutations.length} mutations`);
+    const mutations = parseOrderKuotaMutations(resultcek.data);
+    logger.info(`OrderKuota manual check found ${mutations.length} mutations; response=${summarizeOrderKuotaResponse(resultcek.data)}`);
     return mutations;
   } catch (err) {
     if (isOrderKuotaRateLimitMessage(err?.response?.data || err.message)) {
@@ -12862,6 +12932,7 @@ async function findOrderKuotaPaymentDuringWindow(deposit) {
 bot.action(/check_orkut_payment_(.+)/, async (ctx) => {
   const uniqueCode = String(ctx.match?.[1] || '');
   const deposit = global.pendingDeposits?.[uniqueCode];
+  logger.info(`Tombol cek OrderKuota ditekan user=${ctx.from?.id} uniqueCode=${uniqueCode}`);
 
   try {
     if (!deposit || deposit.status !== 'pending') {
@@ -12906,7 +12977,7 @@ bot.action(/check_orkut_payment_(.+)/, async (ctx) => {
     await ctx.reply(
       '⏳ *Pembayaran belum ditemukan.*\n\n' +
       `Pastikan Anda transfer tepat Rp ${Number(deposit.amount || 0).toLocaleString('id-ID')}.\n` +
-      `Histori dicek ${checkResult.attempts}x selama 10 detik, tapi nominal pembayaran belum muncul.\n` +
+      `Histori dicek ${checkResult.attempts}x selama 10 detik dan terbaca ${checkResult.mutations.length} transaksi, tapi nominal pembayaran belum cocok.\n` +
       'Jika baru saja transfer, tunggu beberapa menit lalu tekan tombol cek lagi.',
       { parse_mode: 'Markdown' }
     );
@@ -12939,7 +13010,14 @@ async function pollBankMutations() {
       return;
     }
 
-    logger.info(`?? Polling ${pendingDeposits.length} pending deposits`);
+    const pendingGoPayCount = pendingDeposits.filter(([_, deposit]) => {
+      const provider = String(deposit.gatewayProvider || 'orderkuota').toLowerCase();
+      return provider === 'gopay';
+    }).length;
+
+    if (pendingGoPayCount > 0) {
+      logger.info(`Polling ${pendingGoPayCount} pending GoPay deposits`);
+    }
 
     for (const [uniqueCode, deposit] of pendingDeposits) {
       try {
