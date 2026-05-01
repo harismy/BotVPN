@@ -12066,6 +12066,12 @@ bot.on('callback_query', async (ctx) => {
   const data = ctx.callbackQuery.data;
   const userStateData = userState[ctx.chat.id];
 
+  if (String(data || '').startsWith('check_orkut_payment_')) {
+    const uniqueCode = String(data).replace(/^check_orkut_payment_/, '');
+    await handleOrderKuotaPaymentCheck(ctx, uniqueCode);
+    return;
+  }
+
   if (global.depositState && global.depositState[userId] && global.depositState[userId].action === 'request_amount') {
     await handleDepositState(ctx, userId, data);
   } 
@@ -12924,8 +12930,8 @@ async function fetchOrderKuotaMutationsOnce(options = {}) {
   }
 }
 
-bot.action(/check_orkut_payment_(.+)/, async (ctx) => {
-  const uniqueCode = String(ctx.match?.[1] || '');
+async function handleOrderKuotaPaymentCheck(ctx, uniqueCode) {
+  uniqueCode = String(uniqueCode || '');
   const deposit = global.pendingDeposits?.[uniqueCode];
   logger.info(`Tombol cek OrderKuota ditekan user=${ctx.from?.id} uniqueCode=${uniqueCode}`);
 
@@ -12984,6 +12990,10 @@ bot.action(/check_orkut_payment_(.+)/, async (ctx) => {
       { parse_mode: 'Markdown' }
     ).catch(() => {});
   }
+}
+
+bot.action(/check_orkut_payment_(.+)/, async (ctx) => {
+  await handleOrderKuotaPaymentCheck(ctx, ctx.match?.[1]);
 });
 
 async function pollBankMutations() {
