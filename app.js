@@ -16,6 +16,8 @@ const topupAutoPath = path.join(__dirname, 'topup_auto.json');
 const defaultTopupAuto = { enabled: true };
 const topupBonusPath = path.join(__dirname, 'topup_bonus.json');
 const defaultTopupBonus = { enabled: true, range_10_40: 0, range_50_70: 0, range_70_100: 0 };
+const maintenancePath = path.join(__dirname, 'maintenance_mode.json');
+const defaultMaintenance = { enabled: false, estimate: '' };
 const varsPath = path.join(__dirname, '.vars.json');
 
 function loadResellerTerms() {
@@ -106,6 +108,30 @@ function saveTopupBonusSetting(next) {
     range_70_100: Math.max(0, Math.min(100, Number(next.range_70_100) || 0))
   };
   fs.writeFileSync(topupBonusPath, JSON.stringify(payload, null, 2), 'utf8');
+  return payload;
+}
+
+function loadMaintenanceSetting() {
+  try {
+    const raw = fs.readFileSync(maintenancePath, 'utf8');
+    const parsed = JSON.parse(raw);
+    return {
+      enabled: !!parsed.enabled,
+      estimate: String(parsed.estimate || '').trim(),
+      updated_at: Number(parsed.updated_at || 0)
+    };
+  } catch (err) {
+    return { ...defaultMaintenance, updated_at: 0 };
+  }
+}
+
+function saveMaintenanceSetting(next) {
+  const payload = {
+    enabled: !!next.enabled,
+    estimate: String(next.estimate || '').trim(),
+    updated_at: Date.now()
+  };
+  fs.writeFileSync(maintenancePath, JSON.stringify(payload, null, 2), 'utf8');
   return payload;
 }
 
@@ -474,9 +500,14 @@ if (!Number.isFinite(BW_REPORT_INTERVAL_MINUTES) || BW_REPORT_INTERVAL_MINUTES <
 if (BW_REPORT_INTERVAL_MINUTES > 1440) BW_REPORT_INTERVAL_MINUTES = 1440;
 let NOTIF_BOT_TOKEN = vars.NOTIF_BOT_TOKEN || '';
 let NOTIF_CHAT_ID = vars.NOTIF_CHAT_ID || '';
-const BOT_ACCOUNT_EVENT_WEBHOOK_TOKEN = String(
+let BOT_ACCOUNT_EVENT_WEBHOOK_TOKEN = String(
   vars.BOT_ACCOUNT_EVENT_WEBHOOK_TOKEN ||
   vars.SC_EVENT_WEBHOOK_TOKEN ||
+  ''
+).trim();
+let SC_MULTI_LOGIN_WEBHOOK_URL = String(
+  vars.SC_MULTI_LOGIN_WEBHOOK_URL ||
+  vars.BOT_ACCOUNT_EVENT_WEBHOOK_URL ||
   ''
 ).trim();
 let ADMIN_WHATSAPP = String(vars.ADMIN_WHATSAPP || vars.CONTACT_WA || '').replace(/\D/g, '');
@@ -892,6 +923,35 @@ const bot = new Telegraf(BOT_TOKEN);
 let ADMIN_USERNAME = '';
 const adminIds = ADMIN;
 logger.info('Bot initialized');
+
+function buildMaintenanceNotice() {
+  const setting = loadMaintenanceSetting();
+  const estimateText = setting.estimate || 'belum ditentukan';
+  return (
+    '🚧 *Bot Sedang Maintenance*\n\n' +
+    'Mohon maaf, layanan bot sementara tidak tersedia.\n' +
+    `Estimasi selesai maintenance: *${estimateText}*.\n\n` +
+    'Silakan coba lagi nanti.'
+  );
+}
+
+bot.use(async (ctx, next) => {
+  const userId = Number(ctx.from?.id || 0);
+  const isAdminUser = Array.isArray(adminIds) ? adminIds.includes(userId) : Number(adminIds) === userId;
+  if (isAdminUser) return next();
+
+  const maintenance = loadMaintenanceSetting();
+  if (!maintenance.enabled) return next();
+
+  const notice = buildMaintenanceNotice();
+  if (ctx.updateType === 'callback_query') {
+    try {
+      await ctx.answerCbQuery('Bot sedang maintenance', { show_alert: true });
+    } catch (_) {}
+  }
+  await ctx.reply(notice, { parse_mode: 'Markdown' });
+  return;
+});
 
 function getScEventBearerToken(req) {
   const auth = String(req.headers?.authorization || '').trim();
@@ -4536,6 +4596,10 @@ bot.action('del_reseller_menu', async (ctx) => {
 });
 
 async function sendAdminToolsMenu(ctx) {
+  const maintenance = loadMaintenanceSetting();
+  const maintenanceLabel = maintenance.enabled
+    ? `🚧 Maintenance: ON (${maintenance.estimate || 'estimasi belum diisi'})`
+    : '✅ Maintenance: OFF';
   const keyboard = [
     [{ text: '📋 Help Admin', callback_data: 'helpadmin_menu' }],
     [{ text: '📣 Broadcast Kirim Pesan', callback_data: 'admin_broadcast_menu' }],
@@ -4545,13 +4609,59 @@ async function sendAdminToolsMenu(ctx) {
     [{ text: 'Sync Server Sekarang', callback_data: 'admin_sync_server_now' }],
     [{ text: 'Atur Auto Sync Server', callback_data: 'admin_sync_server_toggle_menu' }],
     [{ text: '🔔 Notif Create (Bot)', callback_data: 'notif_settings_menu' }],
+    [{ text: '🔐 Webhook Multi-Login SC', callback_data: 'sc_webhook_settings_menu' }],
     [{ text: '📶 Notif BW Server', callback_data: 'bw_notif_settings_menu' }],
     [{ text: '💳 Setting Payment Gateway', callback_data: 'payment_gateway_settings_menu' }],
+    [{ text: maintenanceLabel, callback_data: 'maintenance_menu' }],
     [{ text: '📞 Kontak Admin', callback_data: 'admin_contact_settings_menu' }],
     [{ text: '🔙 Kembali', callback_data: 'admin_menu' }]
   ];
 
   await ctx.editMessageText('*🧰 MENU TOOLS*', {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: keyboard }
+  });
+}
+
+async function sendMaintenanceMenu(ctx) {
+  const maintenance = loadMaintenanceSetting();
+  const statusText = maintenance.enabled ? 'AKTIF' : 'NONAKTIF';
+  const estimateText = maintenance.estimate || 'belum ditentukan';
+  const keyboard = [
+    [{ text: maintenance.enabled ? '🚫 Nonaktifkan Maintenance' : '✅ Aktifkan Maintenance', callback_data: 'maintenance_toggle' }],
+    [{ text: '⏱️ Set Estimasi Maintenance', callback_data: 'maintenance_set_estimate' }],
+    [{ text: '🔙 Kembali', callback_data: 'admin_menu_tools' }]
+  ];
+
+  await ctx.editMessageText(
+    '*🚧 MODE MAINTENANCE BOT*\n\n' +
+    `Status: *${statusText}*\n` +
+    `Estimasi: *${estimateText}*\n\n` +
+    'Contoh estimasi: `30 menit` atau `2 jam`.',
+    {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: keyboard }
+    }
+  );
+}
+
+async function sendScWebhookSettingsMenu(ctx) {
+  const tokenStatus = BOT_ACCOUNT_EVENT_WEBHOOK_TOKEN ? `✅ ${maskSecret(BOT_ACCOUNT_EVENT_WEBHOOK_TOKEN)}` : '❌ Belum diisi';
+  const urlStatus = SC_MULTI_LOGIN_WEBHOOK_URL || '-';
+  const message =
+    '*🔐 WEBHOOK MULTI-LOGIN SC*\n\n' +
+    `Token webhook: ${tokenStatus}\n` +
+    `URL webhook: \`${escapeHtmlLocal(urlStatus)}\`\n\n` +
+    'URL ini endpoint yang dipanggil server SC saat multi-login terdeteksi.';
+
+  const keyboard = [
+    [{ text: 'Set Token Webhook', callback_data: 'sc_webhook_set_token' }],
+    [{ text: 'Set URL Webhook', callback_data: 'sc_webhook_set_url' }],
+    [{ text: 'Test Webhook (kirim ke saya)', callback_data: 'sc_webhook_test' }],
+    [{ text: 'Kembali', callback_data: 'admin_menu_tools' }]
+  ];
+
+  await ctx.editMessageText(message, {
     parse_mode: 'Markdown',
     reply_markup: { inline_keyboard: keyboard }
   });
@@ -5144,6 +5254,65 @@ bot.action('notif_set_chat', async (ctx) => {
   await ctx.reply('Kirim *CHAT ID* tujuan notifikasi.\nKetik "batal" untuk membatalkan.', { parse_mode: 'Markdown' });
 });
 
+bot.action('sc_webhook_settings_menu', async (ctx) => {
+  await ctx.answerCbQuery();
+  const adminId = ctx.from.id;
+  if (!adminIds.includes(adminId)) {
+    return ctx.reply('🚫 Anda tidak memiliki izin untuk mengakses menu ini.');
+  }
+  return sendScWebhookSettingsMenu(ctx);
+});
+
+bot.action('sc_webhook_set_token', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('🚫 Anda tidak memiliki izin.');
+  userState[ctx.chat.id] = { step: 'sc_webhook_token' };
+  return ctx.reply('Kirim token webhook SC.\nKetik "batal" untuk membatalkan.');
+});
+
+bot.action('sc_webhook_set_url', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('🚫 Anda tidak memiliki izin.');
+  userState[ctx.chat.id] = { step: 'sc_webhook_url' };
+  return ctx.reply('Kirim URL webhook SC.\nContoh: https://domain-bot/sc1forcr/events/multi-login\nKetik "batal" untuk membatalkan.');
+});
+
+bot.action('sc_webhook_test', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('🚫 Anda tidak memiliki izin.');
+  if (!SC_MULTI_LOGIN_WEBHOOK_URL || !BOT_ACCOUNT_EVENT_WEBHOOK_TOKEN) {
+    return ctx.reply('URL/token webhook belum diisi. Isi dulu di menu Webhook Multi-Login SC.');
+  }
+  try {
+    await axios.post(
+      SC_MULTI_LOGIN_WEBHOOK_URL,
+      {
+        event: 'MULTI_LOGIN',
+        action: 'LOCK_TMP',
+        service: 'VMESS',
+        username: 'test-user',
+        limitip: 1,
+        detected: 3,
+        ips: ['1.1.1.1', '2.2.2.2'],
+        unlock_minutes: 15,
+        owner_telegram_id: ctx.from.id,
+        owner_telegram_chat_id: ctx.from.id
+      },
+      {
+        timeout: 10000,
+        headers: {
+          Authorization: `Bearer ${BOT_ACCOUNT_EVENT_WEBHOOK_TOKEN}`,
+          'x-sc-event-token': BOT_ACCOUNT_EVENT_WEBHOOK_TOKEN
+        }
+      }
+    );
+    return ctx.reply('✅ Test webhook terkirim. Cek apakah notif multi-login masuk ke akun Telegram kamu.');
+  } catch (err) {
+    const msg = err?.response?.data?.message || err?.message || 'unknown error';
+    return ctx.reply(`❌ Test webhook gagal: ${msg}`);
+  }
+});
+
 bot.action('bw_notif_settings_menu', async (ctx) => {
   await ctx.answerCbQuery();
   const adminId = ctx.from.id;
@@ -5197,44 +5366,19 @@ bot.action('bw_notif_set_interval', async (ctx) => {
   );
 });
 
-bot.action('payment_gateway_settings_menu', async (ctx) => {
-  await ctx.answerCbQuery();
-  const adminId = ctx.from.id;
-  if (!adminIds.includes(adminId)) {
-    return ctx.reply('Anda tidak memiliki izin untuk mengakses menu ini.');
-  }
-
+async function sendPaymentGatewayMainMenu(ctx) {
   reloadRuntimePaymentConfig();
-  const currentVars = loadVars();
   const message =
     '*SETTING PAYMENT GATEWAY*\n\n' +
-    `Mode Gateway: \`${formatGatewayModeLabel()}\`\n\n` +
-    '*OrderKuota*\n' +
-    `Gateway URL: \`${PAYMENT_GATEWAY_BASE_URL || '-'}\`\n` +
-    `RajaServer API Key: \`${maskSecret(RAJASERVER_API_KEY)}\`\n` +
-    `QRIS String: \`${DATA_QRIS ? 'Tersimpan' : 'Belum diisi'}\`\n` +
-    `ORKUT Username: \`${currentVars.ORKUT_USERNAME || 'Belum diisi'}\`\n` +
-    `ORKUT Token: \`${maskSecret(currentVars.ORKUT_TOKEN)}\`\n` +
-    `Merchant ID: \`${MERCHANT_ID || '-'}\`\n` +
-    `API Key (legacy): \`${maskSecret(API_KEY)}\`\n\n` +
-    '*GoPay*\n' +
-    `GoPay API Base URL: \`${GOPAY_API_BASE_URL || '-'}\`\n` +
-    `GoPay API Key: \`${maskSecret(GOPAY_API_KEY)}\`\n\n` +
-    'Pilih parameter yang ingin diubah.';
+    `Mode Gateway Aktif: \`${formatGatewayModeLabel()}\`\n\n` +
+    'Pilih mode gateway atau masuk ke submenu provider.';
 
   const keyboard = [
     [{ text: 'Mode: OrderKuota saja', callback_data: 'payment_gateway_mode_orderkuota' }],
     [{ text: 'Mode: GoPay saja', callback_data: 'payment_gateway_mode_gopay' }],
     [{ text: 'Mode: Keduanya (fallback)', callback_data: 'payment_gateway_mode_both' }],
-    [{ text: 'Set Gateway URL/Domain', callback_data: 'payment_gateway_set_url' }],
-    [{ text: 'Set RajaServer API Key', callback_data: 'payment_gateway_set_raja_api_key' }],
-    [{ text: 'Set QRIS String', callback_data: 'payment_gateway_set_qris' }],
-    [{ text: 'Set ORKUT Username', callback_data: 'payment_gateway_set_orkut_username' }],
-    [{ text: 'Set ORKUT Token', callback_data: 'payment_gateway_set_orkut_token' }],
-    [{ text: 'Set Merchant ID', callback_data: 'payment_gateway_set_merchant_id' }],
-    [{ text: 'Set API Key (legacy)', callback_data: 'payment_gateway_set_api_key' }],
-    [{ text: 'Set GoPay API Base URL', callback_data: 'payment_gateway_set_gopay_base_url' }],
-    [{ text: 'Set GoPay API Key', callback_data: 'payment_gateway_set_gopay_api_key' }],
+    [{ text: '⚙️ Setting OrderKuota', callback_data: 'payment_gateway_menu_orderkuota' }],
+    [{ text: '⚙️ Setting GoPay', callback_data: 'payment_gateway_menu_gopay' }],
     [{ text: 'Kembali', callback_data: 'admin_menu_tools' }]
   ];
 
@@ -5242,6 +5386,66 @@ bot.action('payment_gateway_settings_menu', async (ctx) => {
     parse_mode: 'Markdown',
     reply_markup: { inline_keyboard: keyboard }
   });
+}
+
+async function sendPaymentGatewayOrderKuotaMenu(ctx) {
+  reloadRuntimePaymentConfig();
+  const currentVars = loadVars();
+  const message =
+    '*SETTING ORDERKUOTA*\n\n' +
+    `Gateway URL: \`${PAYMENT_GATEWAY_BASE_URL || '-'}\`\n` +
+    `RajaServer API Key: \`${maskSecret(RAJASERVER_API_KEY)}\`\n` +
+    `QRIS String: \`${DATA_QRIS ? 'Tersimpan' : 'Belum diisi'}\`\n` +
+    `ORKUT Username: \`${currentVars.ORKUT_USERNAME || 'Belum diisi'}\`\n` +
+    `ORKUT Token: \`${maskSecret(currentVars.ORKUT_TOKEN)}\`\n` +
+    `Merchant ID: \`${MERCHANT_ID || '-'}\`\n` +
+    `API Key (legacy): \`${maskSecret(API_KEY)}\`\n\n` +
+    'Pilih parameter OrderKuota yang ingin diubah.';
+
+  const keyboard = [
+    [{ text: 'Set Gateway URL/Domain', callback_data: 'payment_gateway_set_url' }],
+    [{ text: 'Set RajaServer API Key', callback_data: 'payment_gateway_set_raja_api_key' }],
+    [{ text: 'Set QRIS String', callback_data: 'payment_gateway_set_qris' }],
+    [{ text: 'Set ORKUT Username', callback_data: 'payment_gateway_set_orkut_username' }],
+    [{ text: 'Set ORKUT Token', callback_data: 'payment_gateway_set_orkut_token' }],
+    [{ text: 'Set Merchant ID', callback_data: 'payment_gateway_set_merchant_id' }],
+    [{ text: 'Set API Key (legacy)', callback_data: 'payment_gateway_set_api_key' }],
+    [{ text: '🔙 Kembali', callback_data: 'payment_gateway_settings_menu' }]
+  ];
+
+  await ctx.editMessageText(message, {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: keyboard }
+  });
+}
+
+async function sendPaymentGatewayGoPayMenu(ctx) {
+  reloadRuntimePaymentConfig();
+  const message =
+    '*SETTING GOPAY*\n\n' +
+    `GoPay API Base URL: \`${GOPAY_API_BASE_URL || '-'}\`\n` +
+    `GoPay API Key: \`${maskSecret(GOPAY_API_KEY)}\`\n\n` +
+    'Pilih parameter GoPay yang ingin diubah.';
+
+  const keyboard = [
+    [{ text: 'Set GoPay API Base URL', callback_data: 'payment_gateway_set_gopay_base_url' }],
+    [{ text: 'Set GoPay API Key', callback_data: 'payment_gateway_set_gopay_api_key' }],
+    [{ text: '🔙 Kembali', callback_data: 'payment_gateway_settings_menu' }]
+  ];
+
+  await ctx.editMessageText(message, {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: keyboard }
+  });
+}
+
+bot.action('payment_gateway_settings_menu', async (ctx) => {
+  await ctx.answerCbQuery();
+  const adminId = ctx.from.id;
+  if (!adminIds.includes(adminId)) {
+    return ctx.reply('Anda tidak memiliki izin untuk mengakses menu ini.');
+  }
+  return sendPaymentGatewayMainMenu(ctx);
 });
 
 async function setPaymentGatewayMode(ctx, mode) {
@@ -5253,12 +5457,28 @@ async function setPaymentGatewayMode(ctx, mode) {
   saveVars(nextVars);
   reloadRuntimePaymentConfig();
   await ctx.answerCbQuery('Mode gateway tersimpan.');
-  return ctx.reply(`Mode gateway aktif: ${formatGatewayModeLabel()}`);
+  try {
+    return await sendPaymentGatewayMainMenu(ctx);
+  } catch (_) {
+    return ctx.reply(`Mode gateway aktif: ${formatGatewayModeLabel()}`);
+  }
 }
 
 bot.action('payment_gateway_mode_orderkuota', async (ctx) => setPaymentGatewayMode(ctx, 'orderkuota'));
 bot.action('payment_gateway_mode_gopay', async (ctx) => setPaymentGatewayMode(ctx, 'gopay'));
 bot.action('payment_gateway_mode_both', async (ctx) => setPaymentGatewayMode(ctx, 'both'));
+
+bot.action('payment_gateway_menu_orderkuota', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('Anda tidak memiliki izin.');
+  return sendPaymentGatewayOrderKuotaMenu(ctx);
+});
+
+bot.action('payment_gateway_menu_gopay', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('Anda tidak memiliki izin.');
+  return sendPaymentGatewayGoPayMenu(ctx);
+});
 
 bot.action('payment_gateway_set_url', async (ctx) => {
   await ctx.answerCbQuery();
@@ -5439,6 +5659,37 @@ bot.action('admin_menu_tools', async (ctx) => {
   await ctx.answerCbQuery();
   delete userState[ctx.chat.id];
   await sendAdminToolsMenu(ctx);
+});
+
+bot.action('maintenance_menu', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) {
+    return ctx.reply('🚫 Anda tidak memiliki izin untuk mengubah pengaturan ini.');
+  }
+  return sendMaintenanceMenu(ctx);
+});
+
+bot.action('maintenance_toggle', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) {
+    return ctx.reply('🚫 Anda tidak memiliki izin untuk mengubah pengaturan ini.');
+  }
+  const current = loadMaintenanceSetting();
+  const next = saveMaintenanceSetting({
+    enabled: !current.enabled,
+    estimate: current.estimate || ''
+  });
+  await ctx.reply(next.enabled ? '✅ Mode maintenance diaktifkan.' : '✅ Mode maintenance dinonaktifkan.');
+  return sendMaintenanceMenu(ctx);
+});
+
+bot.action('maintenance_set_estimate', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) {
+    return ctx.reply('🚫 Anda tidak memiliki izin untuk mengubah pengaturan ini.');
+  }
+  userState[ctx.chat.id] = { step: 'maintenance_estimate_input' };
+  return ctx.reply('Masukkan estimasi maintenance. Contoh: 30 menit atau 2 jam.\nKetik "batal" untuk membatalkan.');
 });
 
 bot.action('helpadmin_menu', async (ctx) => {
@@ -8716,6 +8967,28 @@ bot.on('text', async (ctx) => {
   const state = userState[ctx.chat.id];
 if (!state || !state.step) return;
 
+  if (state.step === 'maintenance_estimate_input') {
+    const text = String(ctx.message.text || '').trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan estimasi maintenance dibatalkan.');
+    }
+    if (text.length < 2 || text.length > 60) {
+      return ctx.reply('Estimasi tidak valid. Gunakan teks singkat, contoh: 30 menit atau 2 jam.');
+    }
+
+    const current = loadMaintenanceSetting();
+    saveMaintenanceSetting({
+      enabled: current.enabled,
+      estimate: text
+    });
+    delete userState[ctx.chat.id];
+    await ctx.reply(`✅ Estimasi maintenance disimpan: ${text}`);
+    return ctx.reply('Buka kembali menu maintenance untuk cek status terbaru.', {
+      reply_markup: { inline_keyboard: [[{ text: 'Buka Menu Maintenance', callback_data: 'maintenance_menu' }]] }
+    });
+  }
+
   if (state.step === 'server_iplimit_rule_1ip') {
     const text = (ctx.message.text || '').trim();
     if (text.toLowerCase() === 'batal') {
@@ -9072,6 +9345,40 @@ if (!state || !state.step) return;
     delete userState[ctx.chat.id];
     await ctx.reply('✅ Chat ID notifikasi tersimpan.');
     return sendAdminMenu(ctx);
+  }
+
+  if (state.step === 'sc_webhook_token') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan token webhook dibatalkan.');
+    }
+    BOT_ACCOUNT_EVENT_WEBHOOK_TOKEN = text;
+    const nextVars = loadVars();
+    nextVars.BOT_ACCOUNT_EVENT_WEBHOOK_TOKEN = BOT_ACCOUNT_EVENT_WEBHOOK_TOKEN;
+    saveVars(nextVars);
+    delete userState[ctx.chat.id];
+    await ctx.reply('✅ Token webhook SC tersimpan.');
+    return sendAdminToolsMenu(ctx);
+  }
+
+  if (state.step === 'sc_webhook_url') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan URL webhook dibatalkan.');
+    }
+    const normalized = normalizeHttpUrl(text);
+    if (!normalized) {
+      return ctx.reply('URL tidak valid. Contoh: https://domain-bot/sc1forcr/events/multi-login');
+    }
+    SC_MULTI_LOGIN_WEBHOOK_URL = normalized;
+    const nextVars = loadVars();
+    nextVars.SC_MULTI_LOGIN_WEBHOOK_URL = SC_MULTI_LOGIN_WEBHOOK_URL;
+    saveVars(nextVars);
+    delete userState[ctx.chat.id];
+    await ctx.reply(`✅ URL webhook SC tersimpan:\n${SC_MULTI_LOGIN_WEBHOOK_URL}`);
+    return sendAdminToolsMenu(ctx);
   }
 
   if (state.step === 'bw_notif_group_id') {
