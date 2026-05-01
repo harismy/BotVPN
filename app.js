@@ -12420,6 +12420,18 @@ let lastRequestTime = 0;
 const requestInterval = 1000; 
 const PAYMENT_QR_EXPIRE_MINUTES = 15;
 const PAYMENT_QR_EXPIRE_MS = PAYMENT_QR_EXPIRE_MINUTES * 60 * 1000;
+const ORDERKUOTA_QR_EXPIRE_MINUTES = 10;
+const ORDERKUOTA_QR_EXPIRE_MS = ORDERKUOTA_QR_EXPIRE_MINUTES * 60 * 1000;
+
+function getPaymentQrExpireMs(provider) {
+  return String(provider || '').toLowerCase() === 'orderkuota'
+    ? ORDERKUOTA_QR_EXPIRE_MS
+    : PAYMENT_QR_EXPIRE_MS;
+}
+
+function getPaymentQrExpireMinutes(provider) {
+  return Math.round(getPaymentQrExpireMs(provider) / 60000);
+}
 
 db.all('SELECT * FROM pending_deposits WHERE status = "pending"', [], (err, rows) => {
   if (err) {
@@ -12428,7 +12440,8 @@ db.all('SELECT * FROM pending_deposits WHERE status = "pending"', [], (err, rows
   }
   rows.forEach(row => {
     const createdAt = row.timestamp || Date.now();
-    const expiresAt = row.expires_at || (createdAt + PAYMENT_QR_EXPIRE_MS);
+    const provider = String(row.gateway_provider || 'orderkuota');
+    const expiresAt = row.expires_at || (createdAt + getPaymentQrExpireMs(provider));
     global.pendingDeposits[row.unique_code] = {
       amount: row.amount,
       originalAmount: row.original_amount,
@@ -12439,7 +12452,7 @@ db.all('SELECT * FROM pending_deposits WHERE status = "pending"', [], (err, rows
       qrMessageId: row.qr_message_id,
       referenceId: row.reference_id || row.unique_code,
       adminFee: Number(row.admin_fee || 0),
-      gatewayProvider: String(row.gateway_provider || 'orderkuota'),
+      gatewayProvider: provider,
       providerTxId: row.provider_tx_id || '',
       orderKuotaCheckActive: false,
       orderKuotaLastCheckAt: 0,
@@ -12615,6 +12628,9 @@ async function processDeposit(ctx, amount, options = {}) {
     const qrImageUrl = paymentResult.qrImageUrl;
     const gatewayProvider = String(paymentResult.provider || 'orderkuota');
     const providerTxId = String(paymentResult.providerTxId || '');
+    const qrExpireMs = getPaymentQrExpireMs(gatewayProvider);
+    const qrExpireMinutes = getPaymentQrExpireMinutes(gatewayProvider);
+    const qrExpiresAt = Date.now() + qrExpireMs;
 
     // DOWNLOAD QR
     const qrResponse = await axios.get(qrImageUrl, { responseType: 'arraybuffer', timeout: 15000 });
@@ -12639,7 +12655,7 @@ async function processDeposit(ctx, amount, options = {}) {
 4. ${gatewayProvider === 'orderkuota' ? 'WAJIB tekan tombol Cek Status Pembayaran setelah transfer untuk mengaktifkan pengecekan otomatis' : 'Sistem otomatis verifikasi dalam 1-2 menit'}
 
 ⚠️ *PERHATIAN:*
-• QR Code berlaku ${PAYMENT_QR_EXPIRE_MINUTES} menit
+• QR Code berlaku ${qrExpireMinutes} menit
 • Transfer harus sesuai nominal di atas
 ${gatewayProvider === 'orderkuota' ? '• Setelah tombol ditekan, bot cek histori tiap 10 detik selama 3 menit\n' : ''}
 • ${gatewayProvider === 'orderkuota' ? 'Saldo bertambah setelah histori menemukan pembayaran' : 'Saldo otomatis bertambah setelah terdeteksi'}
@@ -12685,7 +12701,7 @@ ${gatewayProvider === 'orderkuota' ? '• Setelah tombol ditekan, bot cek histor
       orderKuotaLastCheckAt: 0,
       orderKuotaCheckUntil: 0,
       createdAt: Date.now(),         // Untuk expired check
-      expiresAt: Date.now() + PAYMENT_QR_EXPIRE_MS
+      expiresAt: qrExpiresAt
     };
     db.run(
   `INSERT INTO pending_deposits 
@@ -12704,7 +12720,7 @@ ${gatewayProvider === 'orderkuota' ? '• Setelah tombol ditekan, bot cek histor
     referenceId,
     adminFee,
     topupPurpose,
-    Date.now() + PAYMENT_QR_EXPIRE_MS
+    qrExpiresAt
   ],
   (err) => { 
     if (err) logger.error('❌ Save error:', err.message);
@@ -12931,7 +12947,7 @@ bot.action(/check_orkut_payment_(.+)/, async (ctx) => {
     }
 
     const now = Date.now();
-    const expiresAt = deposit.expiresAt || (deposit.timestamp ? deposit.timestamp + PAYMENT_QR_EXPIRE_MS : 0);
+    const expiresAt = deposit.expiresAt || (deposit.timestamp ? deposit.timestamp + getPaymentQrExpireMs(provider) : 0);
     if (expiresAt && now > expiresAt) {
       await ctx.answerCbQuery('QRIS sudah expired.', { show_alert: true });
       await handleExpiredDeposit(deposit, uniqueCode);
@@ -13028,14 +13044,13 @@ async function pollBankMutations() {
 
     for (const [uniqueCode, deposit] of pendingDeposits) {
       try {
-        const expiresAt = deposit.expiresAt || (deposit.timestamp ? deposit.timestamp + PAYMENT_QR_EXPIRE_MS : 0);
+        const provider = String(deposit.gatewayProvider || 'orderkuota').toLowerCase();
+        const expiresAt = deposit.expiresAt || (deposit.timestamp ? deposit.timestamp + getPaymentQrExpireMs(provider) : 0);
         if (expiresAt && now > expiresAt) {
           logger.info(`? Deposit expired: ${uniqueCode}`);
           await handleExpiredDeposit(deposit, uniqueCode);
           continue;
         }
-
-        const provider = String(deposit.gatewayProvider || 'orderkuota').toLowerCase();
 
         if (provider === 'gopay') {
           if (!GOPAY_API_KEY) {
@@ -13215,6 +13230,7 @@ async function processSuccessfulPayment(deposit, uniqueCode) {
 // 🔧 SIMPLIFIKASI:
 async function handleExpiredDeposit(deposit, uniqueCode) {
   try {
+    const expireMinutes = getPaymentQrExpireMinutes(deposit.gatewayProvider || 'orderkuota');
     // 1. HAPUS QR DARI CHAT
     if (deposit.qrMessageId) {
       try {
@@ -13226,11 +13242,11 @@ async function handleExpiredDeposit(deposit, uniqueCode) {
     await bot.telegram.sendMessage(
       deposit.userId,
       '❌ *QR CODE EXPIRED*\n\n' +
-      `QR Code sudah tidak berlaku (${PAYMENT_QR_EXPIRE_MINUTES} menit).\n` +
+      `QR Code sudah tidak berlaku (${expireMinutes} menit).\n` +
       `💰 Nominal: Rp ${deposit.originalAmount.toLocaleString('id-ID')}\n` +
       `💵 Total: Rp ${deposit.amount.toLocaleString('id-ID')}\n\n` +
       `Silakan buat permintaan top-up baru.`+
-      `Jika sudah terlanjur bayar diatas ${PAYMENT_QR_EXPIRE_MINUTES} menit dan saldo ga masuk hubungi admin lewat WA: ${getAdminWhatsappNumber() || '-'} atau Telegram: ${getAdminTelegramUsername()}`,
+      `Jika sudah terlanjur bayar diatas ${expireMinutes} menit dan saldo ga masuk hubungi admin lewat WA: ${getAdminWhatsappNumber() || '-'} atau Telegram: ${getAdminTelegramUsername()}`,
       { parse_mode: 'Markdown' }
     );
     
