@@ -12441,6 +12441,9 @@ db.all('SELECT * FROM pending_deposits WHERE status = "pending"', [], (err, rows
       adminFee: Number(row.admin_fee || 0),
       gatewayProvider: String(row.gateway_provider || 'orderkuota'),
       providerTxId: row.provider_tx_id || '',
+      orderKuotaCheckActive: false,
+      orderKuotaLastCheckAt: 0,
+      orderKuotaCheckUntil: 0,
       createdAt,
       expiresAt
     };
@@ -12633,14 +12636,13 @@ async function processDeposit(ctx, amount, options = {}) {
 1. Scan QR Code di atas
 2. Transfer TEPAT Rp ${finalAmount.toLocaleString('id-ID')}
 3. Jangan kurang atau lebih!
-4. ${gatewayProvider === 'orderkuota' ? 'WAJIB tekan tombol Cek Status Pembayaran setelah transfer' : 'Sistem otomatis verifikasi dalam 1-2 menit'}
+4. ${gatewayProvider === 'orderkuota' ? 'WAJIB tekan tombol Cek Status Pembayaran setelah transfer untuk mengaktifkan pengecekan otomatis' : 'Sistem otomatis verifikasi dalam 1-2 menit'}
 
 ⚠️ *PERHATIAN:*
 • QR Code berlaku ${PAYMENT_QR_EXPIRE_MINUTES} menit
 • Transfer harus sesuai nominal di atas
-${gatewayProvider === 'orderkuota' ? '• Cek status OrderKuota bisa ditekan 1 menit sekali\n' : ''}
-${gatewayProvider === 'orderkuota' ? '• Saat tombol ditekan, bot cek histori selama 10 detik\n' : ''}
-• ${gatewayProvider === 'orderkuota' ? 'Saldo bertambah setelah tombol cek menemukan pembayaran' : 'Saldo otomatis bertambah setelah terdeteksi'}
+${gatewayProvider === 'orderkuota' ? '• Setelah tombol ditekan, bot cek histori tiap 10 detik selama 3 menit\n' : ''}
+• ${gatewayProvider === 'orderkuota' ? 'Saldo bertambah setelah histori menemukan pembayaran' : 'Saldo otomatis bertambah setelah terdeteksi'}
 
 🆔 *Referensi:* \`${referenceId}\`
 👤 *User ID:* \`${userId}\`
@@ -12679,6 +12681,9 @@ ${gatewayProvider === 'orderkuota' ? '• Saat tombol ditekan, bot cek histori s
       qrMessageId: qrMessage.message_id,
       gatewayProvider,
       providerTxId,
+      orderKuotaCheckActive: false,
+      orderKuotaLastCheckAt: 0,
+      orderKuotaCheckUntil: 0,
       createdAt: Date.now(),         // Untuk expired check
       expiresAt: Date.now() + PAYMENT_QR_EXPIRE_MS
     };
@@ -12737,7 +12742,8 @@ let lastPollErrorTime = 0;
 const GOPAY_POLL_INTERVAL = 10000; // GoPay cek status tiap 10 detik
 const ORDERKUOTA_POLL_INTERVAL = 60 * 1000; // OrderKuota hanya cek manual, maksimal 1 menit sekali
 const ORDERKUOTA_RATE_LIMIT_COOLDOWN = 5 * 60 * 1000;
-const ORDERKUOTA_MANUAL_CHECK_WINDOW = 10 * 1000;
+const ORDERKUOTA_TRIGGERED_POLL_INTERVAL = 10 * 1000;
+const ORDERKUOTA_TRIGGERED_POLL_WINDOW = 3 * 60 * 1000;
 const POLL_ERROR_INTERVAL = 60000; // log error maksimal 1 menit sekali
 
 async function checkGoPayTransactionStatus(transactionId) {
@@ -12761,10 +12767,6 @@ async function checkGoPayTransactionStatus(transactionId) {
     pending: status === 'pending' || !status,
     status
   };
-}
-
-function delay(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function isOrderKuotaRateLimitMessage(value) {
@@ -12906,29 +12908,6 @@ async function fetchOrderKuotaMutationsOnce(options = {}) {
   }
 }
 
-async function findOrderKuotaPaymentDuringWindow(deposit) {
-  const startedAt = Date.now();
-  let attempt = 0;
-  let lastMutations = [];
-
-  while (attempt < 2) {
-    attempt += 1;
-    const mutations = await fetchOrderKuotaMutationsOnce({ skipNormalCooldown: attempt > 1 });
-    lastMutations = mutations;
-    const matchingMutation = mutations.find((m) => m.amount === deposit.amount);
-    if (matchingMutation) {
-      return { found: true, matchingMutation, attempts: attempt, mutations };
-    }
-
-    if (attempt >= 2) break;
-    const nextAttemptAt = startedAt + ORDERKUOTA_MANUAL_CHECK_WINDOW;
-    const waitMs = Math.max(nextAttemptAt - Date.now(), 0);
-    await delay(waitMs);
-  }
-
-  return { found: false, attempts: attempt, mutations: lastMutations };
-}
-
 bot.action(/check_orkut_payment_(.+)/, async (ctx) => {
   const uniqueCode = String(ctx.match?.[1] || '');
   const deposit = global.pendingDeposits?.[uniqueCode];
@@ -12959,28 +12938,24 @@ bot.action(/check_orkut_payment_(.+)/, async (ctx) => {
       return;
     }
 
-    await ctx.answerCbQuery('Sedang cek histori pembayaran 10 detik...', { show_alert: false });
+    deposit.orderKuotaCheckActive = true;
+    deposit.orderKuotaLastCheckAt = 0;
+    deposit.orderKuotaCheckUntil = Math.min(
+      Date.now() + ORDERKUOTA_TRIGGERED_POLL_WINDOW,
+      expiresAt || Date.now() + ORDERKUOTA_TRIGGERED_POLL_WINDOW
+    );
+
+    await ctx.answerCbQuery('Pengecekan pembayaran diaktifkan.', { show_alert: false });
     await ctx.reply(
-      '🔍 *Sedang cek pembayaran OrderKuota...*\n\n' +
-      'Bot akan mengambil histori selama 10 detik. Mohon tunggu.',
+      '🔍 *Cek pembayaran OrderKuota diaktifkan.*\n\n' +
+      'Bot akan mengambil histori tiap 10 detik selama 3 menit.\n' +
+      'Kalau belum ditemukan, tekan tombol cek lagi selama QRIS belum expired.',
       { parse_mode: 'Markdown' }
     );
 
-    const checkResult = await findOrderKuotaPaymentDuringWindow(deposit);
-
-    if (checkResult.found) {
-      logger.info(`OrderKuota manual check matched ${uniqueCode}: ${deposit.amount}`);
-      await processSuccessfulPayment(deposit, uniqueCode);
-      return;
-    }
-
-    await ctx.reply(
-      '⏳ *Pembayaran belum ditemukan.*\n\n' +
-      `Pastikan Anda transfer tepat Rp ${Number(deposit.amount || 0).toLocaleString('id-ID')}.\n` +
-      `Histori dicek ${checkResult.attempts}x selama 10 detik dan terbaca ${checkResult.mutations.length} transaksi, tapi nominal pembayaran belum cocok.\n` +
-      'Jika baru saja transfer, tunggu beberapa menit lalu tekan tombol cek lagi.',
-      { parse_mode: 'Markdown' }
-    );
+    pollBankMutations().catch((err) => {
+      logger.warn(`Gagal menjalankan cek OrderKuota setelah tombol ditekan: ${err.message}`);
+    });
   } catch (error) {
     const waitSeconds = Number(error.cooldownSeconds || 0);
     const waitText = waitSeconds > 0
@@ -13019,6 +12994,38 @@ async function pollBankMutations() {
       logger.info(`Polling ${pendingGoPayCount} pending GoPay deposits`);
     }
 
+    const activeOrderKuotaDeposits = pendingDeposits.filter(([_, deposit]) => {
+      const provider = String(deposit.gatewayProvider || 'orderkuota').toLowerCase();
+      if (provider === 'gopay' || deposit.orderKuotaCheckActive !== true) return false;
+      const checkUntil = Number(deposit.orderKuotaCheckUntil || 0);
+      if (checkUntil > 0 && now > checkUntil) {
+        deposit.orderKuotaCheckActive = false;
+        logger.info(`Polling histori OrderKuota berhenti setelah 3 menit untuk deposit ${deposit.referenceId || deposit.userId}`);
+        return false;
+      }
+      return true;
+    });
+
+    let orderKuotaMutations = null;
+    if (activeOrderKuotaDeposits.length > 0) {
+      const dueOrderKuotaDeposits = activeOrderKuotaDeposits.filter(([_, deposit]) => {
+        const lastCheckAt = Number(deposit.orderKuotaLastCheckAt || 0);
+        return now - lastCheckAt >= ORDERKUOTA_TRIGGERED_POLL_INTERVAL;
+      });
+
+      if (dueOrderKuotaDeposits.length > 0) {
+        try {
+          dueOrderKuotaDeposits.forEach(([_, deposit]) => {
+            deposit.orderKuotaLastCheckAt = now;
+          });
+          logger.info(`Polling histori OrderKuota dipicu tombol untuk ${dueOrderKuotaDeposits.length} deposit`);
+          orderKuotaMutations = await fetchOrderKuotaMutationsOnce({ skipNormalCooldown: true });
+        } catch (errOrderKuota) {
+          logger.warn(`Polling histori OrderKuota gagal: ${errOrderKuota.message}`);
+        }
+      }
+    }
+
     for (const [uniqueCode, deposit] of pendingDeposits) {
       try {
         const expiresAt = deposit.expiresAt || (deposit.timestamp ? deposit.timestamp + PAYMENT_QR_EXPIRE_MS : 0);
@@ -13046,7 +13053,17 @@ async function pollBankMutations() {
             logger.debug(`? GoPay pending: ${uniqueCode}`);
           }
         } else {
-          if (Math.random() < 0.1) {
+          if (deposit.orderKuotaCheckActive === true && Array.isArray(orderKuotaMutations)) {
+            const matchingMutation = orderKuotaMutations.find((m) => m.amount === deposit.amount);
+            if (matchingMutation) {
+              logger.info(`OrderKuota triggered polling matched ${uniqueCode}: ${deposit.amount}`);
+              await processSuccessfulPayment(deposit, uniqueCode);
+            } else if (Math.random() < 0.25) {
+              logger.info(`OrderKuota triggered polling belum cocok untuk ${uniqueCode}; amount=${deposit.amount}; mutations=${orderKuotaMutations.length}`);
+            }
+          } else if (deposit.orderKuotaCheckActive === true && Math.random() < 0.1) {
+            logger.debug(`OrderKuota triggered polling menunggu jadwal berikutnya: ${uniqueCode}`);
+          } else if (Math.random() < 0.1) {
             logger.debug(`OrderKuota pending menunggu cek manual: ${uniqueCode}, Amount: ${deposit.amount}`);
           }
         }
