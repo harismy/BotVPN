@@ -16,6 +16,7 @@ const topupAutoPath = path.join(__dirname, 'topup_auto.json');
 const defaultTopupAuto = { enabled: true };
 const topupBonusPath = path.join(__dirname, 'topup_bonus.json');
 const defaultTopupBonus = { enabled: true, range_10_40: 0, range_50_70: 0, range_70_100: 0 };
+const varsPath = path.join(__dirname, '.vars.json');
 
 function loadResellerTerms() {
   try {
@@ -419,14 +420,14 @@ async function saveTrialAccess(userId) {
 
 function loadVars() {
   try {
-    return JSON.parse(fs.readFileSync('./.vars.json', 'utf8'));
+    return JSON.parse(fs.readFileSync(varsPath, 'utf8'));
   } catch (e) {
     return {};
   }
 }
 
 function saveVars(next) {
-  fs.writeFileSync('./.vars.json', JSON.stringify(next, null, 2), 'utf8');
+  fs.writeFileSync(varsPath, JSON.stringify(next, null, 2), 'utf8');
 }
 
 function normalizeHttpUrl(raw) {
@@ -2317,27 +2318,30 @@ bot.command('checkpaymentconfig', async (ctx) => {
     reloadRuntimePaymentConfig();
     const readiness = getPaymentGatewayReadiness();
 
-    let message = '*KONFIGURASI PAYMENT GATEWAY*\n\n';
-    message += `Mode aktif: \`${formatGatewayModeLabel()}\`\n\n`;
+    const currentVars = loadVars();
+    let message = '<b>KONFIGURASI PAYMENT GATEWAY</b>\n\n';
+    message += `Mode aktif: <code>${escapeHtmlLocal(formatGatewayModeLabel())}</code>\n\n`;
 
-    message += '*OrderKuota*\n';
+    message += '<b>OrderKuota</b>\n';
     message += `- Aktif: ${isGatewayEnabled('orderkuota') ? 'YA' : 'TIDAK'}\n`;
     message += `- Siap dipakai: ${readiness.orderkuota.ready ? 'YA' : 'TIDAK'}\n`;
     if (!readiness.orderkuota.ready) {
-      message += `- Kurang: \`${readiness.orderkuota.missing.join(', ')}\`\n`;
+      message += `- Kurang: <code>${escapeHtmlLocal(readiness.orderkuota.missing.join(', '))}</code>\n`;
     }
-    message += `- Gateway URL: \`${PAYMENT_GATEWAY_BASE_URL}\`\n`;
-    message += `- RajaServer API Key: \`${maskSecret(RAJASERVER_API_KEY)}\`\n`;
-    message += `- DATA_QRIS: \`${DATA_QRIS ? 'Tersimpan' : 'Belum diisi'}\`\n\n`;
+    message += `- Gateway URL: <code>${escapeHtmlLocal(PAYMENT_GATEWAY_BASE_URL)}</code>\n`;
+    message += `- RajaServer API Key: <code>${escapeHtmlLocal(maskSecret(RAJASERVER_API_KEY))}</code>\n`;
+    message += `- DATA_QRIS: <code>${DATA_QRIS ? 'Tersimpan' : 'Belum diisi'}</code>\n`;
+    message += `- ORKUT Username: <code>${escapeHtmlLocal(currentVars.ORKUT_USERNAME || 'Belum diisi')}</code>\n`;
+    message += `- ORKUT Token: <code>${escapeHtmlLocal(maskSecret(currentVars.ORKUT_TOKEN))}</code>\n\n`;
 
-    message += '*GoPay*\n';
+    message += '<b>GoPay</b>\n';
     message += `- Aktif: ${isGatewayEnabled('gopay') ? 'YA' : 'TIDAK'}\n`;
     message += `- Siap dipakai: ${readiness.gopay.ready ? 'YA' : 'TIDAK'}\n`;
     if (!readiness.gopay.ready) {
-      message += `- Kurang: \`${readiness.gopay.missing.join(', ')}\`\n`;
+      message += `- Kurang: <code>${escapeHtmlLocal(readiness.gopay.missing.join(', '))}</code>\n`;
     }
-    message += `- Base URL: \`${GOPAY_API_BASE_URL}\`\n`;
-    message += `- API Key: \`${maskSecret(GOPAY_API_KEY)}\`\n`;
+    message += `- Base URL: <code>${escapeHtmlLocal(GOPAY_API_BASE_URL)}</code>\n`;
+    message += `- API Key: <code>${escapeHtmlLocal(maskSecret(GOPAY_API_KEY))}</code>\n`;
 
     if (isGatewayEnabled('gopay') && GOPAY_API_KEY) {
       try {
@@ -2355,11 +2359,11 @@ bot.command('checkpaymentconfig', async (ctx) => {
         const count = Number(testRes?.data?.data?.transactions?.length || 0);
         message += `- Test API: Berhasil (transaksi terbaca: ${count})\n`;
       } catch (err) {
-        message += `- Test API: Gagal (${String(err.message || 'unknown error')})\n`;
+        message += `- Test API: Gagal (${escapeHtmlLocal(String(err.message || 'unknown error'))})\n`;
       }
     }
 
-    await ctx.reply(message, { parse_mode: 'Markdown' });
+    await ctx.reply(message, { parse_mode: 'HTML' });
   } catch (error) {
     await ctx.reply(`Gagal memeriksa konfigurasi: ${error.message}`);
   }
@@ -5201,6 +5205,7 @@ bot.action('payment_gateway_settings_menu', async (ctx) => {
   }
 
   reloadRuntimePaymentConfig();
+  const currentVars = loadVars();
   const message =
     '*SETTING PAYMENT GATEWAY*\n\n' +
     `Mode Gateway: \`${formatGatewayModeLabel()}\`\n\n` +
@@ -5208,6 +5213,8 @@ bot.action('payment_gateway_settings_menu', async (ctx) => {
     `Gateway URL: \`${PAYMENT_GATEWAY_BASE_URL || '-'}\`\n` +
     `RajaServer API Key: \`${maskSecret(RAJASERVER_API_KEY)}\`\n` +
     `QRIS String: \`${DATA_QRIS ? 'Tersimpan' : 'Belum diisi'}\`\n` +
+    `ORKUT Username: \`${currentVars.ORKUT_USERNAME || 'Belum diisi'}\`\n` +
+    `ORKUT Token: \`${maskSecret(currentVars.ORKUT_TOKEN)}\`\n` +
     `Merchant ID: \`${MERCHANT_ID || '-'}\`\n` +
     `API Key (legacy): \`${maskSecret(API_KEY)}\`\n\n` +
     '*GoPay*\n' +
@@ -5222,6 +5229,8 @@ bot.action('payment_gateway_settings_menu', async (ctx) => {
     [{ text: 'Set Gateway URL/Domain', callback_data: 'payment_gateway_set_url' }],
     [{ text: 'Set RajaServer API Key', callback_data: 'payment_gateway_set_raja_api_key' }],
     [{ text: 'Set QRIS String', callback_data: 'payment_gateway_set_qris' }],
+    [{ text: 'Set ORKUT Username', callback_data: 'payment_gateway_set_orkut_username' }],
+    [{ text: 'Set ORKUT Token', callback_data: 'payment_gateway_set_orkut_token' }],
     [{ text: 'Set Merchant ID', callback_data: 'payment_gateway_set_merchant_id' }],
     [{ text: 'Set API Key (legacy)', callback_data: 'payment_gateway_set_api_key' }],
     [{ text: 'Set GoPay API Base URL', callback_data: 'payment_gateway_set_gopay_base_url' }],
@@ -5270,6 +5279,20 @@ bot.action('payment_gateway_set_qris', async (ctx) => {
   if (!adminIds.includes(ctx.from.id)) return ctx.reply('Anda tidak memiliki izin.');
   userState[ctx.chat.id] = { step: 'payment_gateway_qris_input' };
   await ctx.reply('Kirim DATA_QRIS string baru. Ketik "batal" untuk membatalkan.');
+});
+
+bot.action('payment_gateway_set_orkut_username', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('Anda tidak memiliki izin.');
+  userState[ctx.chat.id] = { step: 'payment_gateway_orkut_username_input' };
+  await ctx.reply('Kirim ORKUT username untuk cek mutasi OrderKuota. Ketik "batal" untuk membatalkan.');
+});
+
+bot.action('payment_gateway_set_orkut_token', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('Anda tidak memiliki izin.');
+  userState[ctx.chat.id] = { step: 'payment_gateway_orkut_token_input' };
+  await ctx.reply('Kirim ORKUT token untuk cek mutasi OrderKuota. Ketik "batal" untuk membatalkan.');
 });
 
 bot.action('payment_gateway_set_merchant_id', async (ctx) => {
@@ -9146,6 +9169,36 @@ if (!state || !state.step) return;
     reloadRuntimePaymentConfig();
     delete userState[ctx.chat.id];
     await ctx.reply('✅ DATA_QRIS berhasil disimpan.');
+    return sendAdminToolsMenu(ctx);
+  }
+
+  if (state.step === 'payment_gateway_orkut_username_input') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan payment gateway dibatalkan.');
+    }
+    if (text.length < 3) return ctx.reply('ORKUT username terlalu pendek.');
+    const nextVars = loadVars();
+    nextVars.ORKUT_USERNAME = text;
+    saveVars(nextVars);
+    delete userState[ctx.chat.id];
+    await ctx.reply('✅ ORKUT username berhasil disimpan.');
+    return sendAdminToolsMenu(ctx);
+  }
+
+  if (state.step === 'payment_gateway_orkut_token_input') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan payment gateway dibatalkan.');
+    }
+    if (text.length < 8) return ctx.reply('ORKUT token terlalu pendek.');
+    const nextVars = loadVars();
+    nextVars.ORKUT_TOKEN = text;
+    saveVars(nextVars);
+    delete userState[ctx.chat.id];
+    await ctx.reply('✅ ORKUT token berhasil disimpan.');
     return sendAdminToolsMenu(ctx);
   }
 
