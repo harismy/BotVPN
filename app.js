@@ -560,8 +560,11 @@ function getPaymentGatewayReadiness() {
   };
 }
 
-function hasAnyReadyPaymentGateway(readiness = getPaymentGatewayReadiness()) {
-  return readiness.orderkuota.ready || readiness.gopay.ready;
+function hasReadyEnabledPaymentGateway(readiness = getPaymentGatewayReadiness()) {
+  return (
+    (readiness.orderkuota.enabled && readiness.orderkuota.ready) ||
+    (readiness.gopay.enabled && readiness.gopay.ready)
+  );
 }
 
 function formatMissingGatewayConfig(readiness) {
@@ -5858,7 +5861,7 @@ bot.action('topup_saldo', async (ctx) => {
     
     reloadRuntimePaymentConfig();
     const readiness = getPaymentGatewayReadiness();
-    if (!hasAnyReadyPaymentGateway(readiness)) {
+    if (!hasReadyEnabledPaymentGateway(readiness)) {
       await ctx.reply(
         '❌ *TOP-UP OTOMATIS SEMENTARA TIDAK TERSEDIA*\n\n' +
         'Admin belum mengkonfigurasi sistem pembayaran.\n' +
@@ -12462,18 +12465,10 @@ async function createPaymentQrByMode({ amount, qrisData, referenceId }) {
   const mode = String(PAYMENT_GATEWAY_MODE || 'orderkuota').toLowerCase();
   const readiness = getPaymentGatewayReadiness();
   if (mode === 'gopay') {
-    if (readiness.gopay.ready) {
-      try {
-        return await createGoPayQr({ amount });
-      } catch (errGoPay) {
-        logger.warn('GoPay gagal, coba fallback darurat ke OrderKuota: ' + errGoPay.message);
-      }
+    if (!readiness.gopay.ready) {
+      throw new Error('GoPay belum siap: ' + readiness.gopay.missing.join(', '));
     }
-    if (readiness.orderkuota.ready) {
-      logger.warn('Fallback darurat ke OrderKuota karena GoPay belum siap/gagal: ' + (readiness.gopay.missing.join(', ') || 'API error'));
-      return createOrderKuotaQr({ amount, qrisData, referenceId });
-    }
-    throw new Error('GoPay belum siap: ' + readiness.gopay.missing.join(', '));
+    return createGoPayQr({ amount });
   }
   if (mode === 'both') {
     if (readiness.orderkuota.ready) {
@@ -12491,18 +12486,10 @@ async function createPaymentQrByMode({ amount, qrisData, referenceId }) {
     }
     throw new Error('Tidak ada payment gateway fallback yang siap. ' + formatMissingGatewayConfig(readiness));
   }
-  if (readiness.orderkuota.ready) {
-    try {
-      return await createOrderKuotaQr({ amount, qrisData, referenceId });
-    } catch (errOrderKuota) {
-      logger.warn('OrderKuota gagal, coba fallback darurat ke GoPay: ' + errOrderKuota.message);
-    }
+  if (!readiness.orderkuota.ready) {
+    throw new Error('OrderKuota belum siap: ' + readiness.orderkuota.missing.join(', '));
   }
-  if (readiness.gopay.ready) {
-    logger.warn('Fallback darurat ke GoPay karena OrderKuota belum siap/gagal: ' + (readiness.orderkuota.missing.join(', ') || 'API error'));
-    return createGoPayQr({ amount });
-  }
-  throw new Error('OrderKuota belum siap: ' + readiness.orderkuota.missing.join(', '));
+  return createOrderKuotaQr({ amount, qrisData, referenceId });
 }
 
 // Ganti fungsi processDeposit dengan versi yang lebih sederhana
@@ -13678,7 +13665,7 @@ app.listen(port, async () => {
     reloadRuntimePaymentConfig();
     const readiness = getPaymentGatewayReadiness();
 
-    if (!hasAnyReadyPaymentGateway(readiness)) {
+    if (!hasReadyEnabledPaymentGateway(readiness)) {
       logger.error('❌ ❌ ❌ PERINGATAN KRITIS! ❌ ❌ ❌');
       logger.error('Tidak ada payment gateway aktif yang siap: ' + formatMissingGatewayConfig(readiness));
       logger.error('User TIDAK BISA top-up otomatis!');
