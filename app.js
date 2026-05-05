@@ -956,7 +956,11 @@ bot.use(async (ctx, next) => {
 function getScEventBearerToken(req) {
   const auth = String(req.headers?.authorization || '').trim();
   if (/^Bearer\s+/i.test(auth)) return auth.replace(/^Bearer\s+/i, '').trim();
-  return String(req.headers?.['x-sc-event-token'] || req.body?.token || '').trim();
+  const fromScHeader = String(req.headers?.['x-sc-event-token'] || '').trim();
+  const fromWebhookHeader = String(req.headers?.['x-webhook-token'] || '').trim();
+  const fromBody = String(req.body?.token || req.body?.webhook_token || '').trim();
+  const fromQuery = String(req.query?.token || req.query?.webhook_token || '').trim();
+  return fromScHeader || fromWebhookHeader || fromBody || fromQuery || auth;
 }
 
 function normalizeTelegramTarget(raw) {
