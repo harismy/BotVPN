@@ -4655,6 +4655,70 @@ function buildNginxWebhookConfig(host, appPort = 6969) {
   );
 }
 
+function isIpv4Host(host) {
+  const h = String(host || '').trim();
+  return /^(?:\d{1,3}\.){3}\d{1,3}$/.test(h);
+}
+
+function isDomainHost(host) {
+  const h = String(host || '').trim();
+  return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i.test(h);
+}
+
+function setupNginxWebhookAuto(host, appPort = 6969) {
+  const safeHost = sanitizeNginxHostInput(host);
+  if (!safeHost || !/^[a-zA-Z0-9.-]+$/.test(safeHost)) {
+    return { ok: false, message: 'Host/domain tidak valid.' };
+  }
+
+  const confName = 'botvpn-webhook.conf';
+  const confPath = `/etc/nginx/sites-available/${confName}`;
+  const enabledPath = `/etc/nginx/sites-enabled/${confName}`;
+  const baseConfig = buildNginxWebhookConfig(safeHost, appPort);
+
+  try {
+    fs.writeFileSync(confPath, `${baseConfig}\n`, 'utf8');
+    execSync(`ln -sfn ${confPath} ${enabledPath}`, { stdio: 'pipe' });
+    execSync('nginx -t', { stdio: 'pipe' });
+    execSync('systemctl reload nginx', { stdio: 'pipe' });
+  } catch (err) {
+    return { ok: false, message: `Gagal setup nginx: ${err.message}` };
+  }
+
+  // Jika host berupa IP, SSL Let's Encrypt tidak bisa dipasang.
+  if (!isDomainHost(safeHost) || isIpv4Host(safeHost)) {
+    return {
+      ok: true,
+      ssl: false,
+      url: `http://${safeHost}/sc1forcr/events/multi-login`,
+      message: 'Nginx aktif via HTTP (host berupa IP/non-domain).'
+    };
+  }
+
+  // Coba issue SSL otomatis untuk domain.
+  try {
+    execSync(
+      `certbot --nginx -d ${safeHost} --non-interactive --agree-tos --register-unsafely-without-email --redirect`,
+      { stdio: 'pipe' }
+    );
+    execSync('nginx -t', { stdio: 'pipe' });
+    execSync('systemctl reload nginx', { stdio: 'pipe' });
+    return {
+      ok: true,
+      ssl: true,
+      url: `https://${safeHost}/sc1forcr/events/multi-login`,
+      message: 'Nginx + SSL aktif (HTTPS).'
+    };
+  } catch (err) {
+    return {
+      ok: true,
+      ssl: false,
+      url: `http://${safeHost}/sc1forcr/events/multi-login`,
+      message: `SSL gagal dipasang (${err.message}). Fallback ke HTTP.`
+    };
+  }
+}
+
 async function sendNginxWebhookMenu(ctx) {
   const currentUrl = SC_MULTI_LOGIN_WEBHOOK_URL || '-';
   const message =
@@ -4663,6 +4727,7 @@ async function sendNginxWebhookMenu(ctx) {
     'Menu ini bantu generate config Nginx untuk forward port 80 ke bot (6969), lalu set URL webhook SC.';
 
   const keyboard = [
+    [{ text: '⚡ Auto Setup Nginx + SSL', callback_data: 'nginx_webhook_auto_setup' }],
     [{ text: '🧾 Generate Config Nginx', callback_data: 'nginx_webhook_generate' }],
     [{ text: '🔗 Set URL Webhook dari Domain/IP', callback_data: 'nginx_webhook_set_url_from_host' }],
     [{ text: '🔙 Kembali', callback_data: 'admin_menu_tools' }]
@@ -5331,6 +5396,21 @@ bot.action('nginx_webhook_generate', async (ctx) => {
   return ctx.reply(
     'Kirim domain/IP publik VPS bot untuk generate config Nginx.\n' +
     'Contoh: `47.236.58.59` atau `bot.domain.com`\n' +
+    'Ketik "batal" untuk membatalkan.',
+    { parse_mode: 'Markdown' }
+  );
+});
+
+bot.action('nginx_webhook_auto_setup', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) {
+    return ctx.reply('🚫 Anda tidak memiliki izin.');
+  }
+  userState[ctx.chat.id] = { step: 'nginx_webhook_host_input_auto' };
+  return ctx.reply(
+    'Kirim domain/IP publik VPS bot untuk AUTO setup Nginx webhook.\n' +
+    'Contoh: `bot.domain.com` atau `47.236.58.59`\n' +
+    'Catatan: SSL otomatis hanya bisa untuk domain.\n' +
     'Ketik "batal" untuk membatalkan.',
     { parse_mode: 'Markdown' }
   );
@@ -8464,7 +8544,7 @@ bot.action('service_unlock', async (ctx) => {
   await handleServiceAction(ctx, 'unlock');
 });
 
-const { exec } = require('child_process');
+const { exec, execSync } = require('child_process');
 
 bot.action('cek_service', async (ctx) => {
   try {
@@ -9494,6 +9574,41 @@ if (!state || !state.step) return;
       '3. `systemctl reload nginx`\n\n' +
       'Setelah itu, gunakan menu *Set URL Webhook dari Domain/IP*.',
       { parse_mode: 'Markdown' }
+    );
+    return sendNginxWebhookMenu(ctx);
+  }
+
+  if (state.step === 'nginx_webhook_host_input_auto') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Auto setup Nginx webhook dibatalkan.');
+    }
+
+    const host = sanitizeNginxHostInput(text);
+    if (!host || !/^[a-zA-Z0-9.-]+$/.test(host)) {
+      return ctx.reply('Domain/IP tidak valid. Contoh: 47.236.58.59 atau bot.domain.com');
+    }
+
+    await ctx.reply('⏳ Menjalankan auto setup Nginx + SSL... mohon tunggu.');
+    const result = setupNginxWebhookAuto(host, port);
+    if (!result.ok) {
+      delete userState[ctx.chat.id];
+      await ctx.reply(`❌ Auto setup gagal: ${result.message}`);
+      return sendNginxWebhookMenu(ctx);
+    }
+
+    SC_MULTI_LOGIN_WEBHOOK_URL = result.url;
+    const nextVars = loadVars();
+    nextVars.SC_MULTI_LOGIN_WEBHOOK_URL = SC_MULTI_LOGIN_WEBHOOK_URL;
+    saveVars(nextVars);
+
+    delete userState[ctx.chat.id];
+    await ctx.reply(
+      `✅ Auto setup selesai.\n` +
+      `Status: ${result.ssl ? 'HTTPS aktif' : 'HTTP aktif'}\n` +
+      `Webhook URL: ${SC_MULTI_LOGIN_WEBHOOK_URL}\n\n` +
+      `Webhook Token: ${BOT_ACCOUNT_EVENT_WEBHOOK_TOKEN || '(belum diisi)'}`
     );
     return sendNginxWebhookMenu(ctx);
   }
