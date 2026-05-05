@@ -990,25 +990,24 @@ function formatMultiLoginUserNotification(payload = {}) {
   const timeText = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
   const extraDetectedText =
     detectedRaw > 0 && detectedRaw !== detected
-      ? `\nInfo      : Terdeteksi raw ${detectedRaw} IP, dihitung ${detected} IP/device`
+      ? `Info      : Terdeteksi raw ${detectedRaw} IP, dihitung ${detected} IP/device`
       : '';
   return [
     '⚠️ NOTIFIKASI MULTI LOGIN',
-    '',
     '',
     `Layanan  : ${service}`,
     `Username : ${username}`,
     `Limit IP : ${limitIp}`,
     `Terdeteksi: ${detected}`,
     extraDetectedText ? extraDetectedText.trimStart() : null,
-    `Akun akan normal lagi setelah 15 menit`,
+    '',
+    `Akun akan normal lagi di jam ${unlockAtText}`,
     `Waktu    : ${timeText}`,
     '',
-    '',
     'Akun dikunci sementara karena login melebihi limit IP, Mohon untuk tidak gunakan akun ini secara bersama sama melebihi IP limit yang sudah di tentukan',
+    '',
     '1IP = Gunakan 1HP/Device',
     '2IP = Gunakan 2HP/Device',
-    '',
     '',
     'Jangan mode pesawat, jika zivpn bengong konek tapi ga ada internetnya cukup stop apk udpnya lalu start ulang.'
   ].filter(Boolean).join('\n');
