@@ -995,18 +995,21 @@ function formatMultiLoginUserNotification(payload = {}) {
   return [
     '⚠️ NOTIFIKASI MULTI LOGIN',
     '',
+    '',
     `Layanan  : ${service}`,
     `Username : ${username}`,
     `Limit IP : ${limitIp}`,
     `Terdeteksi: ${detected}`,
-    `IP Login : ${ips.length ? ips.join(', ') : '-'}`,
     extraDetectedText ? extraDetectedText.trimStart() : null,
-    `Akun akan normal lagi di jam ${unlockAtText}`,
+    `Akun akan normal lagi setelah 15 menit`,
     `Waktu    : ${timeText}`,
+    '',
     '',
     'Akun dikunci sementara karena login melebihi limit IP, Mohon untuk tidak gunakan akun ini secara bersama sama melebihi IP limit yang sudah di tentukan',
     '1IP = Gunakan 1HP/Device',
     '2IP = Gunakan 2HP/Device',
+    '',
+    '',
     'Jangan mode pesawat, jika zivpn bengong konek tapi ga ada internetnya cukup stop apk udpnya lalu start ulang.'
   ].filter(Boolean).join('\n');
 }
