@@ -1010,7 +1010,7 @@ function formatMultiLoginUserNotification(payload = {}) {
     '2IP = Gunakan 2HP/Device',
     '',
     'Jangan mode pesawat, jika zivpn bengong konek tapi ga ada internetnya cukup stop apk udpnya lalu start ulang.'
-  ].filter(Boolean).join('\n');
+  ].filter((v) => v !== null && v !== undefined).join('\n');
 }
 
 async function isValidScEventToken(token) {
