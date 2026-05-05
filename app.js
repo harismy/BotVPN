@@ -970,15 +970,28 @@ function normalizeTelegramTarget(raw) {
 }
 
 function formatMultiLoginUserNotification(payload = {}) {
-  const service = String(payload.service || payload.layanan || '-').toUpperCase();
+  const rawService = String(payload.service || payload.layanan || '-').toUpperCase();
+  const service = rawService === 'SSH/ZIVPN' ? 'SSH/ZIVPN/UDPHC' : rawService;
   const username = String(payload.username || '-').trim() || '-';
   const limitIp = Number(payload.limitip || payload.limit_ip || 0);
-  const detected = Number(payload.detected || payload.connected_ip || 0);
+  const detected = Number(payload.detected_effective || payload.detected || payload.connected_ip || 0);
+  const detectedRaw = Number(payload.detected_raw || 0);
   const unlockMinutes = Number(payload.unlock_minutes || payload.unlock || 0);
   const ips = Array.isArray(payload.ips)
     ? payload.ips.map((ip) => String(ip || '').trim()).filter(Boolean).slice(0, 8)
     : [];
+  const now = new Date();
+  const unlockAt = unlockMinutes > 0
+    ? new Date(now.getTime() + (unlockMinutes * 60 * 1000))
+    : null;
+  const unlockAtText = unlockAt
+    ? unlockAt.toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })
+    : '-';
   const timeText = new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
+  const extraDetectedText =
+    detectedRaw > 0 && detectedRaw !== detected
+      ? `\nInfo      : Terdeteksi raw ${detectedRaw} IP, dihitung ${detected} IP/device`
+      : '';
   return [
     '⚠️ NOTIFIKASI MULTI LOGIN',
     '',
@@ -987,11 +1000,15 @@ function formatMultiLoginUserNotification(payload = {}) {
     `Limit IP : ${limitIp}`,
     `Terdeteksi: ${detected}`,
     `IP Login : ${ips.length ? ips.join(', ') : '-'}`,
-    unlockMinutes > 0 ? `Unlock   : otomatis ${unlockMinutes} menit` : 'Unlock   : otomatis',
+    extraDetectedText ? extraDetectedText.trimStart() : null,
+    `Akun akan normal lagi di jam ${unlockAtText}`,
     `Waktu    : ${timeText}`,
     '',
-    'Akun dikunci sementara karena login melebihi limit IP.'
-  ].join('\n');
+    'Akun dikunci sementara karena login melebihi limit IP, Mohon untuk tidak gunakan akun ini secara bersama sama melebihi IP limit yang sudah di tentukan',
+    '1IP = Gunakan 1HP/Device',
+    '2IP = Gunakan 2HP/Device',
+    'Jangan mode pesawat, jika zivpn bengong konek tapi ga ada internetnya cukup stop apk udpnya lalu start ulang.'
+  ].filter(Boolean).join('\n');
 }
 
 async function isValidScEventToken(token) {
