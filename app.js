@@ -1389,6 +1389,7 @@ db.run(`CREATE TABLE IF NOT EXISTS broadcast_poll_votes (
 
 const userState = {};
 const lastMenuMessageId = new Map();
+const allResellerStatsSessions = new Map();
 logger.info('User state initialized');
 
 const dbAllAsync = (sql, params = []) => new Promise((resolve, reject) => {
@@ -2752,10 +2753,6 @@ bot.command('allresellerstats', async (ctx) => {
     const startTimestamp = firstDay.getTime();
     const endTimestamp = lastDay.getTime();
     
-    // Mulai buat pesan HTML
-    let message = `<b>📊 STATISTIK SEMUA RESELLER</b>\n`;
-    message += `<i>📅 Periode: ${escapeHtml(now.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' }))}</i>\n\n`;
-    
     // Total semua
     let totalAllAccounts = 0;
     let totalAllRevenue = 0;
@@ -2811,10 +2808,7 @@ bot.command('allresellerstats', async (ctx) => {
 
     resellerStats.sort((a, b) => b.total - a.total);
 
-    const parts = [];
-    const header = message;
-    let current = header;
-
+    const entries = [];
     for (const stat of resellerStats) {
       let usernameText = '-';
       try {
@@ -2831,49 +2825,93 @@ bot.command('allresellerstats', async (ctx) => {
         `<code>📊 Akun Bulan Ini:</code> ${stat.count}\n` +
         `<code>💵 Pendapatan:</code> Rp ${stat.total.toLocaleString('id-ID')}\n` +
         `<code>💳 Top Up Bulan Ini:</code> Rp ${stat.topup.toLocaleString('id-ID')}\n` +
-        `────────────────────\n`;
-
-      if ((current + entry).length > 3900) {
-        parts.push(current);
-        current = `${header}\n<i>(lanjutan)</i>\n\n` + entry;
-      } else {
-        current += entry;
-      }
+        `────────────────────`;
+      entries.push(entry);
     }
-    
-    // Tambahkan summary
+
     const totalResellers = resellers.length;
-    const summary =
+    const periodText = escapeHtml(now.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' }));
+    const summaryText =
       `\n<b>📈 RINGKASAN:</b>\n` +
       `• <b>Total Reseller:</b> ${totalResellers} orang\n` +
       `• <b>Total Akun Bulan Ini:</b> ${totalAllAccounts} akun\n` +
       `• <b>Total Pendapatan:</b> Rp ${totalAllRevenue.toLocaleString('id-ID')}\n` +
       `• <b>Total Top Up:</b> Rp ${totalAllTopup.toLocaleString('id-ID')}\n` +
-      `• <b>Periode:</b> ${escapeHtml(now.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' }))}\n` +
+      `• <b>Periode:</b> ${periodText}\n` +
       `• <b>Update:</b> ${escapeHtml(now.toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta' }))}`;
 
-    if ((current + summary).length > 3900) {
-      parts.push(current);
-      current = `${header}\n<i>(ringkasan)</i>\n\n` + summary;
-    } else {
-      current += summary;
+    const pageSize = 10;
+    const totalPages = Math.max(1, Math.ceil(entries.length / pageSize));
+    const pages = [];
+    for (let page = 0; page < totalPages; page += 1) {
+      const start = page * pageSize;
+      const body = entries.slice(start, start + pageSize).join('\n');
+      const header =
+        `<b>📊 STATISTIK SEMUA RESELLER</b>\n` +
+        `<i>📅 Periode: ${periodText}</i>\n` +
+        `<i>📄 Halaman ${page + 1}/${totalPages}</i>\n\n`;
+      const withSummary = page === totalPages - 1 ? `\n${summaryText}` : '';
+      pages.push(`${header}${body}${withSummary}`);
     }
 
-    if (current.trim().length > 0) {
-      parts.push(current);
-    }
+    const sessionKey = `${ctx.chat.id}:${adminId}`;
+    allResellerStatsSessions.set(sessionKey, {
+      ownerId: adminId,
+      chatId: ctx.chat.id,
+      pages,
+      updatedAt: Date.now()
+    });
 
-    // Kirim semua part
-    for (let i = 0; i < parts.length; i++) {
-      if (i > 0) await new Promise(resolve => setTimeout(resolve, 500));
-      await ctx.reply(parts[i], { parse_mode: 'HTML' });
-    }
+    const firstKeyboard = totalPages > 1
+      ? { inline_keyboard: [[{ text: 'Next ➡️', callback_data: 'allresellerstats_page_1' }]] }
+      : null;
+    const firstReplyOptions = { parse_mode: 'HTML' };
+    if (firstKeyboard) firstReplyOptions.reply_markup = firstKeyboard;
+
+    await ctx.reply(pages[0], firstReplyOptions);
     
     logger.info(`📊 Admin ${adminId} melihat statistik semua reseller`);
     
   } catch (error) {
     logger.error('❌ Error di /allresellerstats:', error);
     await ctx.reply('❌ Terjadi kesalahan saat memproses permintaan.');
+  }
+});
+
+bot.action(/allresellerstats_page_(\d+)/, async (ctx) => {
+  try {
+    await ctx.answerCbQuery().catch(() => {});
+    const adminId = ctx.from.id;
+    if (!adminIds.includes(adminId)) {
+      return ctx.reply('❌ Hanya admin yang bisa menggunakan menu ini!');
+    }
+
+    const sessionKey = `${ctx.chat.id}:${adminId}`;
+    const session = allResellerStatsSessions.get(sessionKey);
+    if (!session || !Array.isArray(session.pages) || session.pages.length === 0) {
+      return ctx.reply('⚠️ Sesi statistik reseller sudah habis. Jalankan /allresellerstats lagi.');
+    }
+
+    const maxAgeMs = 10 * 60 * 1000;
+    if (Date.now() - Number(session.updatedAt || 0) > maxAgeMs) {
+      allResellerStatsSessions.delete(sessionKey);
+      return ctx.reply('⚠️ Sesi statistik reseller sudah kadaluarsa. Jalankan /allresellerstats lagi.');
+    }
+
+    const totalPages = session.pages.length;
+    let page = Number(ctx.match[1] || 0);
+    if (!Number.isFinite(page)) page = 0;
+    page = Math.max(0, Math.min(totalPages - 1, page));
+
+    const row = [];
+    if (page > 0) row.push({ text: '⬅️ Prev', callback_data: `allresellerstats_page_${page - 1}` });
+    if (page < totalPages - 1) row.push({ text: 'Next ➡️', callback_data: `allresellerstats_page_${page + 1}` });
+    const editOptions = { parse_mode: 'HTML' };
+    if (row.length) editOptions.reply_markup = { inline_keyboard: [row] };
+    await ctx.editMessageText(session.pages[page], editOptions);
+  } catch (error) {
+    logger.error('❌ Error pagination allresellerstats:', error.message);
+    await ctx.reply('❌ Terjadi kesalahan saat membuka halaman statistik reseller.');
   }
 });
 
@@ -7270,6 +7308,78 @@ async function renderRemoteOwnedAccountsPage(ctx, page = 0) {
   );
 }
 
+async function renderLocalOwnedAccountsPage(ctx, listType = 'active', page = 0) {
+  const state = userState[ctx.chat.id]?.local_owned_accounts;
+  if (!state || !Array.isArray(state.rows) || state.rows.length === 0) {
+    return ctx.reply(listType === 'expired' ? '📭 Tidak ada akun expired.' : '📭 Tidak ada akun aktif.');
+  }
+  if (String(state.type || 'active') !== String(listType || 'active')) {
+    return ctx.reply('⚠️ Daftar akun sudah berubah. Buka ulang dari menu "Lihat Akun Saya".');
+  }
+
+  const pageSize = Number(state.pageSize || 4);
+  const total = state.rows.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const safePage = Math.max(0, Math.min(Number(page) || 0, totalPages - 1));
+  const start = safePage * pageSize;
+  const end = Math.min(start + pageSize, total);
+  const rows = state.rows.slice(start, end);
+
+  const escapeHtmlLocal = (text) => {
+    if (!text && text !== 0) return '';
+    return String(text)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  };
+
+  const blocks = rows.map((row, idx) => {
+    const number = start + idx + 1;
+    const expText = row.expires_at ? formatDateId(new Date(row.expires_at)) : '-';
+    const linkLines = [];
+    if (row.link_tls) linkLines.push(`- <b>Link TLS</b>: <code>${escapeHtmlLocal(row.link_tls)}</code>`);
+    if (row.link_none) linkLines.push(`- <b>Link NTLS</b>: <code>${escapeHtmlLocal(row.link_none)}</code>`);
+    if (row.link_grpc) linkLines.push(`- <b>Link GRPC</b>: <code>${escapeHtmlLocal(row.link_grpc)}</code>`);
+
+    const isZivpn = String(row.type || '').toLowerCase() === 'zivpn';
+    const accountLabel = isZivpn ? 'UDP Password' : 'Username';
+    const passwordLine = (!isZivpn && row.password)
+      ? `- <b>Password:</b> ${escapeHtmlLocal(row.password)}\n`
+      : '';
+
+    return (
+      `#${number}\n` +
+      `- <b>Layanan:</b> ${escapeHtmlLocal(row.type).toUpperCase()}\n` +
+      `- <b>${accountLabel}:</b> ${escapeHtmlLocal(row.username)}\n` +
+      passwordLine +
+      `- <b>Server:</b> ${escapeHtmlLocal(row.server_name || row.domain || '-')}\n` +
+      `- <b>Domain:</b> ${escapeHtmlLocal(row.domain || '-')}\n` +
+      `- <b>Expired:</b> ${escapeHtmlLocal(expText)}` +
+      (linkLines.length ? `\n${linkLines.join('\n')}` : '')
+    );
+  });
+
+  const title = listType === 'expired' ? 'Akun Expired' : 'Akun Aktif';
+  const text =
+    `<b>${title}</b>\n` +
+    `<i>Halaman ${safePage + 1}/${totalPages}</i>\n\n` +
+    blocks.join('\n\n');
+
+  const nav = [];
+  if (safePage > 0) nav.push({ text: 'Sebelumnya', callback_data: `view_accounts_local_page_${listType}_${safePage - 1}` });
+  if (safePage < totalPages - 1) nav.push({ text: 'Selanjutnya', callback_data: `view_accounts_local_page_${listType}_${safePage + 1}` });
+  const keyboard = [];
+  if (nav.length) keyboard.push(nav);
+  keyboard.push([{ text: 'Kembali', callback_data: 'view_accounts' }]);
+
+  return ctx.reply(text, {
+    parse_mode: 'HTML',
+    reply_markup: { inline_keyboard: keyboard }
+  });
+}
+
 function normalizeRenewAccountType(rawType) {
   const value = String(rawType || '').trim().toLowerCase();
   if (value === 'udp') return 'udp_http';
@@ -7537,58 +7647,13 @@ async function sendAccountList(ctx, isExpired, limit = 10) {
       return ctx.reply(isExpired ? '📭 Tidak ada akun expired.' : '📭 Tidak ada akun aktif.');
     }
 
-    const escapeHtmlLocal = (text) => {
-      if (!text && text !== 0) return '';
-      return String(text)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
+    userState[ctx.chat.id] = userState[ctx.chat.id] || {};
+    userState[ctx.chat.id].local_owned_accounts = {
+      type: isExpired ? 'expired' : 'active',
+      rows,
+      pageSize: 4
     };
-
-    const blocks = rows.map((row, idx) => {
-      const expText = row.expires_at ? formatDateId(new Date(row.expires_at)) : '-';
-      const linkLines = [];
-      if (row.link_tls) linkLines.push(`- <b>Link TLS</b>: <code>${escapeHtmlLocal(row.link_tls)}</code>`);
-      if (row.link_none) linkLines.push(`- <b>Link NTLS</b>: <code>${escapeHtmlLocal(row.link_none)}</code>`);
-      if (row.link_grpc) linkLines.push(`- <b>Link GRPC</b>: <code>${escapeHtmlLocal(row.link_grpc)}</code>`);
-
-      const isZivpn = String(row.type || '').toLowerCase() === 'zivpn';
-      const accountLabel = isZivpn ? 'UDP Password' : 'Username';
-      const passwordLine = (!isZivpn && row.password)
-        ? `- <b>Password:</b> ${escapeHtmlLocal(row.password)}\n`
-        : '';
-
-      return (
-        `#${idx + 1}\n` +
-        `- <b>Layanan:</b> ${escapeHtmlLocal(row.type).toUpperCase()}\n` +
-        `- <b>${accountLabel}:</b> ${escapeHtmlLocal(row.username)}\n` +
-        passwordLine +
-        `- <b>Server:</b> ${escapeHtmlLocal(row.server_name || row.domain || '-')}\n` +
-        `- <b>Domain:</b> ${escapeHtmlLocal(row.domain || '-')}\n` +
-        `- <b>Expired:</b> ${escapeHtmlLocal(expText)}` +
-        (linkLines.length ? `\n${linkLines.join('\n')}` : '')
-      );
-    });
-
-    const title = `<b>${isExpired ? 'Akun Expired' : 'Akun Aktif'}</b>`;
-    const maxLen = 3800;
-    let chunk = `${title}\n\n`;
-
-    for (const block of blocks) {
-      const next = chunk.length > title.length + 2 ? `${chunk}\n\n${block}` : `${chunk}${block}`;
-      if (next.length > maxLen) {
-        await ctx.reply(chunk, { parse_mode: 'HTML' });
-        chunk = `${title}\n\n${block}`;
-      } else {
-        chunk = next;
-      }
-    }
-
-    if (chunk.trim()) {
-      await ctx.reply(chunk, { parse_mode: 'HTML' });
-    }
+    await renderLocalOwnedAccountsPage(ctx, isExpired ? 'expired' : 'active', 0);
   });
 }
 
@@ -7611,6 +7676,13 @@ bot.action(/view_accounts_remote_page_(\d+)/, async (ctx) => {
   await ctx.answerCbQuery().catch(() => {});
   const page = Number(ctx.match[1] || 0);
   await renderRemoteOwnedAccountsPage(ctx, Number.isFinite(page) ? page : 0);
+});
+
+bot.action(/view_accounts_local_page_(active|expired)_(\d+)/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const listType = String(ctx.match[1] || 'active');
+  const page = Number(ctx.match[2] || 0);
+  await renderLocalOwnedAccountsPage(ctx, listType, Number.isFinite(page) ? page : 0);
 });
 
 bot.action(/renew_lookup_page_(\d+)/, async (ctx) => {
@@ -8263,7 +8335,31 @@ bot.action('cek_server', async (ctx) => {
         `${serverPrediksiGagal > 0 ? `- Catatan: ${serverPrediksiGagal} server gagal ambil data expiry\n` : ''}` +
         `\n` +
         lines.join('\n');
-      await ctx.reply(message.trim());
+
+      const maxLen = 3800;
+      const chunks = [];
+      let chunk = '';
+      for (const line of message.trim().split('\n')) {
+        const candidate = chunk ? `${chunk}\n${line}` : line;
+        if (candidate.length > maxLen) {
+          if (chunk) chunks.push(chunk);
+          if (line.length > maxLen) {
+            for (let i = 0; i < line.length; i += maxLen) {
+              chunks.push(line.slice(i, i + maxLen));
+            }
+            chunk = '';
+          } else {
+            chunk = line;
+          }
+        } else {
+          chunk = candidate;
+        }
+      }
+      if (chunk) chunks.push(chunk);
+
+      for (const part of chunks) {
+        await ctx.reply(part);
+      }
     });
   } catch (error) {
     logger.error('Error di cek_server:', error.message);
