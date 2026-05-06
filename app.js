@@ -1390,6 +1390,7 @@ db.run(`CREATE TABLE IF NOT EXISTS broadcast_poll_votes (
 const userState = {};
 const lastMenuMessageId = new Map();
 const allResellerStatsSessions = new Map();
+const ORDERKUOTA_CHECK_REPLY_TEXT = '✅ Sudah Bayar, Cek Status';
 logger.info('User state initialized');
 
 const dbAllAsync = (sql, params = []) => new Promise((resolve, reject) => {
@@ -9245,6 +9246,16 @@ bot.action(/(lock)_username_(vmess|vless|trojan|shadowsocks|ssh|udp_http)_(.+)/,
 });
 
 bot.on('text', async (ctx) => {
+  const textRaw = String(ctx.message?.text || '').trim();
+  if (textRaw === ORDERKUOTA_CHECK_REPLY_TEXT) {
+    const uniqueCode = findLatestPendingOrderKuotaCodeByUserId(ctx.from?.id);
+    if (!uniqueCode) {
+      return ctx.reply('⚠️ Tidak ada transaksi QRIS OrderKuota yang pending untuk dicek.');
+    }
+    await handleOrderKuotaPaymentCheck(ctx, uniqueCode);
+    return;
+  }
+
   const state = userState[ctx.chat.id];
 if (!state || !state.step) return;
 
@@ -13323,33 +13334,27 @@ async function processDeposit(ctx, amount, options = {}) {
       : '';
 
     const caption = 
-`💳 *INSTRUKSI PEMBAYARAN*
+`⚠️ *PENTING: Setelah transfer, WAJIB tekan tombol "✅ Sudah Bayar, Cek Status" di bawah QRIS.*
 
-💰 *TOP-UP:* Rp ${amountNum.toLocaleString('id-ID')}
-🎲 *ADMIN FEE:* Rp ${adminFee.toLocaleString('id-ID')}
-💵 *TOTAL BAYAR:* Rp ${finalAmount.toLocaleString('id-ID')}
+💵 *Total Bayar:* *Rp ${finalAmount.toLocaleString('id-ID')}*
+💰 Topup: Rp ${amountNum.toLocaleString('id-ID')}
+🎲 Biaya admin: Rp ${adminFee.toLocaleString('id-ID')}
 
-📌 *CARA BAYAR:*
-1. Scan QR Code di atas
-2. Transfer TEPAT Rp ${finalAmount.toLocaleString('id-ID')}
-3. Jangan kurang atau lebih!
-4. ${gatewayProvider === 'orderkuota' ? 'WAJIB tekan tombol Cek Status Pembayaran setelah transfer untuk mengaktifkan pengecekan otomatis' : 'Sistem otomatis verifikasi dalam 1-2 menit'}
+🧾 *Langkah Singkat*
+1. Scan QRIS
+2. Bayar *tepat* Rp ${finalAmount.toLocaleString('id-ID')}
+3. ${gatewayProvider === 'orderkuota' ? 'Tekan tombol *✅ Sudah Bayar, Cek Status*' : 'Tunggu verifikasi otomatis 1-2 menit'}
 
-⚠️ *PERHATIAN:*
-• QR Code berlaku ${qrExpireMinutes} menit
-• Transfer harus sesuai nominal di atas
-${gatewayProvider === 'orderkuota' ? '• Setelah tombol ditekan, bot cek histori tiap 10 detik selama 3 menit\n' : ''}
-• ${gatewayProvider === 'orderkuota' ? 'Saldo bertambah setelah histori menemukan pembayaran' : 'Saldo otomatis bertambah setelah terdeteksi'}
-
-🆔 *Referensi:* \`${referenceId}\`
-👤 *User ID:* \`${userId}\`
-💳 *Gateway:* \`${gatewayProvider === 'gopay' ? 'GoPay' : 'OrderKuota'}\`${purposeLine}`;
+⏰ QRIS berlaku ${qrExpireMinutes} menit
+${gatewayProvider === 'orderkuota' ? 'ℹ️ Saldo masuk setelah tombol ditekan lalu pembayaran terdeteksi sistem\n' : ''}🆔 Ref: \`${referenceId}\`${purposeLine}`;
     
     const paymentKeyboard = gatewayProvider === 'orderkuota'
       ? {
-          inline_keyboard: [[
-            { text: '🔍 Cek Status Pembayaran', callback_data: `check_orkut_payment_${uniqueCode}` }
-          ]]
+          keyboard: [[
+            { text: ORDERKUOTA_CHECK_REPLY_TEXT }
+          ]],
+          resize_keyboard: true,
+          one_time_keyboard: false
         }
       : undefined;
 
@@ -13609,28 +13614,33 @@ async function handleOrderKuotaPaymentCheck(ctx, uniqueCode) {
   uniqueCode = String(uniqueCode || '');
   const deposit = global.pendingDeposits?.[uniqueCode];
   logger.info(`Tombol cek OrderKuota ditekan user=${ctx.from?.id} uniqueCode=${uniqueCode}`);
+  const canAnswerCallback = typeof ctx.answerCbQuery === 'function';
 
   try {
     if (!deposit || deposit.status !== 'pending') {
-      await ctx.answerCbQuery('Transaksi tidak ditemukan atau sudah diproses.', { show_alert: true });
+      if (canAnswerCallback) await ctx.answerCbQuery('Transaksi tidak ditemukan atau sudah diproses.', { show_alert: true });
+      else await ctx.reply('⚠️ Transaksi tidak ditemukan atau sudah diproses.');
       return;
     }
 
     if (Number(deposit.userId) !== Number(ctx.from.id)) {
-      await ctx.answerCbQuery('Transaksi ini bukan milik akun Anda.', { show_alert: true });
+      if (canAnswerCallback) await ctx.answerCbQuery('Transaksi ini bukan milik akun Anda.', { show_alert: true });
+      else await ctx.reply('⚠️ Transaksi ini bukan milik akun Anda.');
       return;
     }
 
     const provider = String(deposit.gatewayProvider || 'orderkuota').toLowerCase();
     if (provider === 'gopay') {
-      await ctx.answerCbQuery('Gateway GoPay dicek otomatis oleh sistem.', { show_alert: true });
+      if (canAnswerCallback) await ctx.answerCbQuery('Gateway GoPay dicek otomatis oleh sistem.', { show_alert: true });
+      else await ctx.reply('ℹ️ Gateway GoPay dicek otomatis oleh sistem.');
       return;
     }
 
     const now = Date.now();
     const expiresAt = deposit.expiresAt || (deposit.timestamp ? deposit.timestamp + getPaymentQrExpireMs(provider) : 0);
     if (expiresAt && now > expiresAt) {
-      await ctx.answerCbQuery('QRIS sudah expired.', { show_alert: true });
+      if (canAnswerCallback) await ctx.answerCbQuery('QRIS sudah expired.', { show_alert: true });
+      else await ctx.reply('⚠️ QRIS sudah expired.');
       await handleExpiredDeposit(deposit, uniqueCode);
       return;
     }
@@ -13642,11 +13652,11 @@ async function handleOrderKuotaPaymentCheck(ctx, uniqueCode) {
       expiresAt || Date.now() + ORDERKUOTA_TRIGGERED_POLL_WINDOW
     );
 
-    await ctx.answerCbQuery('Pengecekan pembayaran diaktifkan.', { show_alert: false });
+    if (canAnswerCallback) await ctx.answerCbQuery('Pengecekan pembayaran diaktifkan.', { show_alert: false });
     await ctx.reply(
-      '🔍 *Cek pembayaran OrderKuota diaktifkan.*\n\n' +
-      'Bot akan mengambil histori tiap 10 detik selama 3 menit.\n' +
-      'Kalau belum ditemukan, tekan tombol cek lagi selama QRIS belum expired.',
+      '✅ *Pengecekan pembayaran sudah jalan.*\n\n' +
+      'Bot cek histori tiap 10 detik selama 3 menit.\n' +
+      `Jika saldo belum masuk setelah itu, tekan tombol *${ORDERKUOTA_CHECK_REPLY_TEXT}* lagi sebelum QRIS expired.`,
       { parse_mode: 'Markdown' }
     );
 
@@ -13665,6 +13675,17 @@ async function handleOrderKuotaPaymentCheck(ctx, uniqueCode) {
       { parse_mode: 'Markdown' }
     ).catch(() => {});
   }
+}
+
+function findLatestPendingOrderKuotaCodeByUserId(userId) {
+  const entries = Object.entries(global.pendingDeposits || {})
+    .filter(([_, deposit]) => {
+      if (!deposit || deposit.status !== 'pending') return false;
+      if (Number(deposit.userId) !== Number(userId)) return false;
+      return String(deposit.gatewayProvider || 'orderkuota').toLowerCase() === 'orderkuota';
+    })
+    .sort((a, b) => Number(b[1]?.timestamp || 0) - Number(a[1]?.timestamp || 0));
+  return entries.length ? entries[0][0] : null;
 }
 
 bot.action(/check_orkut_payment_(.+)/, async (ctx) => {
@@ -13868,7 +13889,7 @@ async function processSuccessfulPayment(deposit, uniqueCode) {
                 : '') +
               `🆔 Referensi: \`${deposit.referenceId}\`\n` +
               `⏰ ${new Date().toLocaleTimeString('id-ID', { timeZone: 'Asia/Jakarta' })}`,
-              { parse_mode: 'Markdown' }
+              { parse_mode: 'Markdown', reply_markup: { remove_keyboard: true } }
             );
             
             // 6. HAPUS QR MESSAGE
@@ -13932,7 +13953,7 @@ async function handleExpiredDeposit(deposit, uniqueCode) {
       `💵 Total: Rp ${deposit.amount.toLocaleString('id-ID')}\n\n` +
       `Silakan buat permintaan top-up baru.`+
       `Jika sudah terlanjur bayar diatas ${expireMinutes} menit dan saldo ga masuk hubungi admin lewat WA: ${getAdminWhatsappNumber() || '-'} atau Telegram: ${getAdminTelegramUsername()}`,
-      { parse_mode: 'Markdown' }
+      { parse_mode: 'Markdown', reply_markup: { remove_keyboard: true } }
     );
     
     // 3. HAPUS DARI MEMORY & DB
