@@ -13614,7 +13614,7 @@ async function handleOrderKuotaPaymentCheck(ctx, uniqueCode) {
   uniqueCode = String(uniqueCode || '');
   const deposit = global.pendingDeposits?.[uniqueCode];
   logger.info(`Tombol cek OrderKuota ditekan user=${ctx.from?.id} uniqueCode=${uniqueCode}`);
-  const canAnswerCallback = typeof ctx.answerCbQuery === 'function';
+  const canAnswerCallback = ctx.updateType === 'callback_query' && typeof ctx.answerCbQuery === 'function';
 
   try {
     if (!deposit || deposit.status !== 'pending') {
