@@ -999,7 +999,6 @@ function formatMultiLoginUserNotification(payload = {}) {
     `Username : ${username}`,
     `Limit IP : ${limitIp}`,
     `Terdeteksi: ${detected}`,
-    extraDetectedText ? extraDetectedText.trimStart() : null,
     '',
     `Akun akan normal lagi di jam ${unlockAtText}`,
     `Waktu    : ${timeText}`,
