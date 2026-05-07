@@ -495,6 +495,10 @@ let ORDERKUOTA_QR_EXPIRE_MINUTES = Number(vars.ORDERKUOTA_QR_EXPIRE_MINUTES || 1
 let GOPAY_QR_EXPIRE_MINUTES = Number(vars.GOPAY_QR_EXPIRE_MINUTES || 15);
 let ORDERKUOTA_MIN_TOPUP = Number(vars.ORDERKUOTA_MIN_TOPUP || 2000);
 let GOPAY_MIN_TOPUP = Number(vars.GOPAY_MIN_TOPUP || 2000);
+let ORDERKUOTA_TRIGGERED_POLL_INTERVAL_SECONDS = Number(vars.ORDERKUOTA_TRIGGERED_POLL_INTERVAL_SECONDS || 10);
+let ORDERKUOTA_TRIGGERED_POLL_WINDOW_MINUTES = Number(vars.ORDERKUOTA_TRIGGERED_POLL_WINDOW_MINUTES || 3);
+let ORDERKUOTA_CHECK_BUTTON_COOLDOWN_SECONDS = Number(vars.ORDERKUOTA_CHECK_BUTTON_COOLDOWN_SECONDS || 60);
+let ORDERKUOTA_CHECK_MAX_TAPS = Number(vars.ORDERKUOTA_CHECK_MAX_TAPS || 5);
 const GROUP_ID = vars.GROUP_ID;
 const BW_NOTIF_GROUP_ID = vars.BW_NOTIF_GROUP_ID;
 let BW_REPORT_INTERVAL_MINUTES = Number(vars.BW_REPORT_INTERVAL_MINUTES || 180);
@@ -536,11 +540,19 @@ function reloadRuntimePaymentConfig() {
   GOPAY_QR_EXPIRE_MINUTES = Number(current.GOPAY_QR_EXPIRE_MINUTES || GOPAY_QR_EXPIRE_MINUTES || 15);
   ORDERKUOTA_MIN_TOPUP = Number(current.ORDERKUOTA_MIN_TOPUP || ORDERKUOTA_MIN_TOPUP || 2000);
   GOPAY_MIN_TOPUP = Number(current.GOPAY_MIN_TOPUP || GOPAY_MIN_TOPUP || 2000);
+  ORDERKUOTA_TRIGGERED_POLL_INTERVAL_SECONDS = Number(current.ORDERKUOTA_TRIGGERED_POLL_INTERVAL_SECONDS || ORDERKUOTA_TRIGGERED_POLL_INTERVAL_SECONDS || 10);
+  ORDERKUOTA_TRIGGERED_POLL_WINDOW_MINUTES = Number(current.ORDERKUOTA_TRIGGERED_POLL_WINDOW_MINUTES || ORDERKUOTA_TRIGGERED_POLL_WINDOW_MINUTES || 3);
+  ORDERKUOTA_CHECK_BUTTON_COOLDOWN_SECONDS = Number(current.ORDERKUOTA_CHECK_BUTTON_COOLDOWN_SECONDS || ORDERKUOTA_CHECK_BUTTON_COOLDOWN_SECONDS || 60);
+  ORDERKUOTA_CHECK_MAX_TAPS = Number(current.ORDERKUOTA_CHECK_MAX_TAPS || ORDERKUOTA_CHECK_MAX_TAPS || 5);
 
   if (!Number.isFinite(ORDERKUOTA_QR_EXPIRE_MINUTES) || ORDERKUOTA_QR_EXPIRE_MINUTES < 1) ORDERKUOTA_QR_EXPIRE_MINUTES = 10;
   if (!Number.isFinite(GOPAY_QR_EXPIRE_MINUTES) || GOPAY_QR_EXPIRE_MINUTES < 1) GOPAY_QR_EXPIRE_MINUTES = 15;
   if (!Number.isFinite(ORDERKUOTA_MIN_TOPUP) || ORDERKUOTA_MIN_TOPUP < 1000) ORDERKUOTA_MIN_TOPUP = 2000;
   if (!Number.isFinite(GOPAY_MIN_TOPUP) || GOPAY_MIN_TOPUP < 1000) GOPAY_MIN_TOPUP = 2000;
+  if (!Number.isFinite(ORDERKUOTA_TRIGGERED_POLL_INTERVAL_SECONDS) || ORDERKUOTA_TRIGGERED_POLL_INTERVAL_SECONDS < 5) ORDERKUOTA_TRIGGERED_POLL_INTERVAL_SECONDS = 10;
+  if (!Number.isFinite(ORDERKUOTA_TRIGGERED_POLL_WINDOW_MINUTES) || ORDERKUOTA_TRIGGERED_POLL_WINDOW_MINUTES < 1) ORDERKUOTA_TRIGGERED_POLL_WINDOW_MINUTES = 3;
+  if (!Number.isFinite(ORDERKUOTA_CHECK_BUTTON_COOLDOWN_SECONDS) || ORDERKUOTA_CHECK_BUTTON_COOLDOWN_SECONDS < 10) ORDERKUOTA_CHECK_BUTTON_COOLDOWN_SECONDS = 60;
+  if (!Number.isFinite(ORDERKUOTA_CHECK_MAX_TAPS) || ORDERKUOTA_CHECK_MAX_TAPS < 1) ORDERKUOTA_CHECK_MAX_TAPS = 5;
 }
 reloadRuntimePaymentConfig();
 
@@ -2444,7 +2456,11 @@ bot.command('checkpaymentconfig', async (ctx) => {
     message += `- ORKUT Username: <code>${escapeHtmlLocal(currentVars.ORKUT_USERNAME || 'Belum diisi')}</code>\n`;
     message += `- ORKUT Token: <code>${escapeHtmlLocal(maskSecret(currentVars.ORKUT_TOKEN))}</code>\n`;
     message += `- Expired QRIS: <code>${ORDERKUOTA_QR_EXPIRE_MINUTES} menit</code>\n`;
-    message += `- Minimal TopUp: <code>Rp ${Math.round(getMinTopupByProvider('orderkuota')).toLocaleString('id-ID')}</code>\n\n`;
+    message += `- Minimal TopUp: <code>Rp ${Math.round(getMinTopupByProvider('orderkuota')).toLocaleString('id-ID')}</code>\n`;
+    message += `- Interval polling cek: <code>${ORDERKUOTA_TRIGGERED_POLL_INTERVAL_SECONDS} detik</code>\n`;
+    message += `- Cooldown tombol cek: <code>${ORDERKUOTA_CHECK_BUTTON_COOLDOWN_SECONDS} detik</code>\n`;
+    message += `- Maksimal tekan tombol: <code>${ORDERKUOTA_CHECK_MAX_TAPS}x per transaksi</code>\n`;
+    message += `- Auto-stop polling: <code>${ORDERKUOTA_TRIGGERED_POLL_WINDOW_MINUTES} menit</code>\n\n`;
 
     message += '<b>GoPay</b>\n';
     message += `- Aktif: ${isGatewayEnabled('gopay') ? 'YA' : 'TIDAK'}\n`;
@@ -5655,7 +5671,11 @@ async function sendPaymentGatewayOrderKuotaMenu(ctx) {
     `Merchant ID: \`${MERCHANT_ID || '-'}\`\n` +
     `API Key (legacy): \`${maskSecret(API_KEY)}\`\n` +
     `Expired QRIS: \`${ORDERKUOTA_QR_EXPIRE_MINUTES} menit\`\n` +
-    `Minimal TopUp: \`Rp ${Math.round(getMinTopupByProvider('orderkuota')).toLocaleString('id-ID')}\`\n\n` +
+    `Minimal TopUp: \`Rp ${Math.round(getMinTopupByProvider('orderkuota')).toLocaleString('id-ID')}\`\n` +
+    `Interval polling cek: \`${ORDERKUOTA_TRIGGERED_POLL_INTERVAL_SECONDS} detik\`\n` +
+    `Cooldown tombol cek: \`${ORDERKUOTA_CHECK_BUTTON_COOLDOWN_SECONDS} detik\`\n` +
+    `Maksimal tekan tombol: \`${ORDERKUOTA_CHECK_MAX_TAPS}x per transaksi\`\n` +
+    `Auto-stop polling: \`${ORDERKUOTA_TRIGGERED_POLL_WINDOW_MINUTES} menit\`\n\n` +
     'Pilih parameter OrderKuota yang ingin diubah.';
 
   const keyboard = [
@@ -5668,6 +5688,10 @@ async function sendPaymentGatewayOrderKuotaMenu(ctx) {
     [{ text: 'Set API Key (legacy)', callback_data: 'payment_gateway_set_api_key' }],
     [{ text: 'Set Expired QRIS (menit)', callback_data: 'payment_gateway_set_orderkuota_expire' }],
     [{ text: 'Set Minimal TopUp', callback_data: 'payment_gateway_set_orderkuota_min_topup' }],
+    [{ text: 'Set Interval Polling (detik)', callback_data: 'payment_gateway_set_orderkuota_poll_interval' }],
+    [{ text: 'Set Cooldown Tombol (detik)', callback_data: 'payment_gateway_set_orderkuota_check_cooldown' }],
+    [{ text: 'Set Maksimal Tekan Tombol', callback_data: 'payment_gateway_set_orderkuota_check_max_taps' }],
+    [{ text: 'Set Stop Polling (menit)', callback_data: 'payment_gateway_set_orderkuota_poll_window' }],
     [{ text: '🔙 Kembali', callback_data: 'payment_gateway_settings_menu' }]
   ];
 
@@ -5803,6 +5827,34 @@ bot.action('payment_gateway_set_orderkuota_min_topup', async (ctx) => {
   if (!adminIds.includes(ctx.from.id)) return ctx.reply('Anda tidak memiliki izin.');
   userState[ctx.chat.id] = { step: 'payment_gateway_orderkuota_min_topup_input' };
   await ctx.reply('Kirim minimal topup OrderKuota (angka rupiah). Contoh: 2000. Ketik "batal" untuk membatalkan.');
+});
+
+bot.action('payment_gateway_set_orderkuota_poll_interval', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('Anda tidak memiliki izin.');
+  userState[ctx.chat.id] = { step: 'payment_gateway_orderkuota_poll_interval_input' };
+  await ctx.reply('Kirim interval polling cek pembayaran OrderKuota (detik). Contoh: 10. Rentang 5-120 detik.');
+});
+
+bot.action('payment_gateway_set_orderkuota_check_cooldown', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('Anda tidak memiliki izin.');
+  userState[ctx.chat.id] = { step: 'payment_gateway_orderkuota_check_cooldown_input' };
+  await ctx.reply('Kirim cooldown tombol cek pembayaran (detik). Contoh: 60. Rentang 10-600 detik.');
+});
+
+bot.action('payment_gateway_set_orderkuota_check_max_taps', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('Anda tidak memiliki izin.');
+  userState[ctx.chat.id] = { step: 'payment_gateway_orderkuota_check_max_taps_input' };
+  await ctx.reply('Kirim maksimal jumlah tekan tombol cek per transaksi. Contoh: 5. Rentang 1-20 kali.');
+});
+
+bot.action('payment_gateway_set_orderkuota_poll_window', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('Anda tidak memiliki izin.');
+  userState[ctx.chat.id] = { step: 'payment_gateway_orderkuota_poll_window_input' };
+  await ctx.reply('Kirim durasi auto-stop polling setelah tombol cek ditekan (menit). Contoh: 3. Rentang 1-30 menit.');
 });
 
 bot.action('payment_gateway_set_gopay_base_url', async (ctx) => {
@@ -10097,6 +10149,82 @@ if (!state || !state.step) return;
     return sendAdminToolsMenu(ctx);
   }
 
+  if (state.step === 'payment_gateway_orderkuota_poll_interval_input') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan payment gateway dibatalkan.');
+    }
+    const seconds = Number(text);
+    if (!Number.isInteger(seconds) || seconds < 5 || seconds > 120) {
+      return ctx.reply('Interval polling harus angka 5 sampai 120 detik.');
+    }
+    const nextVars = loadVars();
+    nextVars.ORDERKUOTA_TRIGGERED_POLL_INTERVAL_SECONDS = seconds;
+    saveVars(nextVars);
+    reloadRuntimePaymentConfig();
+    delete userState[ctx.chat.id];
+    await ctx.reply(`✅ Interval polling OrderKuota disimpan: ${seconds} detik.`);
+    return sendAdminToolsMenu(ctx);
+  }
+
+  if (state.step === 'payment_gateway_orderkuota_check_cooldown_input') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan payment gateway dibatalkan.');
+    }
+    const seconds = Number(text);
+    if (!Number.isInteger(seconds) || seconds < 10 || seconds > 600) {
+      return ctx.reply('Cooldown tombol cek harus angka 10 sampai 600 detik.');
+    }
+    const nextVars = loadVars();
+    nextVars.ORDERKUOTA_CHECK_BUTTON_COOLDOWN_SECONDS = seconds;
+    saveVars(nextVars);
+    reloadRuntimePaymentConfig();
+    delete userState[ctx.chat.id];
+    await ctx.reply(`✅ Cooldown tombol cek disimpan: ${seconds} detik.`);
+    return sendAdminToolsMenu(ctx);
+  }
+
+  if (state.step === 'payment_gateway_orderkuota_check_max_taps_input') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan payment gateway dibatalkan.');
+    }
+    const maxTaps = Number(text);
+    if (!Number.isInteger(maxTaps) || maxTaps < 1 || maxTaps > 20) {
+      return ctx.reply('Maksimal tekan tombol harus angka 1 sampai 20 kali.');
+    }
+    const nextVars = loadVars();
+    nextVars.ORDERKUOTA_CHECK_MAX_TAPS = maxTaps;
+    saveVars(nextVars);
+    reloadRuntimePaymentConfig();
+    delete userState[ctx.chat.id];
+    await ctx.reply(`✅ Maksimal tekan tombol disimpan: ${maxTaps}x per transaksi.`);
+    return sendAdminToolsMenu(ctx);
+  }
+
+  if (state.step === 'payment_gateway_orderkuota_poll_window_input') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan payment gateway dibatalkan.');
+    }
+    const minutes = Number(text);
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 30) {
+      return ctx.reply('Durasi stop polling harus angka 1 sampai 30 menit.');
+    }
+    const nextVars = loadVars();
+    nextVars.ORDERKUOTA_TRIGGERED_POLL_WINDOW_MINUTES = minutes;
+    saveVars(nextVars);
+    reloadRuntimePaymentConfig();
+    delete userState[ctx.chat.id];
+    await ctx.reply(`✅ Durasi auto-stop polling disimpan: ${minutes} menit.`);
+    return sendAdminToolsMenu(ctx);
+  }
+
 
   if (state.step === 'delete_all_input_host') {
     const text = ctx.message.text.trim();
@@ -13290,6 +13418,8 @@ db.all('SELECT * FROM pending_deposits WHERE status = "pending"', [], (err, rows
       orderKuotaCheckActive: false,
       orderKuotaLastCheckAt: 0,
       orderKuotaCheckUntil: 0,
+      orderKuotaTapCount: 0,
+      orderKuotaLastTapAt: 0,
       createdAt,
       expiresAt
     };
@@ -13525,6 +13655,8 @@ ${gatewayProvider === 'orderkuota' ? 'ℹ️ Saldo masuk setelah tombol ditekan 
       orderKuotaCheckActive: false,
       orderKuotaLastCheckAt: 0,
       orderKuotaCheckUntil: 0,
+      orderKuotaTapCount: 0,
+      orderKuotaLastTapAt: 0,
       createdAt: Date.now(),         // Untuk expired check
       expiresAt: qrExpiresAt
     };
@@ -13583,9 +13715,17 @@ let lastPollErrorTime = 0;
 const GOPAY_POLL_INTERVAL = 10000; // GoPay cek status tiap 10 detik
 const ORDERKUOTA_POLL_INTERVAL = 60 * 1000; // OrderKuota hanya cek manual, maksimal 1 menit sekali
 const ORDERKUOTA_RATE_LIMIT_COOLDOWN = 5 * 60 * 1000;
-const ORDERKUOTA_TRIGGERED_POLL_INTERVAL = 10 * 1000;
-const ORDERKUOTA_TRIGGERED_POLL_WINDOW = 3 * 60 * 1000;
-const ORDERKUOTA_CHECK_BUTTON_COOLDOWN_MS = 60 * 1000;
+function getOrderKuotaTriggeredPollIntervalMs() {
+  return Math.max(5, Number(ORDERKUOTA_TRIGGERED_POLL_INTERVAL_SECONDS || 10)) * 1000;
+}
+
+function getOrderKuotaTriggeredPollWindowMs() {
+  return Math.max(1, Number(ORDERKUOTA_TRIGGERED_POLL_WINDOW_MINUTES || 3)) * 60 * 1000;
+}
+
+function getOrderKuotaCheckButtonCooldownMs() {
+  return Math.max(10, Number(ORDERKUOTA_CHECK_BUTTON_COOLDOWN_SECONDS || 60)) * 1000;
+}
 const POLL_ERROR_INTERVAL = 60000; // log error maksimal 1 menit sekali
 
 async function checkGoPayTransactionStatus(transactionId) {
@@ -13778,7 +13918,7 @@ async function handleOrderKuotaPaymentCheck(ctx, uniqueCode) {
 
     const now = Date.now();
     const lastManualCheckTapAt = Number(deposit.orderKuotaLastTapAt || 0);
-    const cooldownRemainingMs = (lastManualCheckTapAt + ORDERKUOTA_CHECK_BUTTON_COOLDOWN_MS) - now;
+    const cooldownRemainingMs = (lastManualCheckTapAt + getOrderKuotaCheckButtonCooldownMs()) - now;
     if (cooldownRemainingMs > 0) {
       const waitSeconds = Math.ceil(cooldownRemainingMs / 1000);
       const msg = `Tunggu ${waitSeconds} detik sebelum cek lagi.`;
@@ -13795,18 +13935,27 @@ async function handleOrderKuotaPaymentCheck(ctx, uniqueCode) {
       return;
     }
 
+    const currentTapCount = Number(deposit.orderKuotaTapCount || 0);
+    if (currentTapCount >= Math.max(1, Number(ORDERKUOTA_CHECK_MAX_TAPS || 5))) {
+      const msg = `Batas tekan tombol tercapai (${ORDERKUOTA_CHECK_MAX_TAPS}x) untuk transaksi ini.`;
+      if (canAnswerCallback) await ctx.answerCbQuery(msg, { show_alert: true });
+      else await ctx.reply(`⚠️ ${msg}`);
+      return;
+    }
+
     deposit.orderKuotaLastTapAt = now;
+    deposit.orderKuotaTapCount = currentTapCount + 1;
     deposit.orderKuotaCheckActive = true;
     deposit.orderKuotaLastCheckAt = 0;
     deposit.orderKuotaCheckUntil = Math.min(
-      Date.now() + ORDERKUOTA_TRIGGERED_POLL_WINDOW,
-      expiresAt || Date.now() + ORDERKUOTA_TRIGGERED_POLL_WINDOW
+      Date.now() + getOrderKuotaTriggeredPollWindowMs(),
+      expiresAt || Date.now() + getOrderKuotaTriggeredPollWindowMs()
     );
 
     if (canAnswerCallback) await ctx.answerCbQuery('Pengecekan pembayaran diaktifkan.', { show_alert: false });
     await ctx.reply(
       '✅ *Pengecekan pembayaran sudah jalan.*\n\n' +
-      'Bot cek histori tiap 10 detik selama 3 menit.\n' +
+      `Bot cek histori tiap ${Math.round(getOrderKuotaTriggeredPollIntervalMs() / 1000)} detik selama ${Math.round(getOrderKuotaTriggeredPollWindowMs() / 60000)} menit.\n` +
       `Jika saldo belum masuk setelah itu, tekan tombol *${ORDERKUOTA_CHECK_REPLY_TEXT}* lagi sebelum QRIS expired.`,
       { parse_mode: 'Markdown' }
     );
@@ -13873,7 +14022,7 @@ async function pollBankMutations() {
       const checkUntil = Number(deposit.orderKuotaCheckUntil || 0);
       if (checkUntil > 0 && now > checkUntil) {
         deposit.orderKuotaCheckActive = false;
-        logger.info(`Polling histori OrderKuota berhenti setelah 3 menit untuk deposit ${deposit.referenceId || deposit.userId}`);
+        logger.info(`Polling histori OrderKuota berhenti setelah ${Math.round(getOrderKuotaTriggeredPollWindowMs() / 60000)} menit untuk deposit ${deposit.referenceId || deposit.userId}`);
         return false;
       }
       return true;
@@ -13883,7 +14032,7 @@ async function pollBankMutations() {
     if (activeOrderKuotaDeposits.length > 0) {
       const dueOrderKuotaDeposits = activeOrderKuotaDeposits.filter(([_, deposit]) => {
         const lastCheckAt = Number(deposit.orderKuotaLastCheckAt || 0);
-        return now - lastCheckAt >= ORDERKUOTA_TRIGGERED_POLL_INTERVAL;
+        return now - lastCheckAt >= getOrderKuotaTriggeredPollIntervalMs();
       });
 
       if (dueOrderKuotaDeposits.length > 0) {
