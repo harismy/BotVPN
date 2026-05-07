@@ -13350,11 +13350,9 @@ ${gatewayProvider === 'orderkuota' ? 'ℹ️ Saldo masuk setelah tombol ditekan 
     
     const paymentKeyboard = gatewayProvider === 'orderkuota'
       ? {
-          keyboard: [[
-            { text: ORDERKUOTA_CHECK_REPLY_TEXT }
-          ]],
-          resize_keyboard: true,
-          one_time_keyboard: false
+          inline_keyboard: [[
+            { text: ORDERKUOTA_CHECK_REPLY_TEXT, callback_data: `check_orkut_payment_${uniqueCode}` }
+          ]]
         }
       : undefined;
 
@@ -13362,15 +13360,10 @@ ${gatewayProvider === 'orderkuota' ? 'ℹ️ Saldo masuk setelah tombol ditekan 
       { source: qrBuffer },
       {
         caption: caption,
-        parse_mode: 'Markdown'
+        parse_mode: 'Markdown',
+        ...(paymentKeyboard ? { reply_markup: paymentKeyboard } : {})
       }
     );
-
-    if (paymentKeyboard) {
-      await ctx.reply('👇 Tekan tombol di bawah ini setelah transfer selesai.', {
-        reply_markup: paymentKeyboard
-      });
-    }
 
     // HAPUS PESAN SEBELUMNYA
     try { await ctx.deleteMessage(); } catch (e) { /* ignore */ }
