@@ -13362,10 +13362,15 @@ ${gatewayProvider === 'orderkuota' ? 'ℹ️ Saldo masuk setelah tombol ditekan 
       { source: qrBuffer },
       {
         caption: caption,
-        parse_mode: 'Markdown',
-        ...(paymentKeyboard ? { reply_markup: paymentKeyboard } : {})
+        parse_mode: 'Markdown'
       }
     );
+
+    if (paymentKeyboard) {
+      await ctx.reply('👇 Tekan tombol di bawah ini setelah transfer selesai.', {
+        reply_markup: paymentKeyboard
+      });
+    }
 
     // HAPUS PESAN SEBELUMNYA
     try { await ctx.deleteMessage(); } catch (e) { /* ignore */ }
