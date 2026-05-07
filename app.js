@@ -491,6 +491,10 @@ let PAYMENT_GATEWAY_BASE_URL = String(vars.PAYMENT_GATEWAY_BASE_URL || 'https://
 let PAYMENT_GATEWAY_MODE = String(vars.PAYMENT_GATEWAY_MODE || 'orderkuota').trim().toLowerCase();
 let GOPAY_API_BASE_URL = String(vars.GOPAY_API_BASE_URL || 'https://api-gopay.sawargipay.cloud').trim();
 let GOPAY_API_KEY = String(vars.GOPAY_API_KEY || '').trim();
+let ORDERKUOTA_QR_EXPIRE_MINUTES = Number(vars.ORDERKUOTA_QR_EXPIRE_MINUTES || 10);
+let GOPAY_QR_EXPIRE_MINUTES = Number(vars.GOPAY_QR_EXPIRE_MINUTES || 15);
+let ORDERKUOTA_MIN_TOPUP = Number(vars.ORDERKUOTA_MIN_TOPUP || 2000);
+let GOPAY_MIN_TOPUP = Number(vars.GOPAY_MIN_TOPUP || 2000);
 const GROUP_ID = vars.GROUP_ID;
 const BW_NOTIF_GROUP_ID = vars.BW_NOTIF_GROUP_ID;
 let BW_REPORT_INTERVAL_MINUTES = Number(vars.BW_REPORT_INTERVAL_MINUTES || 180);
@@ -528,6 +532,15 @@ function reloadRuntimePaymentConfig() {
   GOPAY_API_BASE_URL = normalizeHttpUrl(current.GOPAY_API_BASE_URL || GOPAY_API_BASE_URL)
     || 'https://api-gopay.sawargipay.cloud';
   GOPAY_API_KEY = String(current.GOPAY_API_KEY || '').trim();
+  ORDERKUOTA_QR_EXPIRE_MINUTES = Number(current.ORDERKUOTA_QR_EXPIRE_MINUTES || ORDERKUOTA_QR_EXPIRE_MINUTES || 10);
+  GOPAY_QR_EXPIRE_MINUTES = Number(current.GOPAY_QR_EXPIRE_MINUTES || GOPAY_QR_EXPIRE_MINUTES || 15);
+  ORDERKUOTA_MIN_TOPUP = Number(current.ORDERKUOTA_MIN_TOPUP || ORDERKUOTA_MIN_TOPUP || 2000);
+  GOPAY_MIN_TOPUP = Number(current.GOPAY_MIN_TOPUP || GOPAY_MIN_TOPUP || 2000);
+
+  if (!Number.isFinite(ORDERKUOTA_QR_EXPIRE_MINUTES) || ORDERKUOTA_QR_EXPIRE_MINUTES < 1) ORDERKUOTA_QR_EXPIRE_MINUTES = 10;
+  if (!Number.isFinite(GOPAY_QR_EXPIRE_MINUTES) || GOPAY_QR_EXPIRE_MINUTES < 1) GOPAY_QR_EXPIRE_MINUTES = 15;
+  if (!Number.isFinite(ORDERKUOTA_MIN_TOPUP) || ORDERKUOTA_MIN_TOPUP < 1000) ORDERKUOTA_MIN_TOPUP = 2000;
+  if (!Number.isFinite(GOPAY_MIN_TOPUP) || GOPAY_MIN_TOPUP < 1000) GOPAY_MIN_TOPUP = 2000;
 }
 reloadRuntimePaymentConfig();
 
@@ -546,6 +559,19 @@ function formatGatewayModeLabel() {
     default:
       return 'OrderKuota saja';
   }
+}
+
+function getMinTopupByProvider(provider) {
+  const p = String(provider || '').toLowerCase();
+  if (p === 'orderkuota') return Math.max(1000, Number(ORDERKUOTA_MIN_TOPUP || 2000));
+  return Math.max(1000, Number(GOPAY_MIN_TOPUP || 2000));
+}
+
+function getMinTopupByGatewayMode(mode) {
+  const normalizedMode = String(mode || PAYMENT_GATEWAY_MODE || 'orderkuota').toLowerCase();
+  if (normalizedMode === 'gopay') return getMinTopupByProvider('gopay');
+  if (normalizedMode === 'both') return Math.max(getMinTopupByProvider('orderkuota'), getMinTopupByProvider('gopay'));
+  return getMinTopupByProvider('orderkuota');
 }
 
 function isOrderKuotaCredentialDefault() {
@@ -2416,7 +2442,9 @@ bot.command('checkpaymentconfig', async (ctx) => {
     message += `- RajaServer API Key: <code>${escapeHtmlLocal(maskSecret(RAJASERVER_API_KEY))}</code>\n`;
     message += `- DATA_QRIS: <code>${DATA_QRIS ? 'Tersimpan' : 'Belum diisi'}</code>\n`;
     message += `- ORKUT Username: <code>${escapeHtmlLocal(currentVars.ORKUT_USERNAME || 'Belum diisi')}</code>\n`;
-    message += `- ORKUT Token: <code>${escapeHtmlLocal(maskSecret(currentVars.ORKUT_TOKEN))}</code>\n\n`;
+    message += `- ORKUT Token: <code>${escapeHtmlLocal(maskSecret(currentVars.ORKUT_TOKEN))}</code>\n`;
+    message += `- Expired QRIS: <code>${ORDERKUOTA_QR_EXPIRE_MINUTES} menit</code>\n`;
+    message += `- Minimal TopUp: <code>Rp ${Math.round(getMinTopupByProvider('orderkuota')).toLocaleString('id-ID')}</code>\n\n`;
 
     message += '<b>GoPay</b>\n';
     message += `- Aktif: ${isGatewayEnabled('gopay') ? 'YA' : 'TIDAK'}\n`;
@@ -2426,6 +2454,8 @@ bot.command('checkpaymentconfig', async (ctx) => {
     }
     message += `- Base URL: <code>${escapeHtmlLocal(GOPAY_API_BASE_URL)}</code>\n`;
     message += `- API Key: <code>${escapeHtmlLocal(maskSecret(GOPAY_API_KEY))}</code>\n`;
+    message += `- Expired QRIS: <code>${GOPAY_QR_EXPIRE_MINUTES} menit</code>\n`;
+    message += `- Minimal TopUp: <code>Rp ${Math.round(getMinTopupByProvider('gopay')).toLocaleString('id-ID')}</code>\n`;
 
     if (isGatewayEnabled('gopay') && GOPAY_API_KEY) {
       try {
@@ -5623,7 +5653,9 @@ async function sendPaymentGatewayOrderKuotaMenu(ctx) {
     `ORKUT Username: \`${currentVars.ORKUT_USERNAME || 'Belum diisi'}\`\n` +
     `ORKUT Token: \`${maskSecret(currentVars.ORKUT_TOKEN)}\`\n` +
     `Merchant ID: \`${MERCHANT_ID || '-'}\`\n` +
-    `API Key (legacy): \`${maskSecret(API_KEY)}\`\n\n` +
+    `API Key (legacy): \`${maskSecret(API_KEY)}\`\n` +
+    `Expired QRIS: \`${ORDERKUOTA_QR_EXPIRE_MINUTES} menit\`\n` +
+    `Minimal TopUp: \`Rp ${Math.round(getMinTopupByProvider('orderkuota')).toLocaleString('id-ID')}\`\n\n` +
     'Pilih parameter OrderKuota yang ingin diubah.';
 
   const keyboard = [
@@ -5634,6 +5666,8 @@ async function sendPaymentGatewayOrderKuotaMenu(ctx) {
     [{ text: 'Set ORKUT Token', callback_data: 'payment_gateway_set_orkut_token' }],
     [{ text: 'Set Merchant ID', callback_data: 'payment_gateway_set_merchant_id' }],
     [{ text: 'Set API Key (legacy)', callback_data: 'payment_gateway_set_api_key' }],
+    [{ text: 'Set Expired QRIS (menit)', callback_data: 'payment_gateway_set_orderkuota_expire' }],
+    [{ text: 'Set Minimal TopUp', callback_data: 'payment_gateway_set_orderkuota_min_topup' }],
     [{ text: '🔙 Kembali', callback_data: 'payment_gateway_settings_menu' }]
   ];
 
@@ -5648,12 +5682,16 @@ async function sendPaymentGatewayGoPayMenu(ctx) {
   const message =
     '*SETTING GOPAY*\n\n' +
     `GoPay API Base URL: \`${GOPAY_API_BASE_URL || '-'}\`\n` +
-    `GoPay API Key: \`${maskSecret(GOPAY_API_KEY)}\`\n\n` +
+    `GoPay API Key: \`${maskSecret(GOPAY_API_KEY)}\`\n` +
+    `Expired QRIS: \`${GOPAY_QR_EXPIRE_MINUTES} menit\`\n` +
+    `Minimal TopUp: \`Rp ${Math.round(getMinTopupByProvider('gopay')).toLocaleString('id-ID')}\`\n\n` +
     'Pilih parameter GoPay yang ingin diubah.';
 
   const keyboard = [
     [{ text: 'Set GoPay API Base URL', callback_data: 'payment_gateway_set_gopay_base_url' }],
     [{ text: 'Set GoPay API Key', callback_data: 'payment_gateway_set_gopay_api_key' }],
+    [{ text: 'Set Expired QRIS (menit)', callback_data: 'payment_gateway_set_gopay_expire' }],
+    [{ text: 'Set Minimal TopUp', callback_data: 'payment_gateway_set_gopay_min_topup' }],
     [{ text: '🔙 Kembali', callback_data: 'payment_gateway_settings_menu' }]
   ];
 
@@ -5753,6 +5791,20 @@ bot.action('payment_gateway_set_api_key', async (ctx) => {
   await ctx.reply('Kirim API Key legacy baru. Ketik "batal" untuk membatalkan.');
 });
 
+bot.action('payment_gateway_set_orderkuota_expire', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('Anda tidak memiliki izin.');
+  userState[ctx.chat.id] = { step: 'payment_gateway_orderkuota_expire_input' };
+  await ctx.reply('Kirim masa expired QRIS OrderKuota dalam menit. Contoh: 10. Ketik "batal" untuk membatalkan.');
+});
+
+bot.action('payment_gateway_set_orderkuota_min_topup', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('Anda tidak memiliki izin.');
+  userState[ctx.chat.id] = { step: 'payment_gateway_orderkuota_min_topup_input' };
+  await ctx.reply('Kirim minimal topup OrderKuota (angka rupiah). Contoh: 2000. Ketik "batal" untuk membatalkan.');
+});
+
 bot.action('payment_gateway_set_gopay_base_url', async (ctx) => {
   await ctx.answerCbQuery();
   if (!adminIds.includes(ctx.from.id)) return ctx.reply('Anda tidak memiliki izin.');
@@ -5765,6 +5817,20 @@ bot.action('payment_gateway_set_gopay_api_key', async (ctx) => {
   if (!adminIds.includes(ctx.from.id)) return ctx.reply('Anda tidak memiliki izin.');
   userState[ctx.chat.id] = { step: 'payment_gateway_gopay_api_key_input' };
   await ctx.reply('Kirim GoPay API Key baru. Ketik "batal" untuk membatalkan.');
+});
+
+bot.action('payment_gateway_set_gopay_expire', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('Anda tidak memiliki izin.');
+  userState[ctx.chat.id] = { step: 'payment_gateway_gopay_expire_input' };
+  await ctx.reply('Kirim masa expired QRIS GoPay dalam menit. Contoh: 15. Ketik "batal" untuk membatalkan.');
+});
+
+bot.action('payment_gateway_set_gopay_min_topup', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('Anda tidak memiliki izin.');
+  userState[ctx.chat.id] = { step: 'payment_gateway_gopay_min_topup_input' };
+  await ctx.reply('Kirim minimal topup GoPay (angka rupiah). Contoh: 2000. Ketik "batal" untuk membatalkan.');
 });
 bot.action('restore_db_menu', async (ctx) => {
   await ctx.answerCbQuery();
@@ -6380,11 +6446,12 @@ bot.action('topup_saldo', async (ctx) => {
     if (!global.depositState) {
       global.depositState = {};
     }
+    const minTopupForMode = getMinTopupByGatewayMode(PAYMENT_GATEWAY_MODE);
     global.depositState[userId] = {
       action: 'request_amount',
       amount: '',
       topupPurpose: 'regular',
-      minAmount: 2000
+      minAmount: minTopupForMode
     };
     
     const keyboard = keyboard_nomor();
@@ -6401,7 +6468,7 @@ bot.action('topup_saldo', async (ctx) => {
 
     await ctx.editMessageText(
       '💰 *TOP UP SALDO OTOMATIS*\n\n' +
-      '💳 *Minimal:* Rp 2.000\n\n' +
+      `💳 *Minimal:* Rp ${minTopupForMode.toLocaleString('id-ID')}\n\n` +
       bonusInfo +
       '🎲 *SISTEM KEAMANAN BARU:*\n' +
       '• Biaya admin **RANDOM 100-200**\n' +
@@ -9954,6 +10021,82 @@ if (!state || !state.step) return;
     return sendAdminToolsMenu(ctx);
   }
 
+  if (state.step === 'payment_gateway_orderkuota_expire_input') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan payment gateway dibatalkan.');
+    }
+    const minutes = Number(text);
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 180) {
+      return ctx.reply('Expired QRIS OrderKuota harus angka 1 sampai 180 menit.');
+    }
+    const nextVars = loadVars();
+    nextVars.ORDERKUOTA_QR_EXPIRE_MINUTES = minutes;
+    saveVars(nextVars);
+    reloadRuntimePaymentConfig();
+    delete userState[ctx.chat.id];
+    await ctx.reply(`✅ Expired QRIS OrderKuota disimpan: ${minutes} menit.`);
+    return sendAdminToolsMenu(ctx);
+  }
+
+  if (state.step === 'payment_gateway_orderkuota_min_topup_input') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan payment gateway dibatalkan.');
+    }
+    const amount = Number(text);
+    if (!Number.isInteger(amount) || amount < 1000) {
+      return ctx.reply('Minimal topup OrderKuota harus angka dan minimal Rp 1.000.');
+    }
+    const nextVars = loadVars();
+    nextVars.ORDERKUOTA_MIN_TOPUP = amount;
+    saveVars(nextVars);
+    reloadRuntimePaymentConfig();
+    delete userState[ctx.chat.id];
+    await ctx.reply(`✅ Minimal topup OrderKuota disimpan: Rp ${amount.toLocaleString('id-ID')}.`);
+    return sendAdminToolsMenu(ctx);
+  }
+
+  if (state.step === 'payment_gateway_gopay_expire_input') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan payment gateway dibatalkan.');
+    }
+    const minutes = Number(text);
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 180) {
+      return ctx.reply('Expired QRIS GoPay harus angka 1 sampai 180 menit.');
+    }
+    const nextVars = loadVars();
+    nextVars.GOPAY_QR_EXPIRE_MINUTES = minutes;
+    saveVars(nextVars);
+    reloadRuntimePaymentConfig();
+    delete userState[ctx.chat.id];
+    await ctx.reply(`✅ Expired QRIS GoPay disimpan: ${minutes} menit.`);
+    return sendAdminToolsMenu(ctx);
+  }
+
+  if (state.step === 'payment_gateway_gopay_min_topup_input') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan payment gateway dibatalkan.');
+    }
+    const amount = Number(text);
+    if (!Number.isInteger(amount) || amount < 1000) {
+      return ctx.reply('Minimal topup GoPay harus angka dan minimal Rp 1.000.');
+    }
+    const nextVars = loadVars();
+    nextVars.GOPAY_MIN_TOPUP = amount;
+    saveVars(nextVars);
+    reloadRuntimePaymentConfig();
+    delete userState[ctx.chat.id];
+    await ctx.reply(`✅ Minimal topup GoPay disimpan: Rp ${amount.toLocaleString('id-ID')}.`);
+    return sendAdminToolsMenu(ctx);
+  }
+
 
   if (state.step === 'delete_all_input_host') {
     const text = ctx.message.text.trim();
@@ -12903,7 +13046,7 @@ Lanjutkan untuk melihat QRIS?`;
   global.depositState[userId].amount = currentAmount;
   const title = topupPurpose === 'reseller_join'
     ? `Masukkan nominal topup jadi reseller (minimal Rp ${minAmount.toLocaleString('id-ID')})`
-    : 'Masukkan jumlah saldo yang ingin ditambahkan';
+    : `Masukkan jumlah saldo yang ingin ditambahkan (minimal Rp ${minAmount.toLocaleString('id-ID')})`;
   const message = `*${title}*\n\nJumlah: *Rp ${currentAmount || '0'}*`;
 
   try {
@@ -13110,15 +13253,13 @@ global.depositState = {};
 global.pendingDeposits = {};
 let lastRequestTime = 0;
 const requestInterval = 1000; 
-const PAYMENT_QR_EXPIRE_MINUTES = 15;
-const PAYMENT_QR_EXPIRE_MS = PAYMENT_QR_EXPIRE_MINUTES * 60 * 1000;
-const ORDERKUOTA_QR_EXPIRE_MINUTES = 10;
-const ORDERKUOTA_QR_EXPIRE_MS = ORDERKUOTA_QR_EXPIRE_MINUTES * 60 * 1000;
 
 function getPaymentQrExpireMs(provider) {
-  return String(provider || '').toLowerCase() === 'orderkuota'
-    ? ORDERKUOTA_QR_EXPIRE_MS
-    : PAYMENT_QR_EXPIRE_MS;
+  const normalizedProvider = String(provider || '').toLowerCase();
+  if (normalizedProvider === 'orderkuota') {
+    return Math.max(1, Number(ORDERKUOTA_QR_EXPIRE_MINUTES || 10)) * 60 * 1000;
+  }
+  return Math.max(1, Number(GOPAY_QR_EXPIRE_MINUTES || 15)) * 60 * 1000;
 }
 
 function getPaymentQrExpireMinutes(provider) {
