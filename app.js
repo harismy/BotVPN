@@ -13444,6 +13444,7 @@ const ORDERKUOTA_POLL_INTERVAL = 60 * 1000; // OrderKuota hanya cek manual, maks
 const ORDERKUOTA_RATE_LIMIT_COOLDOWN = 5 * 60 * 1000;
 const ORDERKUOTA_TRIGGERED_POLL_INTERVAL = 10 * 1000;
 const ORDERKUOTA_TRIGGERED_POLL_WINDOW = 3 * 60 * 1000;
+const ORDERKUOTA_CHECK_BUTTON_COOLDOWN_MS = 60 * 1000;
 const POLL_ERROR_INTERVAL = 60000; // log error maksimal 1 menit sekali
 
 async function checkGoPayTransactionStatus(transactionId) {
@@ -13635,6 +13636,16 @@ async function handleOrderKuotaPaymentCheck(ctx, uniqueCode) {
     }
 
     const now = Date.now();
+    const lastManualCheckTapAt = Number(deposit.orderKuotaLastTapAt || 0);
+    const cooldownRemainingMs = (lastManualCheckTapAt + ORDERKUOTA_CHECK_BUTTON_COOLDOWN_MS) - now;
+    if (cooldownRemainingMs > 0) {
+      const waitSeconds = Math.ceil(cooldownRemainingMs / 1000);
+      const msg = `Tunggu ${waitSeconds} detik sebelum cek lagi.`;
+      if (canAnswerCallback) await ctx.answerCbQuery(msg, { show_alert: true });
+      else await ctx.reply(`⏳ ${msg}`);
+      return;
+    }
+
     const expiresAt = deposit.expiresAt || (deposit.timestamp ? deposit.timestamp + getPaymentQrExpireMs(provider) : 0);
     if (expiresAt && now > expiresAt) {
       if (canAnswerCallback) await ctx.answerCbQuery('QRIS sudah expired.', { show_alert: true });
@@ -13643,6 +13654,7 @@ async function handleOrderKuotaPaymentCheck(ctx, uniqueCode) {
       return;
     }
 
+    deposit.orderKuotaLastTapAt = now;
     deposit.orderKuotaCheckActive = true;
     deposit.orderKuotaLastCheckAt = 0;
     deposit.orderKuotaCheckUntil = Math.min(
