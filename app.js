@@ -3990,6 +3990,42 @@ bot.command('broadcast', async (ctx) => {
   );
 });
 
+bot.on('photo', async (ctx, next) => {
+  try {
+    const caption = String(ctx.message?.caption || '').trim();
+    if (!/^\/broadcast(?:@\w+)?(\s|$)/i.test(caption)) {
+      return next();
+    }
+
+    const userId = Number(ctx.message?.from?.id || 0);
+    if (!adminIds.includes(userId)) {
+      return ctx.reply('⚠️ Anda tidak memiliki izin untuk menggunakan perintah ini.', { parse_mode: 'Markdown' });
+    }
+
+    const photos = ctx.message?.photo || [];
+    const sourcePhoto = photos.length ? photos[photos.length - 1] : null;
+    if (!sourcePhoto?.file_id) {
+      return ctx.reply('⚠️ Foto tidak ditemukan. Coba kirim ulang.');
+    }
+
+    const textCaption = caption.replace(/^\/broadcast(?:@\w+)?\s*/i, '').trim();
+    const result = await broadcastToAllUsers({
+      type: 'photo',
+      fileId: sourcePhoto.file_id,
+      caption: textCaption
+    });
+
+    return ctx.reply(
+      '✅ Broadcast foto selesai.\n' +
+      '- Berhasil: ' + result.ok + '\n' +
+      '- Gagal: ' + result.fail
+    );
+  } catch (err) {
+    logger.error('Gagal proses broadcast foto dari caption:', err.message || err);
+    return ctx.reply('⚠️ Terjadi kesalahan saat broadcast foto.');
+  }
+});
+
 bot.command('broadcastreseller', async (ctx) => {
   const userId = Number(ctx.message?.from?.id || 0);
   if (!adminIds.includes(userId)) {
