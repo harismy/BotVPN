@@ -3655,7 +3655,7 @@ bot.command('addserver_reseller', async (ctx) => {
   }
 });
 //////////
-async function broadcastMessageToAllUsers(message) {
+async function broadcastToAllUsers(payload) {
   return new Promise((resolve) => {
     db.all('SELECT user_id FROM users', [], async (err, rows) => {
       if (err) {
@@ -3668,7 +3668,13 @@ async function broadcastMessageToAllUsers(message) {
 
       for (const row of rows || []) {
         try {
-          await bot.telegram.sendMessage(row.user_id, message);
+          if (payload?.type === 'photo' && payload?.fileId) {
+            const options = {};
+            if (payload.caption) options.caption = payload.caption;
+            await bot.telegram.sendPhoto(row.user_id, payload.fileId, options);
+          } else {
+            await bot.telegram.sendMessage(row.user_id, String(payload?.text || ''));
+          }
           ok++;
         } catch (e) {
           fail++;
@@ -3679,6 +3685,10 @@ async function broadcastMessageToAllUsers(message) {
       resolve({ ok, fail });
     });
   });
+}
+
+async function broadcastMessageToAllUsers(message) {
+  return broadcastToAllUsers({ type: 'text', text: String(message || '') });
 }
 
 async function broadcastMessageToResellers(message) {
@@ -3934,35 +3944,50 @@ bot.command('broadcast', async (ctx) => {
       return ctx.reply('⚠️ Anda tidak memiliki izin untuk menggunakan perintah ini.', { parse_mode: 'Markdown' });
   }
 
+  const commandPattern = /^\/broadcast(?:@\w+)?\s*/i;
   const rawText = ctx.message.text || '';
-  const message = ctx.message.reply_to_message
-    ? (ctx.message.reply_to_message.text || ctx.message.reply_to_message.caption || '')
-    : rawText.replace(/^\/broadcast(?:@\w+)?\s*/i, '');
-  if (!message) {
-      logger.info('⚠️ Pesan untuk disiarkan tidak diberikan.');
-      return ctx.reply('⚠️ Mohon berikan pesan untuk disiarkan.', { parse_mode: 'Markdown' });
+  const repliedMessage = ctx.message.reply_to_message || null;
+  const sourcePhoto = repliedMessage?.photo?.length
+    ? repliedMessage.photo[repliedMessage.photo.length - 1]
+    : (ctx.message.photo?.length ? ctx.message.photo[ctx.message.photo.length - 1] : null);
+
+  if (sourcePhoto?.file_id) {
+    const rawCaption = repliedMessage
+      ? (repliedMessage.caption || repliedMessage.text || '')
+      : (ctx.message.caption || '');
+    const caption = repliedMessage ? rawCaption : rawCaption.replace(commandPattern, '').trim();
+    const result = await broadcastToAllUsers({
+      type: 'photo',
+      fileId: sourcePhoto.file_id,
+      caption: caption || ''
+    });
+
+    return ctx.reply(
+      '✅ Broadcast foto selesai.\n' +
+      '- Berhasil: ' + result.ok + '\n' +
+      '- Gagal: ' + result.fail
+    );
   }
 
-  db.all("SELECT user_id FROM users", [], (err, rows) => {
-      if (err) {
-          logger.error('⚠️ Kesalahan saat mengambil daftar pengguna:', err.message);
-          return ctx.reply('⚠️ Kesalahan saat mengambil daftar pengguna.', { parse_mode: 'Markdown' });
-      }
+  const message = repliedMessage
+    ? (repliedMessage.text || repliedMessage.caption || '')
+    : rawText.replace(commandPattern, '');
 
-      rows.forEach((row) => {
-          const telegramUrl = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
-          axios.post(telegramUrl, {
-              chat_id: row.user_id,
-              text: message
-          }).then(() => {
-              logger.info(`✅ Pesan siaran berhasil dikirim ke ${row.user_id}`);
-          }).catch((error) => {
-              logger.error(`⚠️ Kesalahan saat mengirim pesan siaran ke ${row.user_id}`, error.message);
-          });
-      });
+  if (!String(message || '').trim()) {
+      logger.info('⚠️ Pesan untuk disiarkan tidak diberikan.');
+      return ctx.reply(
+        '⚠️ Mohon berikan pesan untuk disiarkan.\n' +
+        'Kamu juga bisa kirim foto + caption pakai /broadcast.',
+        { parse_mode: 'Markdown' }
+      );
+  }
 
-      ctx.reply('✅ Pesan siaran berhasil dikirim.', { parse_mode: 'Markdown' });
-  });
+  const result = await broadcastMessageToAllUsers(String(message).trim());
+  return ctx.reply(
+    '✅ Broadcast pesan selesai.\n' +
+    '- Berhasil: ' + result.ok + '\n' +
+    '- Gagal: ' + result.fail
+  );
 });
 
 bot.command('broadcastreseller', async (ctx) => {
