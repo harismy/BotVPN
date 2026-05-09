@@ -916,8 +916,7 @@ function buildCreateNotifRemarks(type, username) {
   const t = String(type || '').toLowerCase();
   const u = String(username || '').trim();
   if (!u) return '-';
-  if (t === 'zivpn') return maskAfterFirstTwoChars(u);
-  if (t === 'ssh' || t === 'udp_http') return u;
+  if (t === 'zivpn' || t === 'ssh' || t === 'udp_http') return maskAfterFirstTwoChars(u);
   return u;
 }
 
