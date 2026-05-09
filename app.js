@@ -16,6 +16,8 @@ const topupAutoPath = path.join(__dirname, 'topup_auto.json');
 const defaultTopupAuto = { enabled: true };
 const topupBonusPath = path.join(__dirname, 'topup_bonus.json');
 const defaultTopupBonus = { enabled: true, range_10_40: 0, range_50_70: 0, range_70_100: 0 };
+const scNexusMenuPath = path.join(__dirname, 'sc_nexus_menu.json');
+const defaultScNexusMenu = { enabled: true };
 const maintenancePath = path.join(__dirname, 'maintenance_mode.json');
 const defaultMaintenance = { enabled: false, estimate: '' };
 const varsPath = path.join(__dirname, '.vars.json');
@@ -109,6 +111,22 @@ function saveTopupBonusSetting(next) {
   };
   fs.writeFileSync(topupBonusPath, JSON.stringify(payload, null, 2), 'utf8');
   return payload;
+}
+
+function loadScNexusMenuSetting() {
+  try {
+    const raw = fs.readFileSync(scNexusMenuPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    return !!parsed.enabled;
+  } catch (err) {
+    return defaultScNexusMenu.enabled;
+  }
+}
+
+function saveScNexusMenuSetting(enabled) {
+  const payload = { enabled: !!enabled };
+  fs.writeFileSync(scNexusMenuPath, JSON.stringify(payload, null, 2), 'utf8');
+  return payload.enabled;
 }
 
 function loadMaintenanceSetting() {
@@ -3452,6 +3470,12 @@ async function sendMainMenu(ctx) {
       keyboard.splice(topupIndex + 1, 0, manualRow);
     }
   }
+
+  if (loadScNexusMenuSetting()) {
+    keyboard.splice(4, 0, [
+      { text: '🛰️ SC 1FORCR NEXUS', url: 'https://t.me/sc1forcrnexusbot' }
+    ]);
+  }
   // Jika user adalah reseller, tambahkan tombol khusus
   if (isReseller) {
     // Letakkan menu reseller tepat di bawah baris Tools + Hubungi Admin
@@ -4750,6 +4774,8 @@ async function sendAdminSaldoMenu(ctx) {
   const manualLabel = manualEnabled ? '✅ TopUp Manual: Aktif' : '🚫 TopUp Manual: Nonaktif';
   const autoEnabled = loadTopupAutoSetting();
   const autoLabel = autoEnabled ? '✅ TopUp Otomatis: Aktif' : '🚫 TopUp Otomatis: Nonaktif';
+  const scNexusEnabled = loadScNexusMenuSetting();
+  const scNexusLabel = scNexusEnabled ? '✅ Menu SC 1FORCR NEXUS: Aktif' : '🚫 Menu SC 1FORCR NEXUS: Nonaktif';
   const keyboard = [
     [
       { text: '💵 Tambah Saldo', callback_data: 'tambah_saldo' },
@@ -4762,6 +4788,7 @@ async function sendAdminSaldoMenu(ctx) {
     [{ text: '🎁 Bonus Topup', callback_data: 'bonus_topup_menu' }],
     [{ text: 'Pendapatan Hari Ini & Kemarin', callback_data: 'admin_income_summary' }],
     [{ text: 'Pendapatan Topup Bulanan', callback_data: 'admin_income_monthly_non_reseller' }],
+    [{ text: scNexusLabel, callback_data: 'toggle_sc_nexus_menu' }],
     [{ text: autoLabel, callback_data: 'toggle_topup_auto' }],
     [{ text: manualLabel, callback_data: 'toggle_topup_manual' }],
     [{ text: '🔙 Kembali', callback_data: 'admin_menu' }]
@@ -6110,6 +6137,22 @@ bot.action('toggle_topup_auto', async (ctx) => {
   const current = loadTopupAutoSetting();
   const next = saveTopupAutoSetting(!current);
   const statusText = next ? '✅ TopUp otomatis diaktifkan.' : '🚫 TopUp otomatis dinonaktifkan.';
+  await ctx.reply(statusText);
+  return sendAdminSaldoMenu(ctx);
+});
+
+bot.action('toggle_sc_nexus_menu', async (ctx) => {
+  await ctx.answerCbQuery();
+  const adminId = ctx.from.id;
+  if (!adminIds.includes(adminId)) {
+    return ctx.reply('🚫 Anda tidak memiliki izin untuk mengubah pengaturan ini.');
+  }
+
+  const current = loadScNexusMenuSetting();
+  const next = saveScNexusMenuSetting(!current);
+  const statusText = next
+    ? '✅ Menu SC 1FORCR NEXUS diaktifkan.'
+    : '🚫 Menu SC 1FORCR NEXUS dinonaktifkan.';
   await ctx.reply(statusText);
   return sendAdminSaldoMenu(ctx);
 });
