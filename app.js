@@ -912,11 +912,18 @@ function maskAfterFirstTwoChars(raw) {
   return value.slice(0, 2) + '*'.repeat(value.length - 2);
 }
 
+function maskKeepFirstFourChars(raw) {
+  const value = String(raw || '').trim();
+  if (!value) return '-';
+  if (value.length <= 4) return value;
+  return value.slice(0, 4) + '*'.repeat(value.length - 4);
+}
+
 function buildCreateNotifRemarks(type, username) {
   const t = String(type || '').toLowerCase();
   const u = String(username || '').trim();
   if (!u) return '-';
-  if (t === 'zivpn' || t === 'ssh' || t === 'udp_http') return maskAfterFirstTwoChars(u);
+  if (t === 'zivpn' || t === 'ssh' || t === 'udp_http') return maskKeepFirstFourChars(u);
   return u;
 }
 
