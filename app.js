@@ -926,14 +926,16 @@ async function sendGlobalCreateAccountNotification(payload) {
   if (!Number.isFinite(groupId) || groupId === 0) return;
 
   const text =
-    'AKUN BERHASIL DIBUAT !!\n' +
-    `ID TELE PEMBUAT : ${payload.creatorId || '-'}\n` +
-    `USERNAME TELE : ${payload.creatorUsername || '-'}\n` +
-    `ROLE : ${payload.role || '-'}\n` +
-    `REMAKS : ${payload.remarks || '-'}\n` +
-    `MASA AKTIF : (${payload.expDays || 0} Hari)\n` +
-    `EXPIRED : ${payload.expiredDate || '-'}\n` +
-    `PEMBAYARAN : ${payload.payment || '-'}`;
+    '🔥AKUN BERHASIL DIBUAT !!\n' +
+    ``+
+    `>ID TELE PEMBUAT : ${payload.creatorId || '-'}\n` +
+    `>USERNAME TELE : ${payload.creatorUsername || '-'}\n` +
+    `>JENIS AKUN : ${payload.accountType || '-'}\n` +
+    `>ROLE : ${payload.role || '-'}\n` +
+    `>REMAKS : ${payload.remarks || '-'}\n` +
+    `>MASA AKTIF : (${payload.expDays || 0} Hari)\n` +
+    `>EXPIRED : ${payload.expiredDate || '-'}\n` +
+    `>PEMBAYARAN : ${payload.payment || '-'}`;
 
   try {
     await bot.telegram.sendMessage(groupId, text);
@@ -11759,6 +11761,7 @@ if (action === 'create') {
     await sendGlobalCreateAccountNotification({
       creatorId: ctx.from.id,
       creatorUsername,
+      accountType: String(type || '-').toUpperCase(),
       role: roleLabel,
       remarks: buildCreateNotifRemarks(type, username),
       expDays: exp,
