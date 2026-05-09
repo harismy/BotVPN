@@ -927,7 +927,7 @@ async function sendGlobalCreateAccountNotification(payload) {
 
   const text =
     '*🔥AKUN BERHASIL DIBUAT !!*\n\n' +
-    '```text\n' +
+    '```Informasi\n' +
     `ID TELE PEMBUAT : ${payload.creatorId || '-'}\n` +
     `USERNAME TELE   : ${payload.creatorUsername || '-'}\n` +
     `JENIS AKUN      : ${payload.accountType || '-'}\n` +
