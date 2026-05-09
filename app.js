@@ -508,6 +508,7 @@ if (!Number.isFinite(BW_REPORT_INTERVAL_MINUTES) || BW_REPORT_INTERVAL_MINUTES <
 if (BW_REPORT_INTERVAL_MINUTES > 1440) BW_REPORT_INTERVAL_MINUTES = 1440;
 let NOTIF_BOT_TOKEN = vars.NOTIF_BOT_TOKEN || '';
 let NOTIF_CHAT_ID = vars.NOTIF_CHAT_ID || '';
+let GLOBAL_CREATE_NOTIF_GROUP_ID = vars.GLOBAL_CREATE_NOTIF_GROUP_ID || '';
 let BOT_ACCOUNT_EVENT_WEBHOOK_TOKEN = String(
   vars.BOT_ACCOUNT_EVENT_WEBHOOK_TOKEN ||
   vars.SC_EVENT_WEBHOOK_TOKEN ||
@@ -901,6 +902,43 @@ async function sendNonResellerCreateNotification(payload) {
     );
   } catch (err) {
     logger.error('❌ Gagal kirim notif create non-reseller:', err.message);
+  }
+}
+
+function maskAfterFirstTwoChars(raw) {
+  const value = String(raw || '').trim();
+  if (!value) return '-';
+  if (value.length <= 2) return value;
+  return value.slice(0, 2) + '*'.repeat(value.length - 2);
+}
+
+function buildCreateNotifRemarks(type, username) {
+  const t = String(type || '').toLowerCase();
+  const u = String(username || '').trim();
+  if (!u) return '-';
+  if (t === 'zivpn') return maskAfterFirstTwoChars(u);
+  if (t === 'ssh' || t === 'udp_http') return u;
+  return u;
+}
+
+async function sendGlobalCreateAccountNotification(payload) {
+  const groupId = Number(String(GLOBAL_CREATE_NOTIF_GROUP_ID || '').trim());
+  if (!Number.isFinite(groupId) || groupId === 0) return;
+
+  const text =
+    'AKUN BERHASIL DIBUAT !!\n' +
+    `ID TELE PEMBUAT : ${payload.creatorId || '-'}\n` +
+    `USERNAME TELE : ${payload.creatorUsername || '-'}\n` +
+    `ROLE : ${payload.role || '-'}\n` +
+    `REMAKS : ${payload.remarks || '-'}\n` +
+    `MASA AKTIF : (${payload.expDays || 0} Hari)\n` +
+    `EXPIRED : ${payload.expiredDate || '-'}\n` +
+    `PEMBAYARAN : ${payload.payment || '-'}`;
+
+  try {
+    await bot.telegram.sendMessage(groupId, text);
+  } catch (err) {
+    logger.error('Gagal kirim notif create akun ke grup global:', err.message);
   }
 }
 
@@ -5496,15 +5534,18 @@ bot.action('notif_settings_menu', async (ctx) => {
 
   const tokenStatus = NOTIF_BOT_TOKEN ? '✅ Tersimpan' : '❌ Belum diisi';
   const chatStatus = NOTIF_CHAT_ID ? '✅ Tersimpan' : '❌ Belum diisi';
+  const globalGroupStatus = GLOBAL_CREATE_NOTIF_GROUP_ID ? `✅ ${GLOBAL_CREATE_NOTIF_GROUP_ID}` : '❌ Belum diisi';
   const message =
     '*🔔 PENGATURAN NOTIF CREATE (BOT)*\n\n' +
     `Token Bot: ${tokenStatus}\n` +
-    `Chat ID: ${chatStatus}\n\n` +
-    'Gunakan tombol di bawah untuk mengatur Token dan Chat ID.';
+    `Chat ID: ${chatStatus}\n` +
+    `Group Global Create: ${globalGroupStatus}\n\n` +
+    'Gunakan tombol di bawah untuk mengatur Token, Chat ID, dan Group Global.';
 
   const keyboard = [
     [{ text: 'Set Token Bot', callback_data: 'notif_set_token' }],
     [{ text: 'Set Chat ID', callback_data: 'notif_set_chat' }],
+    [{ text: 'Set Group Global Create', callback_data: 'notif_set_global_group' }],
     [{ text: 'Kembali', callback_data: 'admin_menu' }]
   ];
 
@@ -5512,6 +5553,16 @@ bot.action('notif_settings_menu', async (ctx) => {
     parse_mode: 'Markdown',
     reply_markup: { inline_keyboard: keyboard }
   });
+});
+
+bot.action('notif_set_global_group', async (ctx) => {
+  await ctx.answerCbQuery();
+  const adminId = ctx.from.id;
+  if (!adminIds.includes(adminId)) {
+    return ctx.reply('🚫 Anda tidak memiliki izin untuk mengubah pengaturan ini.');
+  }
+  userState[ctx.chat.id] = { step: 'notif_global_create_group_id' };
+  await ctx.reply('Kirim *GROUP ID GLOBAL* untuk notif create akun.\nContoh: `-1001234567890`\nKetik "batal" untuk membatalkan.', { parse_mode: 'Markdown' });
 });
 
 bot.action('notif_set_token', async (ctx) => {
@@ -9819,6 +9870,24 @@ if (!state || !state.step) return;
     return sendAdminMenu(ctx);
   }
 
+  if (state.step === 'notif_global_create_group_id') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan group global create dibatalkan.');
+    }
+    if (!/^-?\d+$/.test(text)) {
+      return ctx.reply('Group ID tidak valid. Contoh: `-1001234567890`', { parse_mode: 'Markdown' });
+    }
+    GLOBAL_CREATE_NOTIF_GROUP_ID = text;
+    const nextVars = loadVars();
+    nextVars.GLOBAL_CREATE_NOTIF_GROUP_ID = GLOBAL_CREATE_NOTIF_GROUP_ID;
+    saveVars(nextVars);
+    delete userState[ctx.chat.id];
+    await ctx.reply(`✅ Group global notif create tersimpan: ${GLOBAL_CREATE_NOTIF_GROUP_ID}`);
+    return sendAdminMenu(ctx);
+  }
+
   if (state.step === 'sc_webhook_token') {
     const text = ctx.message.text.trim();
     if (text.toLowerCase() === 'batal') {
@@ -11684,8 +11753,20 @@ upsertAccountRecord({
 if (action === 'create') {
   try {
     const isReseller = await isUserReseller(ctx.from.id);
+    const expDate = new Date(Date.now() + exp * 24 * 60 * 60 * 1000);
+    const creatorUsername = ctx.from.username ? `@${ctx.from.username}` : '-';
+    const roleLabel = isReseller ? 'RESELLER' : 'USER';
+    await sendGlobalCreateAccountNotification({
+      creatorId: ctx.from.id,
+      creatorUsername,
+      role: roleLabel,
+      remarks: buildCreateNotifRemarks(type, username),
+      expDays: exp,
+      expiredDate: formatDateId(expDate),
+      payment: `VIA SALDO BOT - Rp ${Number(totalHarga || 0).toLocaleString('id-ID')}`
+    });
+
     if (!isReseller) {
-      const expDate = new Date(Date.now() + exp * 24 * 60 * 60 * 1000);
       const creatorLabel = ctx.from.username
         ? `@${ctx.from.username}`
         : (ctx.from.first_name || 'User');
