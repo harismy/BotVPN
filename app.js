@@ -930,6 +930,7 @@ async function sendGlobalCreateAccountNotification(payload) {
     '```Informasi\n' +
     `ID TELE PEMBUAT : ${payload.creatorId || '-'}\n` +
     `USERNAME TELE   : ${payload.creatorUsername || '-'}\n` +
+    `SERVER          : ${payload.serverName || '-'}\n` +
     `JENIS AKUN      : ${payload.accountType || '-'}\n` +
     `ROLE            : ${payload.role || '-'}\n` +
     `REMAKS          : ${payload.remarks || '-'}\n` +
@@ -11762,6 +11763,7 @@ if (action === 'create') {
     await sendGlobalCreateAccountNotification({
       creatorId: ctx.from.id,
       creatorUsername,
+      serverName: state.serverName || state.serverDomain || '-',
       accountType: String(type || '-').toUpperCase(),
       role: roleLabel,
       remarks: buildCreateNotifRemarks(type, username),
