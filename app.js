@@ -15215,7 +15215,13 @@ const adminMessage =
   // =================== END VALIDASI ===================
   
   // Fungsi untuk start bot dengan retry
+  let isLaunchingBot = false;
   const startBot = async (retryCount = 0) => {
+    if (isLaunchingBot) {
+      logger.warn('⚠️ startBot dipanggil saat proses launch masih berjalan, skip.');
+      return;
+    }
+    isLaunchingBot = true;
     try {
       logger.info('🔄 Memulai bot...');
       
@@ -15226,6 +15232,9 @@ const adminMessage =
         handlerTimeout: 60000,
       };
       
+      logger.info('⏳ Menonaktifkan webhook (jika ada)...');
+      await bot.telegram.deleteWebhook({ drop_pending_updates: true }).catch(() => {});
+
       logger.info('⏳ Menjalankan bot.launch...');
       // Start bot
       await bot.launch(botConfig);
@@ -15261,6 +15270,10 @@ const adminMessage =
         stack: error?.stack || null,
       };
       logger.error(`❌ Error saat memulai bot (Attempt ${retryCount + 1}): ${JSON.stringify(startupErr)}`);
+
+      try {
+        bot.stop('startup-retry');
+      } catch (_) {}
       
       // Jika belum mencapai maksimal retry, coba lagi
       if (retryCount < 3) {
@@ -15274,6 +15287,8 @@ const adminMessage =
         logger.error('❌ Gagal memulai bot setelah 3 kali percobaan. Bot dimatikan.');
         process.exit(1);
       }
+    } finally {
+      isLaunchingBot = false;
     }
   };
   
