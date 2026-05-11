@@ -15226,10 +15226,12 @@ const adminMessage =
         handlerTimeout: 60000,
       };
       
+      logger.info('⏳ Menjalankan bot.launch...');
       // Start bot
       await bot.launch(botConfig);
       logger.info('✅ Bot berhasil dimulai (Polling Mode)');
       
+      logger.info('⏳ Menjalankan setMyCommands...');
       // Set commands
       await bot.telegram.setMyCommands([
         { command: 'start', description: 'Mulai bot dan tampilkan menu utama' },
@@ -15250,7 +15252,15 @@ const adminMessage =
       process.once('SIGTERM', stopBot);
       
     } catch (error) {
-      logger.error(`❌ Error saat memulai bot (Attempt ${retryCount + 1}):`, error.message);
+      const startupErr = {
+        message: error?.message || String(error),
+        code: error?.code || null,
+        description: error?.description || null,
+        responseErrorCode: error?.response?.error_code || null,
+        responseDescription: error?.response?.description || null,
+        stack: error?.stack || null,
+      };
+      logger.error(`❌ Error saat memulai bot (Attempt ${retryCount + 1}): ${JSON.stringify(startupErr)}`);
       
       // Jika belum mencapai maksimal retry, coba lagi
       if (retryCount < 3) {
