@@ -1588,15 +1588,57 @@ function normalizeSyncEndpoint(rawEndpoint) {
   return value.startsWith('/') ? value : `/${value}`;
 }
 
+function buildTunnelSyncCandidateUrls(host, port, endpoint) {
+  const safeHost = String(host || '').trim();
+  const safeEndpoint = normalizeSyncEndpoint(endpoint);
+  const safePort = Number(port);
+  const hasPort = Number.isFinite(safePort) && safePort > 0;
+
+  const urls = [];
+  if (hasPort) {
+    urls.push(`http://${safeHost}:${safePort}${safeEndpoint}`);
+    urls.push(`https://${safeHost}:${safePort}${safeEndpoint}`);
+  }
+  urls.push(`http://${safeHost}${safeEndpoint}`);
+  urls.push(`https://${safeHost}${safeEndpoint}`);
+  return [...new Set(urls)];
+}
+
+async function requestTunnelSync(server, endpoint, requestConfig = {}, method = 'get', body = null) {
+  const req = buildTunnelSyncRequest(server, endpoint);
+  const candidateUrls = buildTunnelSyncCandidateUrls(req.host, req.port, req.endpoint);
+  const headers = {
+    'x-sync-token': req.token,
+    ...(requestConfig.headers || {})
+  };
+
+  let lastError = null;
+  for (const url of candidateUrls) {
+    try {
+      if (method === 'post') {
+        return await axios.post(url, body, { ...requestConfig, headers });
+      }
+      return await axios.get(url, { ...requestConfig, headers });
+    } catch (error) {
+      lastError = error;
+      if (error?.response) break;
+    }
+  }
+
+  throw lastError || new Error('request gagal');
+}
+
 async function fetchTunnelAccountSummary(server) {
   const req = buildTunnelSyncRequest(server);
 
   let response;
   try {
-    response = await axios.get(req.url, {
-      timeout: 15000,
-      headers: { 'x-sync-token': req.token }
-    });
+    response = await requestTunnelSync(
+      server,
+      req.endpoint,
+      { timeout: 15000 },
+      'get'
+    );
   } catch (error) {
     if (error.response?.data?.message) {
       throw new Error(`API summary gagal: ${error.response.data.message}`);
@@ -1772,11 +1814,12 @@ async function fetchTunnelAccountExpiryByUsername(server, username) {
       ? req.summaryEndpoint.replace(/account-summary$/, 'account-expiry')
       : '/internal/account-expiry';
 
-    const response = await axios.get(`http://${req.host}:${req.port}${expiryEndpoint}`, {
-      timeout: 15000,
-      headers: { 'x-sync-token': req.token },
-      params: { username }
-    });
+    const response = await requestTunnelSync(
+      server,
+      expiryEndpoint,
+      { timeout: 15000, params: { username } },
+      'get'
+    );
 
     const data = response?.data || {};
     if (!data.ok || !data.found) {
@@ -1811,11 +1854,12 @@ async function fetchTunnelExpirySummaryByDate(server, dateYmd) {
 
   let response;
   try {
-    response = await axios.get(`http://${req.host}:${req.port}${expirySummaryEndpoint}`, {
-      timeout: 15000,
-      headers: { 'x-sync-token': req.token },
-      params: { date: dateYmd }
-    });
+    response = await requestTunnelSync(
+      server,
+      expirySummaryEndpoint,
+      { timeout: 15000, params: { date: dateYmd } },
+      'get'
+    );
   } catch (error) {
     if (error.response?.data?.message) {
       throw new Error(`API expiry-summary gagal: ${error.response.data.message}`);
@@ -1850,10 +1894,12 @@ async function fetchTunnelVnstatDailySummary(server) {
 
   let response;
   try {
-    response = await axios.get(`http://${req.host}:${req.port}${vnstatEndpoint}`, {
-      timeout: 20000,
-      headers: { 'x-sync-token': req.token }
-    });
+    response = await requestTunnelSync(
+      server,
+      vnstatEndpoint,
+      { timeout: 20000 },
+      'get'
+    );
   } catch (error) {
     if (error.response?.data?.message) {
       throw new Error(`API vnstat-daily gagal: ${error.response.data.message}`);
@@ -1900,11 +1946,12 @@ async function fetchTunnelExportAccounts(server, accountType, limit) {
 
   let response;
   try {
-    response = await axios.get(`http://${req.host}:${req.port}${exportEndpoint}`, {
-      timeout: 30000,
-      headers: { 'x-sync-token': req.token },
-      params: { type: accountType, limit }
-    });
+    response = await requestTunnelSync(
+      server,
+      exportEndpoint,
+      { timeout: 30000, params: { type: accountType, limit } },
+      'get'
+    );
   } catch (error) {
     if (error.response?.data?.message) {
       throw new Error(`API export-accounts gagal: ${error.response.data.message}`);
@@ -1932,13 +1979,12 @@ async function importTunnelAccounts(server, accountType, accounts) {
 
   let response;
   try {
-    response = await axios.post(
-      `http://${req.host}:${req.port}${importEndpoint}`,
-      { type: accountType, accounts },
-      {
-        timeout: 60000,
-        headers: { 'x-sync-token': req.token }
-      }
+    response = await requestTunnelSync(
+      server,
+      importEndpoint,
+      { timeout: 60000 },
+      'post',
+      { type: accountType, accounts }
     );
   } catch (error) {
     if (error.response?.data?.message) {
@@ -1968,13 +2014,12 @@ async function deleteTunnelAccounts(server, accountType, usernames) {
 
   let response;
   try {
-    response = await axios.post(
-      `http://${req.host}:${req.port}${deleteEndpoint}`,
-      { type: accountType, usernames },
-      {
-        timeout: 45000,
-        headers: { 'x-sync-token': req.token }
-      }
+    response = await requestTunnelSync(
+      server,
+      deleteEndpoint,
+      { timeout: 45000 },
+      'post',
+      { type: accountType, usernames }
     );
   } catch (error) {
     if (error.response?.data?.message) {
@@ -2002,13 +2047,12 @@ async function deleteAllTunnelAccounts(server, accountType) {
 
   let response;
   try {
-    response = await axios.post(
-      `http://${req.host}:${req.port}${endpoint}`,
-      { type: accountType },
-      {
-        timeout: 60000,
-        headers: { 'x-sync-token': req.token }
-      }
+    response = await requestTunnelSync(
+      server,
+      endpoint,
+      { timeout: 60000 },
+      'post',
+      { type: accountType }
     );
   } catch (error) {
     if (error.response?.data?.message) {
