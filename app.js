@@ -5908,6 +5908,7 @@ async function sendPaymentGatewayGoPayMenu(ctx) {
     [{ text: 'Set GoPay API Base URL', callback_data: 'payment_gateway_set_gopay_base_url' }],
     [{ text: 'Set GoPay API Key', callback_data: 'payment_gateway_set_gopay_api_key' }],
     [{ text: 'Set Expired QRIS (menit)', callback_data: 'payment_gateway_set_gopay_expire' }],
+    [{ text: 'Set Masa Aktif QRIS Semua Gateway', callback_data: 'payment_gateway_set_all_qris_expire' }],
     [{ text: 'Set Minimal TopUp', callback_data: 'payment_gateway_set_gopay_min_topup' }],
     [{ text: '🔙 Kembali', callback_data: 'payment_gateway_settings_menu' }]
   ];
@@ -6069,6 +6070,13 @@ bot.action('payment_gateway_set_gopay_expire', async (ctx) => {
   if (!adminIds.includes(ctx.from.id)) return ctx.reply('Anda tidak memiliki izin.');
   userState[ctx.chat.id] = { step: 'payment_gateway_gopay_expire_input' };
   await ctx.reply('Kirim masa expired QRIS GoPay dalam menit. Contoh: 15. Ketik "batal" untuk membatalkan.');
+});
+
+bot.action('payment_gateway_set_all_qris_expire', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) return ctx.reply('Anda tidak memiliki izin.');
+  userState[ctx.chat.id] = { step: 'payment_gateway_all_qris_expire_input' };
+  await ctx.reply('Kirim masa aktif QRIS untuk semua gateway (OrderKuota + GoPay) dalam menit. Contoh: 15. Ketik "batal" untuk membatalkan.');
 });
 
 bot.action('payment_gateway_set_gopay_min_topup', async (ctx) => {
@@ -10357,6 +10365,26 @@ if (!state || !state.step) return;
     return sendAdminToolsMenu(ctx);
   }
 
+  if (state.step === 'payment_gateway_all_qris_expire_input') {
+    const text = ctx.message.text.trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Pengaturan payment gateway dibatalkan.');
+    }
+    const minutes = Number(text);
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 180) {
+      return ctx.reply('Masa aktif QRIS harus angka 1 sampai 180 menit.');
+    }
+    const nextVars = loadVars();
+    nextVars.ORDERKUOTA_QR_EXPIRE_MINUTES = minutes;
+    nextVars.GOPAY_QR_EXPIRE_MINUTES = minutes;
+    saveVars(nextVars);
+    reloadRuntimePaymentConfig();
+    delete userState[ctx.chat.id];
+    await ctx.reply(`✅ Masa aktif QRIS semua gateway disimpan: ${minutes} menit.`);
+    return sendAdminToolsMenu(ctx);
+  }
+
   if (state.step === 'payment_gateway_gopay_min_topup_input') {
     const text = ctx.message.text.trim();
     if (text.toLowerCase() === 'batal') {
@@ -13378,12 +13406,23 @@ async function handleDepositState(ctx, userId, data) {
       ? 'KONFIRMASI TOPUP JADI RESELLER'
       : 'KONFIRMASI TOPUP';
 
+    const modeNow = String(PAYMENT_GATEWAY_MODE || 'orderkuota').toLowerCase();
+    let feeInfoLine = 'Biaya Admin: Rp 100 - Rp 200 (random)';
+    let totalInfoLine = `Perkiraan Total: Rp ${(amountNum + 100).toLocaleString('id-ID')} - Rp ${(amountNum + 200).toLocaleString('id-ID')}`;
+    if (modeNow === 'gopay') {
+      feeInfoLine = 'Biaya Admin: Rp 0 (GoPay tanpa fee)';
+      totalInfoLine = `Perkiraan Total: Rp ${amountNum.toLocaleString('id-ID')}`;
+    } else if (modeNow === 'both') {
+      feeInfoLine = 'Biaya Admin: OrderKuota random, GoPay tanpa fee';
+      totalInfoLine = `Perkiraan Total: Rp ${amountNum.toLocaleString('id-ID')} - Rp ${(amountNum + 200).toLocaleString('id-ID')}`;
+    }
+
     const confirmMessage =
 `*${confirmTitle}*
 
 Nominal Topup: Rp ${amountNum.toLocaleString('id-ID')}
-${bonusInfo}Biaya Admin: Rp 100 - Rp 200 (random)
-Perkiraan Total: Rp ${(amountNum + 100).toLocaleString('id-ID')} - Rp ${(amountNum + 200).toLocaleString('id-ID')}
+${bonusInfo}${feeInfoLine}
+${totalInfoLine}
 
 Penting:
 - Total final ada di QRIS
@@ -13734,19 +13773,19 @@ async function createGoPayQr({ amount }) {
   };
 }
 
-async function createPaymentQrByMode({ amount, qrisData, referenceId }) {
+async function createPaymentQrByMode({ amountOrderKuota, amountGoPay, qrisData, referenceId }) {
   const mode = String(PAYMENT_GATEWAY_MODE || 'orderkuota').toLowerCase();
   const readiness = getPaymentGatewayReadiness();
   if (mode === 'gopay') {
     if (!readiness.gopay.ready) {
       throw new Error('GoPay belum siap: ' + readiness.gopay.missing.join(', '));
     }
-    return createGoPayQr({ amount });
+    return createGoPayQr({ amount: amountGoPay });
   }
   if (mode === 'both') {
     if (readiness.orderkuota.ready) {
       try {
-        return await createOrderKuotaQr({ amount, qrisData, referenceId });
+        return await createOrderKuotaQr({ amount: amountOrderKuota, qrisData, referenceId });
       } catch (errOrderKuota) {
         logger.warn('OrderKuota gagal saat mode both, fallback ke GoPay: ' + errOrderKuota.message);
       }
@@ -13755,14 +13794,14 @@ async function createPaymentQrByMode({ amount, qrisData, referenceId }) {
     }
 
     if (readiness.gopay.ready) {
-      return createGoPayQr({ amount });
+      return createGoPayQr({ amount: amountGoPay });
     }
     throw new Error('Tidak ada payment gateway fallback yang siap. ' + formatMissingGatewayConfig(readiness));
   }
   if (!readiness.orderkuota.ready) {
     throw new Error('OrderKuota belum siap: ' + readiness.orderkuota.missing.join(', '));
   }
-  return createOrderKuotaQr({ amount, qrisData, referenceId });
+  return createOrderKuotaQr({ amount: amountOrderKuota, qrisData, referenceId });
 }
 
 // Ganti fungsi processDeposit dengan versi yang lebih sederhana
@@ -13811,10 +13850,9 @@ async function processDeposit(ctx, amount, options = {}) {
   }
   
   try {
-    // GENERATE NOMINAL UNIK
+    // Fee random hanya untuk OrderKuota, GoPay tanpa fee.
     const feeResult = await generateUniqueFee(amountNum, userId);
-    const finalAmount = feeResult.finalAmount;
-    const adminFee = feeResult.adminFee;
+    const orderKuotaAmount = feeResult.finalAmount;
     
     // GENERATE REFERENCE
     const timestamp = Date.now();
@@ -13825,12 +13863,15 @@ async function processDeposit(ctx, amount, options = {}) {
     // BUAT QRIS sesuai gateway aktif
     const urlQr = DATA_QRIS;
     const paymentResult = await createPaymentQrByMode({
-      amount: finalAmount,
+      amountOrderKuota: orderKuotaAmount,
+      amountGoPay: amountNum,
       qrisData: urlQr,
       referenceId
     });
+    const gatewayProvider = String(paymentResult.provider || 'orderkuota').toLowerCase();
+    const finalAmount = gatewayProvider === 'gopay' ? amountNum : orderKuotaAmount;
+    const adminFee = gatewayProvider === 'gopay' ? 0 : Math.max(0, finalAmount - amountNum);
     const qrImageUrl = paymentResult.qrImageUrl;
-    const gatewayProvider = String(paymentResult.provider || 'orderkuota');
     const providerTxId = String(paymentResult.providerTxId || '');
     const qrExpireMs = getPaymentQrExpireMs(gatewayProvider);
     const qrExpireMinutes = getPaymentQrExpireMinutes(gatewayProvider);
