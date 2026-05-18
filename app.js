@@ -1255,6 +1255,12 @@ db.run(`CREATE TABLE IF NOT EXISTS Server (
   harga_2ip INTEGER DEFAULT 0,
   harga_reseller_1ip INTEGER DEFAULT 0,
   harga_reseller_2ip INTEGER DEFAULT 0,
+  harga_1ip_30hari INTEGER DEFAULT 0,
+  harga_2ip_30hari INTEGER DEFAULT 0,
+  harga_reseller_1ip_30hari INTEGER DEFAULT 0,
+  harga_reseller_2ip_30hari INTEGER DEFAULT 0,
+  harga_mode_harian_enabled INTEGER DEFAULT 1,
+  harga_mode_30hari_enabled INTEGER DEFAULT 0,
   nama_server TEXT,
   quota INTEGER,
   iplimit INTEGER,
@@ -1339,6 +1345,24 @@ db.all("PRAGMA table_info(Server)", (err, rows) => {
     if (!cols.includes('harga_reseller_2ip')) {
       db.run("ALTER TABLE Server ADD COLUMN harga_reseller_2ip INTEGER DEFAULT 0");
     }
+    if (!cols.includes('harga_1ip_30hari')) {
+      db.run("ALTER TABLE Server ADD COLUMN harga_1ip_30hari INTEGER DEFAULT 0");
+    }
+    if (!cols.includes('harga_2ip_30hari')) {
+      db.run("ALTER TABLE Server ADD COLUMN harga_2ip_30hari INTEGER DEFAULT 0");
+    }
+    if (!cols.includes('harga_reseller_1ip_30hari')) {
+      db.run("ALTER TABLE Server ADD COLUMN harga_reseller_1ip_30hari INTEGER DEFAULT 0");
+    }
+    if (!cols.includes('harga_reseller_2ip_30hari')) {
+      db.run("ALTER TABLE Server ADD COLUMN harga_reseller_2ip_30hari INTEGER DEFAULT 0");
+    }
+    if (!cols.includes('harga_mode_harian_enabled')) {
+      db.run("ALTER TABLE Server ADD COLUMN harga_mode_harian_enabled INTEGER DEFAULT 1");
+    }
+    if (!cols.includes('harga_mode_30hari_enabled')) {
+      db.run("ALTER TABLE Server ADD COLUMN harga_mode_30hari_enabled INTEGER DEFAULT 0");
+    }
     if (!cols.includes('sync_host')) {
       db.run("ALTER TABLE Server ADD COLUMN sync_host TEXT");
     }
@@ -1380,10 +1404,16 @@ db.all("PRAGMA table_info(Server)", (err, rows) => {
     db.run("UPDATE Server SET support_zivpn = 0 WHERE support_zivpn IS NULL");
     db.run("UPDATE Server SET support_udp_http = 0 WHERE support_udp_http IS NULL");
     db.run("UPDATE Server SET support_zivpn = 1 WHERE service = 'zivpn' AND support_zivpn = 0");
-    db.run("UPDATE Server SET harga_1ip = COALESCE(harga_1ip, harga)");
-    db.run("UPDATE Server SET harga_2ip = COALESCE(harga_2ip, harga)");
-    db.run("UPDATE Server SET harga_reseller_1ip = COALESCE(harga_reseller_1ip, harga_reseller)");
-    db.run("UPDATE Server SET harga_reseller_2ip = COALESCE(harga_reseller_2ip, harga_reseller)");
+    db.run("UPDATE Server SET harga_1ip = COALESCE(NULLIF(harga_1ip, 0), harga, 0)");
+    db.run("UPDATE Server SET harga_2ip = COALESCE(NULLIF(harga_2ip, 0), harga, 0)");
+    db.run("UPDATE Server SET harga_reseller_1ip = COALESCE(NULLIF(harga_reseller_1ip, 0), harga_reseller, harga_1ip, harga, 0)");
+    db.run("UPDATE Server SET harga_reseller_2ip = COALESCE(NULLIF(harga_reseller_2ip, 0), harga_reseller, harga_2ip, harga, 0)");
+    db.run("UPDATE Server SET harga_1ip_30hari = COALESCE(NULLIF(harga_1ip_30hari, 0), COALESCE(harga_1ip, harga, 0) * 30)");
+    db.run("UPDATE Server SET harga_2ip_30hari = COALESCE(NULLIF(harga_2ip_30hari, 0), COALESCE(harga_2ip, harga, 0) * 30)");
+    db.run("UPDATE Server SET harga_reseller_1ip_30hari = COALESCE(NULLIF(harga_reseller_1ip_30hari, 0), COALESCE(harga_reseller_1ip, harga_reseller, harga_1ip, harga, 0) * 30)");
+    db.run("UPDATE Server SET harga_reseller_2ip_30hari = COALESCE(NULLIF(harga_reseller_2ip_30hari, 0), COALESCE(harga_reseller_2ip, harga_reseller, harga_2ip, harga, 0) * 30)");
+    db.run("UPDATE Server SET harga_mode_harian_enabled = 1 WHERE harga_mode_harian_enabled IS NULL");
+    db.run("UPDATE Server SET harga_mode_30hari_enabled = 0 WHERE harga_mode_30hari_enabled IS NULL");
     db.run("UPDATE Server SET sync_port = 8789 WHERE sync_port IS NULL OR sync_port = 0");
     db.run("UPDATE Server SET sync_endpoint = '/internal/account-summary' WHERE sync_endpoint IS NULL OR TRIM(sync_endpoint) = ''");
     db.run("UPDATE Server SET sync_enabled = 1 WHERE sync_enabled IS NULL");
@@ -3699,6 +3729,8 @@ async function sendHelpAdmin(ctx) {
 26. /restartserver [target] - Restart app PM2 dari Telegram.
 27. /hapuslog - Menghapus log bot.
 
+Menu Admin > Server > Atur Harga Masa Aktif: aktif/nonaktif harga harian dan 30 hari, plus edit harga 30 hari.
+
 Gunakan perintah dengan format yang benar untuk menghindari kesalahan.
 `;
   ctx.reply(helpMessage);
@@ -4784,6 +4816,9 @@ async function sendAdminServerMenu(ctx) {
     [
       { text: 'Edit Harga Reseller 1IP', callback_data: 'editserver_harga_reseller_1ip' },
       { text: 'Edit Harga Reseller 2IP', callback_data: 'editserver_harga_reseller_2ip' }
+    ],
+    [
+      { text: '⏱️ Atur Harga Masa Aktif', callback_data: 'editserver_price_duration' }
     ],
     [
       { text: '🌐 Edit Domain', callback_data: 'editserver_domain' },
@@ -6996,6 +7031,58 @@ function getEffectiveServerPackagePrice(serverRow, isReseller, ipPackage) {
   return pkg === '2ip'
     ? Number(serverRow?.harga_2ip || serverRow?.harga || 0)
     : Number(serverRow?.harga_1ip || serverRow?.harga || 0);
+}
+
+function isServerDailyPriceEnabled(serverRow) {
+  return Number(serverRow?.harga_mode_harian_enabled ?? 1) !== 0;
+}
+
+function isServerMonthlyPriceEnabled(serverRow) {
+  return Number(serverRow?.harga_mode_30hari_enabled ?? 0) === 1;
+}
+
+function getEffectiveServerMonthlyPackagePrice(serverRow, isReseller, ipPackage) {
+  const pkg = ipPackage === 2 ? '2ip' : '1ip';
+  const dailyFallback = getEffectiveServerPackagePrice(serverRow, isReseller, ipPackage) * 30;
+  let rawPrice;
+
+  if (isReseller) {
+    rawPrice = pkg === '2ip'
+      ? Number(serverRow?.harga_reseller_2ip_30hari || 0)
+      : Number(serverRow?.harga_reseller_1ip_30hari || 0);
+  } else {
+    rawPrice = pkg === '2ip'
+      ? Number(serverRow?.harga_2ip_30hari || 0)
+      : Number(serverRow?.harga_1ip_30hari || 0);
+  }
+
+  return Number.isFinite(rawPrice) && rawPrice > 0 ? rawPrice : dailyFallback;
+}
+
+function normalizeCreatePriceMode(rawMode) {
+  return String(rawMode || '').toLowerCase() === '30hari' ? '30hari' : 'daily';
+}
+
+function formatCreatePriceMode(mode) {
+  return normalizeCreatePriceMode(mode) === '30hari' ? '30 Hari' : 'Harian';
+}
+
+function getCreateBillingPrice(serverRow, isReseller, ipPackage, mode, expDays) {
+  const normalizedMode = normalizeCreatePriceMode(mode);
+  const days = Math.max(1, Number(expDays || 0));
+  if (normalizedMode === '30hari') {
+    return getEffectiveServerMonthlyPackagePrice(serverRow, isReseller, ipPackage);
+  }
+  return getEffectiveServerPackagePrice(serverRow, isReseller, ipPackage) * days;
+}
+
+function getStoredAccountPricePerDay(totalPrice, expDays, fallbackDailyPrice) {
+  const total = Number(totalPrice || 0);
+  const days = Number(expDays || 0);
+  if (Number.isFinite(total) && total > 0 && Number.isFinite(days) && days > 0) {
+    return Math.max(0, Math.floor(total / days));
+  }
+  return Math.max(0, Number(fallbackDailyPrice || 0));
 }
 
 function getEffectiveServerPrice(serverRow, isReseller) {
@@ -9372,8 +9459,22 @@ db.all(query, params, async (err, servers) => {
 const serverBlocks = currentServers.map(server => {
   const hargaPerHari1 = getEffectiveServerPackagePrice(server, isR, 1);
   const hargaPerHari2 = getEffectiveServerPackagePrice(server, isR, 2);
-  const hargaPer30Hari1 = hargaPerHari1 * 30;
-  const hargaPer30Hari2 = hargaPerHari2 * 30;
+  const hargaPer30Hari1 = getEffectiveServerMonthlyPackagePrice(server, isR, 1);
+  const hargaPer30Hari2 = getEffectiveServerMonthlyPackagePrice(server, isR, 2);
+  const dailyEnabled = isServerDailyPriceEnabled(server);
+  const monthlyEnabled = isServerMonthlyPriceEnabled(server);
+  const priceLines = [];
+  if (dailyEnabled) {
+    priceLines.push(`💳 *Harga/Hari 1IP:* Rp${hargaPerHari1.toLocaleString('id-ID')}`);
+    priceLines.push(`💳 *Harga/Hari 2IP:* Rp${hargaPerHari2.toLocaleString('id-ID')}`);
+  }
+  if (monthlyEnabled) {
+    priceLines.push(`📆 *Harga/30 Hari 1IP:* Rp${hargaPer30Hari1.toLocaleString('id-ID')}`);
+    priceLines.push(`📆 *Harga/30 Hari 2IP:* Rp${hargaPer30Hari2.toLocaleString('id-ID')}`);
+  }
+  if (!priceLines.length) {
+    priceLines.push('💳 *Harga:* Nonaktif');
+  }
   const capacity = calculateServerEffectiveCapacity({
     usedAccounts: server.total_create_akun,
     manualLimit: server.batas_create_akun,
@@ -9392,11 +9493,7 @@ const serverBlocks = currentServers.map(server => {
 *${server.nama_server.toUpperCase()}*
 ╚══════════════════╝
 ╔══════════════════╗
-💳 *Harga/Hari 1IP:* Rp${hargaPerHari1.toLocaleString('id-ID')}
-💳 *Harga/Hari 2IP:* Rp${hargaPerHari2.toLocaleString('id-ID')}
-
-📆 *Harga/Bulan 1IP:* Rp${hargaPer30Hari1.toLocaleString('id-ID')}
-📆 *Harga/Bulan 2IP:* Rp${hargaPer30Hari2.toLocaleString('id-ID')}
+${priceLines.join('\n')}
 ╚══════════════════╝
 🛜 *Domain:* \`${server.domain}\`
 📡 *Quota:* ${server.quota} GB
@@ -9455,7 +9552,9 @@ bot.action(/(create|renew)_username_(vmess|vless|trojan|shadowsocks|ssh|zivpn|ud
   const action = ctx.match[1];
   const type = ctx.match[2];
   const serverId = ctx.match[3];
-  userState[ctx.chat.id] = { step: `username_${action}_${type}`, serverId, type, action };
+  userState[ctx.chat.id] = action === 'create'
+    ? { step: 'select_create_package', serverId, type, action }
+    : { step: `username_${action}_${type}`, serverId, type, action };
 
   db.get('SELECT * FROM Server WHERE id = ?', [serverId], async (err, server) => {
     if (err) {
@@ -9471,6 +9570,7 @@ bot.action(/(create|renew)_username_(vmess|vless|trojan|shadowsocks|ssh|zivpn|ud
     const totalCreateAkun = Number(server.total_create_akun || 0);
     const hasManualLimit = Number.isFinite(batasCreateAkun) && batasCreateAkun > 0;
     if (action === 'create' && hasManualLimit && totalCreateAkun >= batasCreateAkun) {
+      delete userState[ctx.chat.id];
       return ctx.reply('❌ *Server penuh. Tidak dapat membuat akun baru di server ini.*', { parse_mode: 'Markdown' });
     }
 
@@ -9478,19 +9578,46 @@ bot.action(/(create|renew)_username_(vmess|vless|trojan|shadowsocks|ssh|zivpn|ud
       const isReseller = await isUserReseller(ctx.from.id).catch(() => false);
       const harga1 = getEffectiveServerPackagePrice(server, isReseller, 1);
       const harga2 = getEffectiveServerPackagePrice(server, isReseller, 2);
+      const harga30_1 = getEffectiveServerMonthlyPackagePrice(server, isReseller, 1);
+      const harga30_2 = getEffectiveServerMonthlyPackagePrice(server, isReseller, 2);
+      const dailyEnabled = isServerDailyPriceEnabled(server);
+      const monthlyEnabled = isServerMonthlyPriceEnabled(server);
+
+      if (!dailyEnabled && !monthlyEnabled) {
+        return ctx.reply('❌ *Harga pembuatan akun di server ini sedang nonaktif.*', { parse_mode: 'Markdown' });
+      }
+
+      const packageLabel = (pkg, dailyPrice, monthlyPrice) => {
+        const parts = [];
+        if (dailyEnabled) parts.push(`Harian Rp ${dailyPrice.toLocaleString('id-ID')}`);
+        if (monthlyEnabled) parts.push(`30H Rp ${monthlyPrice.toLocaleString('id-ID')}`);
+        return `Paket ${pkg}IP - ${parts.join(' | ')}`;
+      };
+
+      const packageLines = [];
+      packageLines.push(
+        `- Paket 1IP: ${dailyEnabled ? `Harian Rp ${harga1.toLocaleString('id-ID')}` : ''}` +
+        `${dailyEnabled && monthlyEnabled ? ' | ' : ''}` +
+        `${monthlyEnabled ? `30 Hari Rp ${harga30_1.toLocaleString('id-ID')}` : ''}`
+      );
+      packageLines.push(
+        `- Paket 2IP: ${dailyEnabled ? `Harian Rp ${harga2.toLocaleString('id-ID')}` : ''}` +
+        `${dailyEnabled && monthlyEnabled ? ' | ' : ''}` +
+        `${monthlyEnabled ? `30 Hari Rp ${harga30_2.toLocaleString('id-ID')}` : ''}`
+      );
 
       const keyboard = [
-        [{ text: `Paket 1IP per hari - Rp ${harga1.toLocaleString('id-ID')}`, callback_data: `create_pkg_${type}_${serverId}_1` }],
-        [{ text: `Paket 2IP per hari - Rp ${harga2.toLocaleString('id-ID')}`, callback_data: `create_pkg_${type}_${serverId}_2` }],
+        [{ text: packageLabel(1, harga1, harga30_1), callback_data: `create_pkg_${type}_${serverId}_1` }],
+        [{ text: packageLabel(2, harga2, harga30_2), callback_data: `create_pkg_${type}_${serverId}_2` }],
         [{ text: '⬅️ Kembali', callback_data: 'sendMainMenu' }]
       ];
 
       await ctx.reply(
         `Pilih paket IP untuk server:\n`+
         `*${server.nama_server || server.domain}*:\n\n` +
-        `- Paket 1IP: Rp ${harga1.toLocaleString('id-ID')}\n`+
+        `${packageLines[0]}\n`+
         `Maksimal dipake 1 orang atau 1 device(hp), lebih dari itu akun akan *otomatis expired dan disconnect*!!\n\n` +
-        `- Paket 2IP: Rp ${harga2.toLocaleString('id-ID')}\n`+
+        `${packageLines[1]}\n`+
         `Maksimal dipake 2 orang atau 2 device(hp), lebih dari itu akun akan *otomatis expired dan disconnect*!!\n\n`,
         { parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } }
       );
@@ -9506,12 +9633,77 @@ bot.action(/create_pkg_(vmess|vless|trojan|shadowsocks|ssh|zivpn|udp_http)_(\d+)
   const serverId = ctx.match[2];
   const ipPkg = parseInt(ctx.match[3], 10) === 2 ? 2 : 1;
 
+  const server = await dbGetAsync('SELECT * FROM Server WHERE id = ?', [serverId]).catch(() => null);
+  if (!server) {
+    return ctx.reply('❌ *Server tidak ditemukan.*', { parse_mode: 'Markdown' });
+  }
+
+  const isReseller = await isUserReseller(ctx.from.id).catch(() => false);
+  const dailyEnabled = isServerDailyPriceEnabled(server);
+  const monthlyEnabled = isServerMonthlyPriceEnabled(server);
+
+  if (!dailyEnabled && !monthlyEnabled) {
+    return ctx.reply('❌ *Harga pembuatan akun di server ini sedang nonaktif.*', { parse_mode: 'Markdown' });
+  }
+
+  if (dailyEnabled && monthlyEnabled) {
+    const dailyPrice = getEffectiveServerPackagePrice(server, isReseller, ipPkg);
+    const monthlyPrice = getEffectiveServerMonthlyPackagePrice(server, isReseller, ipPkg);
+    await ctx.reply(
+      `Pilih masa aktif untuk paket ${ipPkg}IP:\n` +
+      `- Harian: Rp ${dailyPrice.toLocaleString('id-ID')} / hari\n` +
+      `- 30 Hari: Rp ${monthlyPrice.toLocaleString('id-ID')} / 30 hari`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: `Harian - Rp ${dailyPrice.toLocaleString('id-ID')}/hari`, callback_data: `create_price_mode_${type}_${serverId}_${ipPkg}_daily` }],
+            [{ text: `30 Hari - Rp ${monthlyPrice.toLocaleString('id-ID')}`, callback_data: `create_price_mode_${type}_${serverId}_${ipPkg}_30hari` }],
+            [{ text: '⬅️ Kembali', callback_data: `create_${type}` }]
+          ]
+        }
+      }
+    );
+    return;
+  }
+
+  const priceMode = monthlyEnabled ? '30hari' : 'daily';
   userState[ctx.chat.id] = {
     step: `username_create_${type}`,
     serverId,
     type,
     action: 'create',
-    selectedIpPackage: ipPkg
+    selectedIpPackage: ipPkg,
+    priceMode
+  };
+
+  await ctx.reply('👤 *Masukkan username:*', { parse_mode: 'Markdown' });
+});
+
+bot.action(/create_price_mode_(vmess|vless|trojan|shadowsocks|ssh|zivpn|udp_http)_(\d+)_(1|2)_(daily|30hari)/, async (ctx) => {
+  const type = ctx.match[1];
+  const serverId = ctx.match[2];
+  const ipPkg = parseInt(ctx.match[3], 10) === 2 ? 2 : 1;
+  const priceMode = normalizeCreatePriceMode(ctx.match[4]);
+
+  const server = await dbGetAsync('SELECT * FROM Server WHERE id = ?', [serverId]).catch(() => null);
+  if (!server) {
+    return ctx.reply('❌ *Server tidak ditemukan.*', { parse_mode: 'Markdown' });
+  }
+  if (priceMode === 'daily' && !isServerDailyPriceEnabled(server)) {
+    return ctx.reply('❌ *Harga harian sedang nonaktif untuk server ini.*', { parse_mode: 'Markdown' });
+  }
+  if (priceMode === '30hari' && !isServerMonthlyPriceEnabled(server)) {
+    return ctx.reply('❌ *Harga 30 hari sedang nonaktif untuk server ini.*', { parse_mode: 'Markdown' });
+  }
+
+  userState[ctx.chat.id] = {
+    step: `username_create_${type}`,
+    serverId,
+    type,
+    action: 'create',
+    selectedIpPackage: ipPkg,
+    priceMode
   };
 
   await ctx.reply('👤 *Masukkan username:*', { parse_mode: 'Markdown' });
@@ -11603,7 +11795,10 @@ if (action === 'trial') {
         await ctx.reply('🔑 *Masukkan password:*', { parse_mode: 'Markdown' });
       } else {
         state.step = `exp_${state.action}_${state.type}`;
-        await ctx.reply('⏳ *Masukkan masa aktif (hari):*', { parse_mode: 'Markdown' });
+        const expPrompt = normalizeCreatePriceMode(state.priceMode) === '30hari'
+          ? '📆 *Paket 30 hari dipilih. Ketik 30 untuk melanjutkan:*'
+          : '⏳ *Masukkan masa aktif (hari):*';
+        await ctx.reply(expPrompt, { parse_mode: 'Markdown' });
       }
     } else if (action === 'renew') {
       state.step = `exp_${state.action}_${state.type}`;
@@ -11621,7 +11816,10 @@ if (action === 'trial') {
       return ctx.reply('❌ *Password tidak boleh mengandung karakter khusus atau spasi| Masukan Ulang Password: *', { parse_mode: 'Markdown' });
     }
     state.step = `exp_${state.action}_${state.type}`;
-    await ctx.reply('⏳ *Masukkan masa aktif (hari):*', { parse_mode: 'Markdown' });
+    const expPrompt = state.action === 'create' && normalizeCreatePriceMode(state.priceMode) === '30hari'
+      ? '📆 *Paket 30 hari dipilih. Ketik 30 untuk melanjutkan:*'
+      : '⏳ *Masukkan masa aktif (hari):*';
+    await ctx.reply(expPrompt, { parse_mode: 'Markdown' });
   } else if (state.step.startsWith('exp_')) {
     const expInput = ctx.message.text.trim();
     if (!/^\d+$/.test(expInput)) {
@@ -11640,6 +11838,9 @@ if (isNaN(exp) || exp <= 0) {
 
 if (exp > 365) {
   return ctx.reply('❌ *Masa aktif tidak boleh lebih dari 365 hari.*', { parse_mode: 'Markdown' });
+}
+if (state.action === 'create' && normalizeCreatePriceMode(state.priceMode) === '30hari' && exp !== 30) {
+  return ctx.reply('❌ *Paket 30 hari hanya bisa memakai masa aktif 30 hari.* Ketik 30 untuk melanjutkan.', { parse_mode: 'Markdown' });
 }
     state.exp = exp;
 
@@ -11699,8 +11900,22 @@ if (exp > 365) {
           }
           return Number(state.selectedIpPackage || 1) === 2 ? 2 : 1;
         })();
-        const harga = getEffectiveServerPackagePrice(server, isResellerUser, selectedPackage);
-        const totalHarga = harga * state.exp; 
+        const createPriceMode = state.action === 'create' ? normalizeCreatePriceMode(state.priceMode) : 'daily';
+        if (state.action === 'create' && createPriceMode === 'daily' && !isServerDailyPriceEnabled(server)) {
+          return ctx.reply('❌ *Harga harian sedang nonaktif untuk server ini.*', { parse_mode: 'Markdown' });
+        }
+        if (state.action === 'create' && createPriceMode === '30hari' && !isServerMonthlyPriceEnabled(server)) {
+          return ctx.reply('❌ *Harga 30 hari sedang nonaktif untuk server ini.*', { parse_mode: 'Markdown' });
+        }
+        if (state.action === 'create' && createPriceMode === '30hari' && Number(state.exp || 0) !== 30) {
+          return ctx.reply('❌ *Paket 30 hari hanya bisa memakai masa aktif 30 hari.*', { parse_mode: 'Markdown' });
+        }
+
+        const hargaPerHari = getEffectiveServerPackagePrice(server, isResellerUser, selectedPackage);
+        const totalHarga = state.action === 'create'
+          ? getCreateBillingPrice(server, isResellerUser, selectedPackage, createPriceMode, state.exp)
+          : hargaPerHari * state.exp;
+        const harga = getStoredAccountPricePerDay(totalHarga, state.exp, hargaPerHari);
         db.get('SELECT saldo FROM users WHERE user_id = ?', [ctx.from.id], async (err, user) => {
           if (err) {
             logger.error('⚠️ Kesalahan saat mengambil saldo pengguna:', err.message);
@@ -11890,7 +12105,7 @@ if (action === 'create') {
       remarks: buildCreateNotifRemarks(type, username),
       expDays: exp,
       expiredDate: formatDateId(expDate),
-      payment: `VIA SALDO BOT - Rp ${Number(totalHarga || 0).toLocaleString('id-ID')}`
+      payment: `VIA SALDO BOT - Rp ${Number(totalHarga || 0).toLocaleString('id-ID')} (${formatCreatePriceMode(createPriceMode)})`
     });
 
     if (!isReseller) {
@@ -12619,6 +12834,154 @@ bot.action(/prev_users_(\d+)/, async (ctx) => {
     await ctx.reply(`❌ *${error}*`, { parse_mode: 'Markdown' });
   }
 });
+
+async function sendPriceDurationServerMenu(ctx, serverId) {
+  const server = await dbGetAsync('SELECT * FROM Server WHERE id = ?', [serverId]).catch(() => null);
+  if (!server) {
+    return ctx.reply('Server tidak ditemukan.');
+  }
+
+  const dailyEnabled = isServerDailyPriceEnabled(server);
+  const monthlyEnabled = isServerMonthlyPriceEnabled(server);
+  const userDaily1 = getEffectiveServerPackagePrice(server, false, 1);
+  const userDaily2 = getEffectiveServerPackagePrice(server, false, 2);
+  const resDaily1 = getEffectiveServerPackagePrice(server, true, 1);
+  const resDaily2 = getEffectiveServerPackagePrice(server, true, 2);
+  const userMonth1 = getEffectiveServerMonthlyPackagePrice(server, false, 1);
+  const userMonth2 = getEffectiveServerMonthlyPackagePrice(server, false, 2);
+  const resMonth1 = getEffectiveServerMonthlyPackagePrice(server, true, 1);
+  const resMonth2 = getEffectiveServerMonthlyPackagePrice(server, true, 2);
+
+  const text =
+    '<b>Atur Harga Masa Aktif</b>\n\n' +
+    `Server: <b>${escapeHtmlLocal(server.nama_server || server.domain || `ID ${serverId}`)}</b>\n` +
+    `Harian: <b>${dailyEnabled ? 'AKTIF' : 'NONAKTIF'}</b>\n` +
+    `30 Hari: <b>${monthlyEnabled ? 'AKTIF' : 'NONAKTIF'}</b>\n\n` +
+    '<b>Harga Harian</b>\n' +
+    `- User 1IP: ${formatRupiah(userDaily1)}\n` +
+    `- User 2IP: ${formatRupiah(userDaily2)}\n` +
+    `- Reseller 1IP: ${formatRupiah(resDaily1)}\n` +
+    `- Reseller 2IP: ${formatRupiah(resDaily2)}\n\n` +
+    '<b>Harga 30 Hari</b>\n' +
+    `- User 1IP: ${formatRupiah(userMonth1)}\n` +
+    `- User 2IP: ${formatRupiah(userMonth2)}\n` +
+    `- Reseller 1IP: ${formatRupiah(resMonth1)}\n` +
+    `- Reseller 2IP: ${formatRupiah(resMonth2)}`;
+
+  const keyboard = [
+    [
+      { text: dailyEnabled ? 'Nonaktifkan Harian' : 'Aktifkan Harian', callback_data: `price_duration_toggle_daily_${serverId}` },
+      { text: monthlyEnabled ? 'Nonaktifkan 30 Hari' : 'Aktifkan 30 Hari', callback_data: `price_duration_toggle_monthly_${serverId}` }
+    ],
+    [
+      { text: 'Edit Harian User 1IP', callback_data: `edit_harga1_${serverId}` },
+      { text: 'Edit Harian User 2IP', callback_data: `edit_harga2_${serverId}` }
+    ],
+    [
+      { text: 'Edit Harian Reseller 1IP', callback_data: `edit_harga_res1_${serverId}` },
+      { text: 'Edit Harian Reseller 2IP', callback_data: `edit_harga_res2_${serverId}` }
+    ],
+    [
+      { text: 'Edit 30H User 1IP', callback_data: `edit_harga30_user1_${serverId}` },
+      { text: 'Edit 30H User 2IP', callback_data: `edit_harga30_user2_${serverId}` }
+    ],
+    [
+      { text: 'Edit 30H Reseller 1IP', callback_data: `edit_harga30_res1_${serverId}` },
+      { text: 'Edit 30H Reseller 2IP', callback_data: `edit_harga30_res2_${serverId}` }
+    ],
+    [{ text: 'Pilih Server Lain', callback_data: 'editserver_price_duration' }],
+    [{ text: 'Kembali', callback_data: 'admin_menu_server' }]
+  ];
+
+  return ctx.reply(text, {
+    parse_mode: 'HTML',
+    reply_markup: { inline_keyboard: keyboard }
+  });
+}
+
+bot.action('editserver_price_duration', async (ctx) => {
+  try {
+    await ctx.answerCbQuery().catch(() => {});
+    const adminId = Number(ctx.from?.id || 0);
+    if (!adminIds.includes(adminId)) {
+      return ctx.reply('Anda tidak memiliki izin untuk membuka menu ini.');
+    }
+
+    const servers = await dbAllAsync(
+      'SELECT id, nama_server, domain FROM Server ORDER BY nama_server COLLATE NOCASE ASC',
+      []
+    ).catch(() => []);
+
+    if (!servers.length) {
+      return ctx.reply('Tidak ada server.');
+    }
+
+    const buttons = servers.map((server) => [{
+      text: server.nama_server || server.domain || `ID ${server.id}`,
+      callback_data: `price_duration_server_${server.id}`
+    }]);
+    buttons.push([{ text: 'Kembali', callback_data: 'admin_menu_server' }]);
+
+    await ctx.reply('Pilih server untuk atur harga masa aktif:', {
+      reply_markup: { inline_keyboard: buttons }
+    });
+  } catch (err) {
+    logger.error('Gagal membuka menu harga masa aktif:', err.message);
+    await ctx.reply('Terjadi kesalahan saat membuka menu harga masa aktif.');
+  }
+});
+
+bot.action(/price_duration_server_(\d+)/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const adminId = Number(ctx.from?.id || 0);
+  if (!adminIds.includes(adminId)) {
+    return ctx.reply('Anda tidak memiliki izin untuk membuka menu ini.');
+  }
+  return sendPriceDurationServerMenu(ctx, Number(ctx.match[1]));
+});
+
+bot.action(/price_duration_toggle_(daily|monthly)_(\d+)/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const adminId = Number(ctx.from?.id || 0);
+  if (!adminIds.includes(adminId)) {
+    return ctx.reply('Anda tidak memiliki izin untuk mengubah setting ini.');
+  }
+
+  const mode = ctx.match[1];
+  const serverId = Number(ctx.match[2]);
+  const server = await dbGetAsync('SELECT * FROM Server WHERE id = ?', [serverId]).catch(() => null);
+  if (!server) {
+    return ctx.reply('Server tidak ditemukan.');
+  }
+
+  const dailyEnabled = isServerDailyPriceEnabled(server);
+  const monthlyEnabled = isServerMonthlyPriceEnabled(server);
+  const nextDaily = mode === 'daily' ? !dailyEnabled : dailyEnabled;
+  const nextMonthly = mode === 'monthly' ? !monthlyEnabled : monthlyEnabled;
+
+  if (!nextDaily && !nextMonthly) {
+    return ctx.reply('Minimal salah satu mode harga harus aktif.');
+  }
+
+  await dbRunAsync(
+    `UPDATE Server
+     SET harga_mode_harian_enabled = ?,
+         harga_mode_30hari_enabled = ?,
+         harga_1ip_30hari = COALESCE(NULLIF(harga_1ip_30hari, 0), COALESCE(harga_1ip, harga, 0) * 30),
+         harga_2ip_30hari = COALESCE(NULLIF(harga_2ip_30hari, 0), COALESCE(harga_2ip, harga, 0) * 30),
+         harga_reseller_1ip_30hari = COALESCE(NULLIF(harga_reseller_1ip_30hari, 0), COALESCE(harga_reseller_1ip, harga_reseller, harga_1ip, harga, 0) * 30),
+         harga_reseller_2ip_30hari = COALESCE(NULLIF(harga_reseller_2ip_30hari, 0), COALESCE(harga_reseller_2ip, harga_reseller, harga_2ip, harga, 0) * 30)
+     WHERE id = ?`,
+    [nextDaily ? 1 : 0, nextMonthly ? 1 : 0, serverId]
+  ).catch((err) => {
+    logger.error('Gagal toggle harga masa aktif:', err.message);
+    throw err;
+  });
+
+  await ctx.reply('Setting harga masa aktif berhasil diupdate.');
+  return sendPriceDurationServerMenu(ctx, serverId);
+});
+
 bot.action('editserver_limit_ip', async (ctx) => {
   try {
     logger.info('Edit server limit IP process started');
@@ -13095,6 +13458,42 @@ bot.action(/edit_harga_res2_(\d+)/, async (ctx) => {
   });
 });
 
+bot.action(/edit_harga30_user1_(\d+)/, async (ctx) => {
+  const serverId = ctx.match[1];
+  userState[ctx.chat.id] = { step: 'edit_harga_30hari_user_1ip', serverId };
+  await ctx.reply('Masukkan harga 30 hari User 1IP:', {
+    reply_markup: { inline_keyboard: keyboard_nomor_simple() },
+    parse_mode: 'Markdown'
+  });
+});
+
+bot.action(/edit_harga30_user2_(\d+)/, async (ctx) => {
+  const serverId = ctx.match[1];
+  userState[ctx.chat.id] = { step: 'edit_harga_30hari_user_2ip', serverId };
+  await ctx.reply('Masukkan harga 30 hari User 2IP:', {
+    reply_markup: { inline_keyboard: keyboard_nomor_simple() },
+    parse_mode: 'Markdown'
+  });
+});
+
+bot.action(/edit_harga30_res1_(\d+)/, async (ctx) => {
+  const serverId = ctx.match[1];
+  userState[ctx.chat.id] = { step: 'edit_harga_30hari_reseller_1ip', serverId };
+  await ctx.reply('Masukkan harga 30 hari Reseller 1IP:', {
+    reply_markup: { inline_keyboard: keyboard_nomor_simple() },
+    parse_mode: 'Markdown'
+  });
+});
+
+bot.action(/edit_harga30_res2_(\d+)/, async (ctx) => {
+  const serverId = ctx.match[1];
+  userState[ctx.chat.id] = { step: 'edit_harga_30hari_reseller_2ip', serverId };
+  await ctx.reply('Masukkan harga 30 hari Reseller 2IP:', {
+    reply_markup: { inline_keyboard: keyboard_nomor_simple() },
+    parse_mode: 'Markdown'
+  });
+});
+
 bot.action(/add_saldo_(\d+)/, async (ctx) => {
   const userId = ctx.match[1];
   logger.info(`User ${ctx.from.id} memilih untuk menambahkan saldo user dengan ID: ${userId}`);
@@ -13278,7 +13677,12 @@ bot.action(/server_detail_(\d+)/, async (ctx) => {
       `📶 *Limit IP:* \`${server.iplimit}\`\n` +
       `🔢 *Batas Create Akun:* \`${server.batas_create_akun}\`\n` +
       `📋 *Total Create Akun:* \`${server.total_create_akun}\`\n` +
-      `💵 *Harga:* \`Rp ${server.harga}\`\n\n`;
+      `💵 *Harga Harian User 1IP:* \`${formatRupiah(getEffectiveServerPackagePrice(server, false, 1))}\`\n` +
+      `💵 *Harga Harian User 2IP:* \`${formatRupiah(getEffectiveServerPackagePrice(server, false, 2))}\`\n` +
+      `📆 *Harga 30 Hari User 1IP:* \`${formatRupiah(getEffectiveServerMonthlyPackagePrice(server, false, 1))}\`\n` +
+      `📆 *Harga 30 Hari User 2IP:* \`${formatRupiah(getEffectiveServerMonthlyPackagePrice(server, false, 2))}\`\n` +
+      `⏱️ *Mode Harian:* \`${isServerDailyPriceEnabled(server) ? 'Aktif' : 'Nonaktif'}\`\n` +
+      `📆 *Mode 30 Hari:* \`${isServerMonthlyPriceEnabled(server) ? 'Aktif' : 'Nonaktif'}\`\n\n`;
 
     await ctx.reply(serverDetails, { parse_mode: 'Markdown' });
   } catch (error) {
@@ -13357,6 +13761,18 @@ bot.on('callback_query', async (ctx) => {
         break;
       case 'edit_harga_reseller_2ip':
         await handleEditHargaReseller2Ip(ctx, userStateData, data);
+        break;
+      case 'edit_harga_30hari_user_1ip':
+        await handleEditHarga30HariUser1Ip(ctx, userStateData, data);
+        break;
+      case 'edit_harga_30hari_user_2ip':
+        await handleEditHarga30HariUser2Ip(ctx, userStateData, data);
+        break;
+      case 'edit_harga_30hari_reseller_1ip':
+        await handleEditHarga30HariReseller1Ip(ctx, userStateData, data);
+        break;
+      case 'edit_harga_30hari_reseller_2ip':
+        await handleEditHarga30HariReseller2Ip(ctx, userStateData, data);
         break;
       case 'edit_nama':
         await handleEditNama(ctx, userStateData, data);
@@ -13579,6 +13995,22 @@ async function handleEditHargaReseller1Ip(ctx, userStateData, data) {
 
 async function handleEditHargaReseller2Ip(ctx, userStateData, data) {
   return handleEditHargaGeneric(ctx, userStateData, data, 'Harga Reseller 2IP', 'harga_reseller_2ip');
+}
+
+async function handleEditHarga30HariUser1Ip(ctx, userStateData, data) {
+  return handleEditHargaGeneric(ctx, userStateData, data, 'Harga 30 Hari User 1IP', 'harga_1ip_30hari');
+}
+
+async function handleEditHarga30HariUser2Ip(ctx, userStateData, data) {
+  return handleEditHargaGeneric(ctx, userStateData, data, 'Harga 30 Hari User 2IP', 'harga_2ip_30hari');
+}
+
+async function handleEditHarga30HariReseller1Ip(ctx, userStateData, data) {
+  return handleEditHargaGeneric(ctx, userStateData, data, 'Harga 30 Hari Reseller 1IP', 'harga_reseller_1ip_30hari');
+}
+
+async function handleEditHarga30HariReseller2Ip(ctx, userStateData, data) {
+  return handleEditHargaGeneric(ctx, userStateData, data, 'Harga 30 Hari Reseller 2IP', 'harga_reseller_2ip_30hari');
 }
 
 async function handleEditNama(ctx, userStateData, data) {
