@@ -5834,12 +5834,14 @@ async function sendPaymentGatewayMainMenu(ctx) {
   const message =
     '*SETTING PAYMENT GATEWAY*\n\n' +
     `Mode Gateway Aktif: \`${formatGatewayModeLabel()}\`\n\n` +
+    `Masa Aktif QRIS: \`OrderKuota ${ORDERKUOTA_QR_EXPIRE_MINUTES} menit | GoPay ${GOPAY_QR_EXPIRE_MINUTES} menit\`\n\n` +
     'Pilih mode gateway atau masuk ke submenu provider.';
 
   const keyboard = [
     [{ text: 'Mode: OrderKuota saja', callback_data: 'payment_gateway_mode_orderkuota' }],
     [{ text: 'Mode: GoPay saja', callback_data: 'payment_gateway_mode_gopay' }],
     [{ text: 'Mode: Keduanya (fallback)', callback_data: 'payment_gateway_mode_both' }],
+    [{ text: '⏱️ Set Masa Aktif QRIS', callback_data: 'payment_gateway_set_all_qris_expire' }],
     [{ text: '⚙️ Setting OrderKuota', callback_data: 'payment_gateway_menu_orderkuota' }],
     [{ text: '⚙️ Setting GoPay', callback_data: 'payment_gateway_menu_gopay' }],
     [{ text: 'Kembali', callback_data: 'admin_menu_tools' }]
@@ -6734,17 +6736,15 @@ bot.action('topup_saldo', async (ctx) => {
         `• 80rb+: ${bonusCfg.range_70_100}%\n\n`
       )
       : '';
+    const feeDisplay = getTopupFeeDisplay(PAYMENT_GATEWAY_MODE);
 
     await ctx.editMessageText(
       '💰 *TOP UP SALDO OTOMATIS*\n\n' +
       `💳 *Minimal:* Rp ${minTopupForMode.toLocaleString('id-ID')}\n\n` +
       bonusInfo +
-      '🎲 *SISTEM KEAMANAN BARU:*\n' +
-      '• Biaya admin **RANDOM 100-200**\n' +
-      '• Setiap transaksi punya **nominal unik**\n' +
-      '• Mencegah duplikasi pembayaran\n\n' +
+      feeDisplay.menuNotice +
       '⚠️ *PERHATIAN:*\n' +
-      'Transfer harus **TEPAT** sesuai nominal unik yang diberikan!\n\n' +
+      feeDisplay.transferNotice +
       'Silakan masukkan jumlah top-up:',
       {
         reply_markup: { inline_keyboard: keyboard },
@@ -13406,23 +13406,14 @@ async function handleDepositState(ctx, userId, data) {
       ? 'KONFIRMASI TOPUP JADI RESELLER'
       : 'KONFIRMASI TOPUP';
 
-    const modeNow = String(PAYMENT_GATEWAY_MODE || 'orderkuota').toLowerCase();
-    let feeInfoLine = 'Biaya Admin: Rp 100 - Rp 200 (random)';
-    let totalInfoLine = `Perkiraan Total: Rp ${(amountNum + 100).toLocaleString('id-ID')} - Rp ${(amountNum + 200).toLocaleString('id-ID')}`;
-    if (modeNow === 'gopay') {
-      feeInfoLine = 'Biaya Admin: Rp 0 (GoPay tanpa fee)';
-      totalInfoLine = `Perkiraan Total: Rp ${amountNum.toLocaleString('id-ID')}`;
-    } else if (modeNow === 'both') {
-      feeInfoLine = 'Biaya Admin: OrderKuota random, GoPay tanpa fee';
-      totalInfoLine = `Perkiraan Total: Rp ${amountNum.toLocaleString('id-ID')} - Rp ${(amountNum + 200).toLocaleString('id-ID')}`;
-    }
+    const feeDisplay = getTopupFeeDisplay(PAYMENT_GATEWAY_MODE, amountNum);
 
     const confirmMessage =
 `*${confirmTitle}*
 
 Nominal Topup: Rp ${amountNum.toLocaleString('id-ID')}
-${bonusInfo}${feeInfoLine}
-${totalInfoLine}
+${bonusInfo}${feeDisplay.confirmFeeLine}
+${feeDisplay.confirmTotalLine}
 
 Penting:
 - Total final ada di QRIS
@@ -13674,6 +13665,48 @@ function getPaymentQrExpireMinutes(provider) {
   return Math.round(getPaymentQrExpireMs(provider) / 60000);
 }
 
+function getTopupFeeDisplay(mode, amount) {
+  const normalizedMode = String(mode || PAYMENT_GATEWAY_MODE || 'orderkuota').toLowerCase();
+  const amountNum = Math.max(0, Number(amount || 0));
+  const formatAmount = (value) => Number(value || 0).toLocaleString('id-ID');
+
+  if (normalizedMode === 'gopay') {
+    return {
+      menuNotice:
+        '💳 *BIAYA ADMIN:*\n' +
+        '• GoPay tanpa biaya admin\n' +
+        '• Total bayar sama dengan nominal top-up\n\n',
+      confirmFeeLine: 'Biaya Admin GoPay: Rp 0',
+      confirmTotalLine: `Perkiraan Total: Rp ${formatAmount(amountNum)}`,
+      transferNotice: 'Transfer sesuai nominal QRIS yang diberikan.\n\n'
+    };
+  }
+
+  if (normalizedMode === 'both') {
+    return {
+      menuNotice:
+        '🎲 *BIAYA ADMIN:*\n' +
+        '• OrderKuota: random Rp 100-200\n' +
+        '• GoPay: tanpa fee\n' +
+        '• Total final mengikuti gateway yang membuat QRIS\n\n',
+      confirmFeeLine: 'Biaya Admin: OrderKuota random Rp 100-200, GoPay Rp 0',
+      confirmTotalLine: `Perkiraan Total: Rp ${formatAmount(amountNum)} - Rp ${formatAmount(amountNum + 200)}`,
+      transferNotice: 'Transfer harus *TEPAT* sesuai nominal QRIS yang diberikan!\n\n'
+    };
+  }
+
+  return {
+    menuNotice:
+      '🎲 *SISTEM KEAMANAN ORDERKUOTA:*\n' +
+      '• Biaya admin OrderKuota *RANDOM 100-200*\n' +
+      '• Setiap transaksi punya *nominal unik*\n' +
+      '• Mencegah duplikasi pembayaran\n\n',
+    confirmFeeLine: 'Biaya Admin OrderKuota: Rp 100 - Rp 200 (random)',
+    confirmTotalLine: `Perkiraan Total: Rp ${formatAmount(amountNum + 100)} - Rp ${formatAmount(amountNum + 200)}`,
+    transferNotice: 'Transfer harus *TEPAT* sesuai nominal unik yang diberikan!\n\n'
+  };
+}
+
 db.all('SELECT * FROM pending_deposits WHERE status = "pending"', [], (err, rows) => {
   if (err) {
     logger.error('Gagal load pending_deposits:', err.message);
@@ -13850,8 +13883,11 @@ async function processDeposit(ctx, amount, options = {}) {
   }
   
   try {
-    // Fee random hanya untuk OrderKuota, GoPay tanpa fee.
-    const feeResult = await generateUniqueFee(amountNum, userId);
+    // Fee random hanya disiapkan untuk OrderKuota. Mode GoPay memakai nominal asli.
+    const normalizedGatewayMode = String(PAYMENT_GATEWAY_MODE || 'orderkuota').toLowerCase();
+    const feeResult = normalizedGatewayMode === 'gopay'
+      ? { finalAmount: amountNum, adminFee: 0 }
+      : await generateUniqueFee(amountNum, userId);
     const orderKuotaAmount = feeResult.finalAmount;
     
     // GENERATE REFERENCE
@@ -13876,6 +13912,9 @@ async function processDeposit(ctx, amount, options = {}) {
     const qrExpireMs = getPaymentQrExpireMs(gatewayProvider);
     const qrExpireMinutes = getPaymentQrExpireMinutes(gatewayProvider);
     const qrExpiresAt = Date.now() + qrExpireMs;
+    const adminFeeCaptionLine = gatewayProvider === 'gopay'
+      ? '💳 Biaya admin GoPay: Rp 0'
+      : `🎲 Biaya admin OrderKuota: Rp ${adminFee.toLocaleString('id-ID')}`;
 
     // DOWNLOAD QR
     const qrResponse = await axios.get(qrImageUrl, { responseType: 'arraybuffer', timeout: 15000 });
@@ -13891,7 +13930,7 @@ async function processDeposit(ctx, amount, options = {}) {
 
 💵 *Total Bayar:* *Rp ${finalAmount.toLocaleString('id-ID')}*
 💰 Topup: Rp ${amountNum.toLocaleString('id-ID')}
-🎲 Biaya admin: Rp ${adminFee.toLocaleString('id-ID')}
+${adminFeeCaptionLine}
 
 🧾 *Langkah Singkat*
 1. Scan QRIS
