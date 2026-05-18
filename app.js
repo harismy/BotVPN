@@ -3729,7 +3729,7 @@ async function sendHelpAdmin(ctx) {
 26. /restartserver [target] - Restart app PM2 dari Telegram.
 27. /hapuslog - Menghapus log bot.
 
-Menu Admin > Server > Atur Harga Masa Aktif: aktif/nonaktif harga harian dan 30 hari, plus edit harga 30 hari.
+Menu Admin > Server > Atur Harga Masa Aktif: aktif/nonaktif harga harian dan 30 hari, edit per server, dan edit global semua server.
 
 Gunakan perintah dengan format yang benar untuk menghindari kesalahan.
 `;
@@ -9787,6 +9787,11 @@ bot.on('text', async (ctx) => {
   const state = userState[ctx.chat.id];
 if (!state || !state.step) return;
 
+  if (state.step === 'global_price_duration_input') {
+    const text = String(ctx.message.text || '').trim();
+    return handleGlobalPriceDurationInput(ctx, state, text);
+  }
+
   if (state.step === 'maintenance_estimate_input') {
     const text = String(ctx.message.text || '').trim();
     if (text.toLowerCase() === 'batal') {
@@ -12899,6 +12904,93 @@ async function sendPriceDurationServerMenu(ctx, serverId) {
   });
 }
 
+function buildGlobalPriceDurationPrompt(mode) {
+  const label = mode === '30hari' ? '30 Hari' : 'Harian';
+  return (
+    `Edit Global Harga ${label}\n\n` +
+    'Harga akan diterapkan ke semua server yang ada.\n\n' +
+    'Kirim 4 angka dengan format:\n' +
+    '<user_1ip> <user_2ip> <reseller_1ip> <reseller_2ip>\n\n' +
+    'Contoh:\n' +
+    '500 700 400 600\n\n' +
+    'Ketik batal untuk membatalkan.'
+  );
+}
+
+function parseGlobalPriceDurationInput(text) {
+  const parts = String(text || '').trim().split(/\s+/).filter(Boolean);
+  if (parts.length !== 4 || !parts.every((part) => /^\d+$/.test(part))) {
+    return null;
+  }
+
+  const values = parts.map((part) => Number(part));
+  if (values.some((value) => !Number.isFinite(value) || value <= 0)) {
+    return null;
+  }
+
+  return {
+    user1: values[0],
+    user2: values[1],
+    reseller1: values[2],
+    reseller2: values[3]
+  };
+}
+
+async function handleGlobalPriceDurationInput(ctx, state, text) {
+  const mode = normalizeCreatePriceMode(state.priceMode);
+  if (String(text || '').trim().toLowerCase() === 'batal') {
+    delete userState[ctx.chat.id];
+    return ctx.reply('Edit global harga masa aktif dibatalkan.');
+  }
+
+  const prices = parseGlobalPriceDurationInput(text);
+  if (!prices) {
+    return ctx.reply(
+      'Format salah. Kirim 4 angka tanpa titik/koma.\n' +
+      'Contoh: 500 700 400 600'
+    );
+  }
+
+  const updateSql = mode === '30hari'
+    ? `UPDATE Server
+       SET harga_1ip_30hari = ?,
+           harga_2ip_30hari = ?,
+           harga_reseller_1ip_30hari = ?,
+           harga_reseller_2ip_30hari = ?,
+           harga_mode_30hari_enabled = 1`
+    : `UPDATE Server
+       SET harga = ?,
+           harga_reseller = ?,
+           harga_1ip = ?,
+           harga_2ip = ?,
+           harga_reseller_1ip = ?,
+           harga_reseller_2ip = ?,
+           harga_mode_harian_enabled = 1`;
+
+  const params = mode === '30hari'
+    ? [prices.user1, prices.user2, prices.reseller1, prices.reseller2]
+    : [prices.user1, prices.reseller1, prices.user1, prices.user2, prices.reseller1, prices.reseller2];
+
+  try {
+    const result = await dbRunAsync(updateSql, params);
+    delete userState[ctx.chat.id];
+    const label = mode === '30hari' ? '30 Hari' : 'Harian';
+    await ctx.reply(
+      `✅ Harga global ${label} berhasil diupdate untuk ${Number(result?.changes || 0)} server.\n\n` +
+      `- User 1IP: ${formatRupiah(prices.user1)}\n` +
+      `- User 2IP: ${formatRupiah(prices.user2)}\n` +
+      `- Reseller 1IP: ${formatRupiah(prices.reseller1)}\n` +
+      `- Reseller 2IP: ${formatRupiah(prices.reseller2)}`
+    );
+    return ctx.reply('Buka menu harga masa aktif untuk cek atau edit per server.', {
+      reply_markup: { inline_keyboard: [[{ text: 'Atur Harga Masa Aktif', callback_data: 'editserver_price_duration' }]] }
+    });
+  } catch (err) {
+    logger.error('Gagal update global harga masa aktif:', err.message);
+    return ctx.reply('Gagal mengupdate harga global masa aktif.');
+  }
+}
+
 bot.action('editserver_price_duration', async (ctx) => {
   try {
     await ctx.answerCbQuery().catch(() => {});
@@ -12916,13 +13008,18 @@ bot.action('editserver_price_duration', async (ctx) => {
       return ctx.reply('Tidak ada server.');
     }
 
-    const buttons = servers.map((server) => [{
+    const buttons = [
+      [{ text: 'Edit Global Harian Semua Server', callback_data: 'price_duration_global_daily' }],
+      [{ text: 'Edit Global 30 Hari Semua Server', callback_data: 'price_duration_global_30hari' }]
+    ];
+
+    buttons.push(...servers.map((server) => [{
       text: server.nama_server || server.domain || `ID ${server.id}`,
       callback_data: `price_duration_server_${server.id}`
-    }]);
+    }]));
     buttons.push([{ text: 'Kembali', callback_data: 'admin_menu_server' }]);
 
-    await ctx.reply('Pilih server untuk atur harga masa aktif:', {
+    await ctx.reply('Pilih edit global atau pilih server untuk atur harga masa aktif:', {
       reply_markup: { inline_keyboard: buttons }
     });
   } catch (err) {
@@ -12938,6 +13035,21 @@ bot.action(/price_duration_server_(\d+)/, async (ctx) => {
     return ctx.reply('Anda tidak memiliki izin untuk membuka menu ini.');
   }
   return sendPriceDurationServerMenu(ctx, Number(ctx.match[1]));
+});
+
+bot.action(/price_duration_global_(daily|30hari)/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const adminId = Number(ctx.from?.id || 0);
+  if (!adminIds.includes(adminId)) {
+    return ctx.reply('Anda tidak memiliki izin untuk mengubah harga global.');
+  }
+
+  const mode = normalizeCreatePriceMode(ctx.match[1]);
+  userState[ctx.chat.id] = {
+    step: 'global_price_duration_input',
+    priceMode: mode
+  };
+  return ctx.reply(buildGlobalPriceDurationPrompt(mode));
 });
 
 bot.action(/price_duration_toggle_(daily|monthly)_(\d+)/, async (ctx) => {
