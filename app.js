@@ -1796,7 +1796,8 @@ async function fetchOwnedAccountsByTelegramFromServer(server, telegramUserId) {
         'x-telegram-user-id': userId
       },
       params: {
-        telegram_user_id: userId
+        telegram_user_id: userId,
+        include_inactive: '1'
       }
     });
 
@@ -7864,6 +7865,7 @@ async function findRenewCandidatesByUsername(ctx, rawUsername) {
     candidates.push({
       username: String(item.username || '').trim(),
       type: normalizedType,
+      password: String(item.password || '').trim(),
       serverId: Number(item.serverId),
       serverName: String(item.serverName || '-').trim() || '-',
       domain: String(item.domain || '-').trim() || '-',
@@ -7883,6 +7885,7 @@ async function findRenewCandidatesByUsername(ctx, rawUsername) {
     pushCandidate({
       username: row.username,
       type: row.type,
+      password: row.password,
       serverId: Number(row.server_id || 0),
       serverName: row.resolved_server_name || row.server_name || row.domain || '-',
       domain: row.resolved_domain || row.domain || '-',
@@ -7917,6 +7920,7 @@ async function findRenewCandidatesByUsername(ctx, rawUsername) {
       pushCandidate({
         username: row.username,
         type: row.type,
+        password: row.password,
         serverId: Number(server.id || row.server_id || 0),
         serverName: server.nama_server || server.domain || row.server_name || '-',
         domain: server.domain || row.domain || '-',
@@ -8135,6 +8139,7 @@ bot.action(/renew_lookup_extend_(\d+)/, async (ctx) => {
     action: 'renew',
     type: row.type,
     username: row.username,
+    password: row.password || '',
     serverId: row.serverId,
     selectedIpPackage: row.selectedIpPackage || 1,
     accountIpPackage: row.selectedIpPackage || 1,
@@ -11849,7 +11854,7 @@ if (state.action === 'create' && normalizeCreatePriceMode(state.priceMode) === '
 }
     state.exp = exp;
 
-    db.get('SELECT quota, iplimit, domain, nama_server FROM Server WHERE id = ?', [state.serverId], async (err, server) => {
+    db.get('SELECT id, quota, iplimit, domain, nama_server FROM Server WHERE id = ?', [state.serverId], async (err, server) => {
       if (err) {
         logger.error('⚠️ Error fetching server details:', err.message);
         return ctx.reply('❌ *Terjadi kesalahan saat mengambil detail server.*', { parse_mode: 'Markdown' });
@@ -11865,7 +11870,7 @@ if (state.action === 'create' && normalizeCreatePriceMode(state.priceMode) === '
       } else if (state.action === 'create') {
         const selectedPkg = Number(state.selectedIpPackage || 1);
         try {
-          state.iplimit = await getServerIpLimitRule(server.id, state.type, selectedPkg);
+          state.iplimit = await getServerIpLimitRule(Number(state.serverId), state.type, selectedPkg);
         } catch (limitErr) {
           logger.warn(`Gagal ambil limit IP rule server ${server.id}: ${limitErr.message}`);
           state.iplimit = getDefaultServerIpLimit(state.type, selectedPkg);
@@ -11977,13 +11982,13 @@ if (state.action === 'create' && normalizeCreatePriceMode(state.priceMode) === '
             } else if (type === 'shadowsocks') {
               msg = await renewshadowsocks(username, exp, quota, iplimit, serverId);
             } else if (type === 'ssh') {
-              msg = await renewssh(username, exp, iplimit, serverId);
+              msg = await renewssh(username, exp, iplimit, serverId, password);
             }
             else if (type === 'udp_http') {
-              msg = await renewudphttp(username, exp, iplimit, serverId);
+              msg = await renewudphttp(username, exp, iplimit, serverId, password);
             }
             else if (type === 'zivpn') {
-              msg = await renewzivpn(username, exp, iplimit, serverId);
+              msg = await renewzivpn(username, exp, iplimit, serverId, password);
             }
             logger.info(`Account renewed for user ${ctx.from.id}, type: ${type}`);
           }

@@ -20,6 +20,10 @@ function normalizeAuthToken(rawAuth) {
   return value.replace(/^Bearer\s+/i, '').trim();
 }
 
+function shellSingleQuote(value) {
+  return "'" + String(value).replace(/'/g, "'\\''") + "'";
+}
+
 function getServer(serverId) {
   return new Promise((resolve) => {
     db.get('SELECT * FROM Server WHERE id = ?', [serverId], (err, server) => {
@@ -65,7 +69,7 @@ function buildRenewMessage(title, s, withQuota = false) {
   return msg;
 }
 
-async function renewByEndpoint({ username, exp, quota = 0, serverId, endpoint, title, withQuota = false }) {
+async function renewByEndpoint({ username, exp, quota = 0, limitip = '', password = '', serverId, endpoint, title, withQuota = false }) {
   if (!isValidUsername(username)) {
     return '❌ Username tidak valid. Gunakan huruf/angka tanpa spasi.';
   }
@@ -80,12 +84,20 @@ async function renewByEndpoint({ username, exp, quota = 0, serverId, endpoint, t
   if (!baseUrl) return '❌ Domain server tidak valid.';
   if (!authToken) return '❌ Auth token server kosong/tidak valid.';
   const webURL = `${baseUrl}${endpoint}/${username}/${exp}`;
+  const requestBody = { kuota: Number(quota || 0) };
+  const limitValue = String(limitip ?? '').trim();
+  const passwordValue = String(password || '').trim();
+  if (limitValue) requestBody.limitip = limitValue;
+  if (passwordValue) {
+    requestBody.password = passwordValue;
+    requestBody.recover_missing = true;
+  }
 
   const curlCommand = `curl -s -X PATCH "${webURL}" \
 -H "Authorization: ${authToken}" \
 -H "accept: application/json" \
 -H "Content-Type: application/json" \
--d '{"kuota": ${quota}}'`;
+-d ${shellSingleQuote(JSON.stringify(requestBody))}`;
 
   const result = await execJson(curlCommand);
   if (!result.ok) {
@@ -101,11 +113,13 @@ async function renewByEndpoint({ username, exp, quota = 0, serverId, endpoint, t
   return buildRenewMessage(title, d.data, withQuota);
 }
 
-async function renewssh(username, exp, limitip, serverId) {
+async function renewssh(username, exp, limitip, serverId, password = '') {
   return renewByEndpoint({
     username,
     exp,
     quota: 0,
+    limitip,
+    password,
     serverId,
     endpoint: '/vps/renewsshvpn',
     title: 'Renew SSH Account Success',
@@ -113,11 +127,13 @@ async function renewssh(username, exp, limitip, serverId) {
   });
 }
 
-async function renewudphttp(username, exp, limitip, serverId) {
+async function renewudphttp(username, exp, limitip, serverId, password = '') {
   return renewByEndpoint({
     username,
     exp,
     quota: 0,
+    limitip,
+    password,
     serverId,
     endpoint: '/vps/renewsshvpn',
     title: 'Renew UDP HTTP Custom Success',
@@ -130,6 +146,7 @@ async function renewvmess(username, exp, quota, limitip, serverId) {
     username,
     exp,
     quota,
+    limitip,
     serverId,
     endpoint: '/vps/renewvmess',
     title: 'Renew VMess Account Success',
@@ -142,6 +159,7 @@ async function renewvless(username, exp, quota, limitip, serverId) {
     username,
     exp,
     quota,
+    limitip,
     serverId,
     endpoint: '/vps/renewvless',
     title: 'Renew VLESS Account Success',
@@ -154,6 +172,7 @@ async function renewtrojan(username, exp, quota, limitip, serverId) {
     username,
     exp,
     quota,
+    limitip,
     serverId,
     endpoint: '/vps/renewtrojan',
     title: 'Renew TROJAN Account Success',
@@ -200,11 +219,13 @@ async function renewshadowsocks(username, exp, quota, limitip, serverId) {
   }
 }
 
-async function renewzivpn(username, exp, limitip, serverId) {
+async function renewzivpn(username, exp, limitip, serverId, password = '') {
   return renewByEndpoint({
     username,
     exp,
     quota: 0,
+    limitip,
+    password,
     serverId,
     endpoint: '/vps/renewsshvpn',
     title: 'Renew ZIVPN Success',
