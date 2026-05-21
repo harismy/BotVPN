@@ -1521,6 +1521,22 @@ db.run(`CREATE TABLE IF NOT EXISTS broadcast_poll_votes (
   }
 });
 
+db.run(`CREATE TABLE IF NOT EXISTS download_configs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  file_id TEXT NOT NULL,
+  file_unique_id TEXT,
+  file_name TEXT,
+  mime_type TEXT,
+  file_size INTEGER DEFAULT 0,
+  uploaded_by INTEGER,
+  created_at INTEGER
+)`, (err) => {
+  if (err) {
+    logger.error('Kesalahan membuat tabel download_configs:', err.message);
+  }
+});
+
 const userState = {};
 const lastMenuMessageId = new Map();
 const allResellerStatsSessions = new Map();
@@ -1541,6 +1557,77 @@ const dbRunAsync = (sql, params = []) => new Promise((resolve, reject) => {
 const dbGetAsync = (sql, params = []) => new Promise((resolve, reject) => {
   db.get(sql, params, (err, row) => (err ? reject(err) : resolve(row || null)));
 });
+
+function sanitizeDownloadConfigName(raw) {
+  return String(raw || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .slice(0, 60);
+}
+
+async function getDownloadConfigRows() {
+  return dbAllAsync(
+    `SELECT id, name, file_id, file_name, file_size, uploaded_by, created_at
+     FROM download_configs
+     ORDER BY id DESC`
+  );
+}
+
+async function sendDownloadConfigMenu(ctx) {
+  const rows = await getDownloadConfigRows();
+  if (!rows.length) {
+    return ctx.reply('Belum ada config yang tersedia. Silakan cek lagi nanti.', {
+      reply_markup: {
+        inline_keyboard: [[{ text: 'Kembali', callback_data: 'send_main_menu' }]]
+      }
+    });
+  }
+
+  const keyboard = rows.map((row) => ([{
+    text: row.name || row.file_name || `Config ${row.id}`,
+    callback_data: `download_config_${row.id}`
+  }]));
+  keyboard.push([{ text: 'Kembali', callback_data: 'send_main_menu' }]);
+
+  return ctx.reply('Pilih config yang ingin didownload:', {
+    reply_markup: { inline_keyboard: keyboard }
+  });
+}
+
+async function sendAdminDownloadConfigMenu(ctx) {
+  const rows = await getDownloadConfigRows();
+  const lines = rows.length
+    ? rows.map((row, idx) => `${idx + 1}. ${escapeHtml(row.name || row.file_name || `Config ${row.id}`)}`).join('\n')
+    : 'Belum ada config yang diupload.';
+
+  const keyboard = [
+    [{ text: 'Upload Config Baru', callback_data: 'admin_config_upload' }]
+  ];
+
+  rows.slice(0, 20).forEach((row) => {
+    keyboard.push([
+      { text: `Hapus: ${row.name || row.file_name || `Config ${row.id}`}`.slice(0, 60), callback_data: `admin_config_delete_${row.id}` }
+    ]);
+  });
+
+  keyboard.push([{ text: 'Kembali', callback_data: 'admin_menu_tools' }]);
+
+  const payload = {
+    parse_mode: 'HTML',
+    reply_markup: { inline_keyboard: keyboard }
+  };
+
+  const text =
+    '<b>DOWNLOAD CONFIG</b>\n\n' +
+    lines + '\n\n' +
+    'Upload file config sebagai document, lalu beri nama config.';
+
+  if (ctx.updateType === 'callback_query') {
+    return ctx.editMessageText(text, payload).catch(() => ctx.reply(text, payload));
+  }
+
+  return ctx.reply(text, payload);
+}
 
 async function reserveAccountChargeAtomic(userId, amount, type, action = 'other') {
   const referenceId = `account-${action}-${type}-${userId}-${Date.now()}`;
@@ -3514,6 +3601,9 @@ async function sendMainMenu(ctx) {
       { text: '📞 Hubungi Admin', callback_data: 'hubungi_admin' }
     ],
     [
+      { text: '📥 DOWNLOAD CONFIG', callback_data: 'download_config_menu' }
+    ],
+    [
       { text: '🔍 Cek Masa Aktif Akun Saya', callback_data: 'check_expiry_account' }
     ],
     [
@@ -4925,6 +5015,7 @@ async function sendAdminToolsMenu(ctx) {
     : '✅ Maintenance: OFF';
   const keyboard = [
     [{ text: '📋 Help Admin', callback_data: 'helpadmin_menu' }],
+    [{ text: '📥 Kelola Download Config', callback_data: 'admin_download_config_menu' }],
     [{ text: '📣 Broadcast Kirim Pesan', callback_data: 'admin_broadcast_menu' }],
     [{ text: 'Broadcast Polling', callback_data: 'admin_broadcast_poll_menu' }],
     [{ text: '💾 Restore Database', callback_data: 'restore_db_menu' }],
@@ -6258,6 +6349,53 @@ bot.action('admin_menu_tools', async (ctx) => {
   await sendAdminToolsMenu(ctx);
 });
 
+bot.action('admin_download_config_menu', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) {
+    return ctx.reply('🚫 Anda tidak memiliki izin untuk mengakses menu ini.');
+  }
+  delete userState[ctx.chat.id];
+  return sendAdminDownloadConfigMenu(ctx);
+});
+
+bot.action('admin_config_upload', async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) {
+    return ctx.reply('🚫 Anda tidak memiliki izin untuk upload config.');
+  }
+
+  userState[ctx.chat.id] = { step: 'admin_config_upload_document' };
+  return ctx.reply(
+    'Kirim file config sebagai document.\n' +
+    'Setelah file diterima, bot akan meminta nama config.\n\n' +
+    'Ketik "batal" untuk membatalkan.'
+  );
+});
+
+bot.action(/admin_config_delete_(\d+)/, async (ctx) => {
+  await ctx.answerCbQuery();
+  if (!adminIds.includes(ctx.from.id)) {
+    return ctx.reply('🚫 Anda tidak memiliki izin untuk menghapus config.');
+  }
+
+  const configId = Number(ctx.match[1]);
+  if (!Number.isInteger(configId) || configId <= 0) {
+    return ctx.reply('ID config tidak valid.');
+  }
+
+  const result = await dbRunAsync('DELETE FROM download_configs WHERE id = ?', [configId]).catch((err) => {
+    logger.error('Gagal menghapus download config:', err.message);
+    return null;
+  });
+
+  if (!result) {
+    return ctx.reply('Gagal menghapus config.');
+  }
+
+  await ctx.reply(result.changes > 0 ? 'Config berhasil dihapus.' : 'Config tidak ditemukan.');
+  return sendAdminDownloadConfigMenu(ctx);
+});
+
 bot.action('maintenance_menu', async (ctx) => {
   await ctx.answerCbQuery();
   if (!adminIds.includes(ctx.from.id)) {
@@ -6661,7 +6799,34 @@ bot.on('photo', async (ctx) => {
 bot.on('document', async (ctx) => {
   const adminId = ctx.from.id;
   const state = userState[adminId];
-  if (!state || state.step !== 'restore_db_upload') return;
+  if (!state) return;
+
+  if (state.step === 'admin_config_upload_document') {
+    if (!adminIds.includes(adminId)) {
+      return ctx.reply('Anda tidak memiliki izin untuk upload config.');
+    }
+
+    const doc = ctx.message.document;
+    userState[adminId] = {
+      step: 'admin_config_name_input',
+      doc: {
+        file_id: doc.file_id,
+        file_unique_id: doc.file_unique_id || '',
+        file_name: String(doc.file_name || 'config'),
+        mime_type: String(doc.mime_type || ''),
+        file_size: Number(doc.file_size || 0)
+      }
+    };
+
+    return ctx.reply(
+      'File config diterima.\n' +
+      'Sekarang kirim nama config yang akan tampil di menu user.\n\n' +
+      'Contoh: Config ZIVPN SG 1\n' +
+      'Ketik "batal" untuk membatalkan.'
+    );
+  }
+
+  if (state.step !== 'restore_db_upload') return;
 
   if (!adminIds.includes(adminId)) {
     return ctx.reply('Anda tidak memiliki izin untuk restore database.');
@@ -6796,6 +6961,56 @@ bot.action('topup_saldo', async (ctx) => {
       '❌ Terjadi kesalahan sistem.\nSilakan coba lagi atau hubungi admin.',
       { parse_mode: 'Markdown' }
     );
+  }
+});
+
+bot.action('download_config_menu', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  try {
+    return await sendDownloadConfigMenu(ctx);
+  } catch (err) {
+    logger.error('Gagal membuka menu download config:', err.message);
+    return ctx.reply('Terjadi kesalahan saat membuka menu download config.');
+  }
+});
+
+bot.action(/download_config_(\d+)/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  const configId = Number(ctx.match[1]);
+  if (!Number.isInteger(configId) || configId <= 0) {
+    return ctx.reply('Config tidak valid.');
+  }
+
+  try {
+    const row = await dbGetAsync(
+      `SELECT id, name, file_id, file_name, file_size
+       FROM download_configs
+       WHERE id = ?`,
+      [configId]
+    );
+
+    if (!row) {
+      return ctx.reply('Config tidak ditemukan atau sudah dihapus.', {
+        reply_markup: {
+          inline_keyboard: [[{ text: 'Kembali', callback_data: 'download_config_menu' }]]
+        }
+      });
+    }
+
+    const caption =
+      `<b>${escapeHtml(row.name || row.file_name || 'Config')}</b>\n` +
+      `File: <code>${escapeHtml(row.file_name || '-')}</code>`;
+
+    return await ctx.telegram.sendDocument(ctx.chat.id, row.file_id, {
+      caption,
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [[{ text: 'Kembali ke List Config', callback_data: 'download_config_menu' }]]
+      }
+    });
+  } catch (err) {
+    logger.error('Gagal mengirim download config:', err.message);
+    return ctx.reply('Gagal mengirim config. Silakan coba lagi nanti.');
   }
 });
 
@@ -9790,7 +10005,65 @@ bot.on('text', async (ctx) => {
   }
 
   const state = userState[ctx.chat.id];
-if (!state || !state.step) return;
+  if (!state || !state.step) return;
+
+  if (state.step === 'admin_config_upload_document') {
+    const text = String(ctx.message.text || '').trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Upload config dibatalkan.');
+    }
+    return ctx.reply('Silakan kirim file config sebagai document, atau ketik "batal".');
+  }
+
+  if (state.step === 'admin_config_name_input') {
+    const text = String(ctx.message.text || '').trim();
+    if (text.toLowerCase() === 'batal') {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Upload config dibatalkan.');
+    }
+
+    if (!adminIds.includes(ctx.from.id)) {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Anda tidak memiliki izin untuk menyimpan config.');
+    }
+
+    const configName = sanitizeDownloadConfigName(text);
+    if (configName.length < 2) {
+      return ctx.reply('Nama config terlalu pendek. Minimal 2 karakter.');
+    }
+
+    const doc = state.doc || {};
+    if (!doc.file_id) {
+      delete userState[ctx.chat.id];
+      return ctx.reply('Data file tidak ditemukan. Ulangi upload config dari menu admin.');
+    }
+
+    try {
+      await dbRunAsync(
+        `INSERT INTO download_configs
+         (name, file_id, file_unique_id, file_name, mime_type, file_size, uploaded_by, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          configName,
+          doc.file_id,
+          doc.file_unique_id || '',
+          doc.file_name || 'config',
+          doc.mime_type || '',
+          Number(doc.file_size || 0),
+          ctx.from.id,
+          Date.now()
+        ]
+      );
+
+      delete userState[ctx.chat.id];
+      await ctx.reply(`Config "${configName}" berhasil disimpan dan sudah tampil di menu DOWNLOAD CONFIG.`);
+      return sendAdminDownloadConfigMenu(ctx);
+    } catch (err) {
+      logger.error('Gagal menyimpan download config:', err.message);
+      return ctx.reply('Gagal menyimpan config. Silakan coba lagi.');
+    }
+  }
 
   if (state.step === 'global_price_duration_input') {
     const text = String(ctx.message.text || '').trim();
