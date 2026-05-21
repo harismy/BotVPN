@@ -1274,6 +1274,7 @@ db.run(`CREATE TABLE IF NOT EXISTS Server (
   sync_port INTEGER DEFAULT 8789,
   sync_endpoint TEXT DEFAULT '/internal/account-summary',
   sync_enabled INTEGER DEFAULT 1,
+  is_active INTEGER DEFAULT 1,
   bandwidth_limit_tb REAL DEFAULT 0,
   bandwidth_user_daily_gb REAL DEFAULT 8,
   bandwidth_daily_gb REAL DEFAULT 0,
@@ -1375,6 +1376,9 @@ db.all("PRAGMA table_info(Server)", (err, rows) => {
     if (!cols.includes('sync_enabled')) {
       db.run("ALTER TABLE Server ADD COLUMN sync_enabled INTEGER DEFAULT 1");
     }
+    if (!cols.includes('is_active')) {
+      db.run("ALTER TABLE Server ADD COLUMN is_active INTEGER DEFAULT 1");
+    }
     if (!cols.includes('bandwidth_limit_tb')) {
       db.run("ALTER TABLE Server ADD COLUMN bandwidth_limit_tb REAL DEFAULT 0");
     }
@@ -1417,6 +1421,7 @@ db.all("PRAGMA table_info(Server)", (err, rows) => {
     db.run("UPDATE Server SET sync_port = 8789 WHERE sync_port IS NULL OR sync_port = 0");
     db.run("UPDATE Server SET sync_endpoint = '/internal/account-summary' WHERE sync_endpoint IS NULL OR TRIM(sync_endpoint) = ''");
     db.run("UPDATE Server SET sync_enabled = 1 WHERE sync_enabled IS NULL");
+    db.run("UPDATE Server SET is_active = 1 WHERE is_active IS NULL");
     db.run("UPDATE Server SET bandwidth_limit_tb = 0 WHERE bandwidth_limit_tb IS NULL");
     db.run("UPDATE Server SET bandwidth_user_daily_gb = 8 WHERE bandwidth_user_daily_gb IS NULL OR bandwidth_user_daily_gb <= 0");
     db.run("UPDATE Server SET bandwidth_daily_gb = 0 WHERE bandwidth_daily_gb IS NULL");
@@ -5242,6 +5247,7 @@ async function sendAdminManageServerMenu(ctx) {
     [{ text: '📶 Set Limit Bandwidth', callback_data: 'manage_set_bw_limit' }],
     [{ text: '🔄 Migrasi User Server', callback_data: 'admin_migrate_users_menu' }],
     [{ text: '🗑️ Hapus Semua SSH/ZIVPN', callback_data: 'admin_delete_all_accounts_manual' }],
+    [{ text: '🕹️ Aktif/Nonaktifkan dari List', callback_data: 'manage_server_visibility' }],
     [{ text: '🚫 Jadikan Server Penuh', callback_data: 'manage_server_full' }],
     [{ text: '✅ Jadikan Server Tersedia', callback_data: 'manage_server_activate' }],
     [{ text: '🔙 Kembali', callback_data: 'admin_menu_server' }]
@@ -5532,6 +5538,89 @@ bot.action('manage_server_activate', async (ctx) => {
       reply_markup: { inline_keyboard: inlineKeyboard }
     });
   });
+});
+
+bot.action('manage_server_visibility', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  if (!adminIds.includes(ctx.from.id)) {
+    return ctx.reply('Anda tidak memiliki izin untuk mengubah status server.');
+  }
+
+  db.all(
+    'SELECT id, nama_server, domain, is_active FROM Server ORDER BY nama_server COLLATE NOCASE ASC',
+    [],
+    async (err, servers) => {
+      if (err) {
+        logger.error('❌ Kesalahan saat mengambil daftar server:', err.message);
+        return ctx.reply('❌ Terjadi kesalahan saat mengambil daftar server.');
+      }
+      if (!servers || servers.length === 0) {
+        return ctx.reply('⚠️ Tidak ada server yang tersedia.');
+      }
+
+      const buttons = servers.map((server) => {
+        const active = Number(server.is_active ?? 1) === 1;
+        const label = `${active ? '[AKTIF]' : '[NONAKTIF]'} ${server.nama_server || server.domain || ('ID ' + server.id)}`;
+        return {
+          text: label,
+          callback_data: `toggle_server_visibility_${server.id}`
+        };
+      });
+
+      const inlineKeyboard = [];
+      for (let i = 0; i < buttons.length; i += 1) {
+        inlineKeyboard.push([buttons[i]]);
+      }
+      inlineKeyboard.push([{ text: '🔙 Kembali', callback_data: 'admin_manage_server' }]);
+
+      return ctx.reply(
+        '*AKTIF/NONAKTIF SERVER DI LIST USER*\n\n' +
+        'Server *NONAKTIF* tidak muncul di menu pilih server user. Klik server untuk toggle status.',
+        {
+          parse_mode: 'Markdown',
+          reply_markup: { inline_keyboard: inlineKeyboard }
+        }
+      );
+    }
+  );
+});
+
+bot.action(/toggle_server_visibility_(\d+)/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  if (!adminIds.includes(ctx.from.id)) {
+    return ctx.reply('Anda tidak memiliki izin untuk mengubah status server.');
+  }
+
+  const serverId = Number(ctx.match[1]);
+  if (!Number.isInteger(serverId) || serverId <= 0) {
+    return ctx.reply('ID server tidak valid.');
+  }
+
+  try {
+    const server = await dbGetAsync(
+      'SELECT id, nama_server, domain, is_active FROM Server WHERE id = ?',
+      [serverId]
+    );
+    if (!server) {
+      return ctx.reply('Server tidak ditemukan.');
+    }
+
+    const nextValue = Number(server.is_active ?? 1) === 1 ? 0 : 1;
+    await dbRunAsync('UPDATE Server SET is_active = ? WHERE id = ?', [nextValue, serverId]);
+
+    await ctx.reply(
+      `Server ${(server.nama_server || server.domain || ('ID ' + server.id))} sekarang ` +
+      (nextValue === 1 ? 'AKTIF dan muncul di list user.' : 'NONAKTIF dan disembunyikan dari list user.')
+    );
+    return ctx.reply('Buka ulang menu toggle status server:', {
+      reply_markup: {
+        inline_keyboard: [[{ text: 'Aktif/Nonaktifkan Server', callback_data: 'manage_server_visibility' }]]
+      }
+    });
+  } catch (err) {
+    logger.error('Gagal toggle status aktif server:', err.message);
+    return ctx.reply('Gagal mengubah status server.');
+  }
 });
 
 bot.action('manage_set_bw_limit', async (ctx) => {
@@ -7081,7 +7170,8 @@ bot.action('check_expiry_account', async (ctx) => {
        SELECT id,
               LOWER(TRIM(COALESCE(NULLIF(sync_host, ''), NULLIF(domain, ''), ''))) AS host
        FROM Server
-       WHERE (COALESCE(is_reseller_only, 0) = 0 OR ? = 1)
+       WHERE COALESCE(is_active, 1) = 1
+         AND (COALESCE(is_reseller_only, 0) = 0 OR ? = 1)
      ) grouped
      WHERE host <> ''
      GROUP BY host
@@ -7501,7 +7591,8 @@ bot.action('delete_my_account_select_server', async (ctx) => {
                 )
             ) AS total_accounts
      FROM Server s
-     WHERE (COALESCE(s.is_reseller_only, 0) = 0 OR ? = 1)
+     WHERE COALESCE(s.is_active, 1) = 1
+       AND (COALESCE(s.is_reseller_only, 0) = 0 OR ? = 1)
      ORDER BY server_name COLLATE NOCASE ASC`,
     [userId, now, isReseller ? 1 : 0],
     async (err, rows) => {
@@ -8123,7 +8214,8 @@ async function findRenewCandidatesByUsername(ctx, rawUsername) {
   const servers = await dbAllAsync(
     `SELECT id, nama_server, domain, sync_host, auth
      FROM Server
-     WHERE (COALESCE(is_reseller_only, 0) = 0 OR ? = 1)
+     WHERE COALESCE(is_active, 1) = 1
+       AND (COALESCE(is_reseller_only, 0) = 0 OR ? = 1)
      ORDER BY nama_server COLLATE NOCASE ASC`,
     [isReseller ? 1 : 0]
   ).catch(() => []);
@@ -8258,7 +8350,8 @@ async function sendAccountList(ctx, isExpired, limit = 10) {
         const servers = await dbAllAsync(
           `SELECT id, nama_server, domain, sync_host, auth
            FROM Server
-           WHERE (COALESCE(is_reseller_only, 0) = 0 OR ? = 1)
+           WHERE COALESCE(is_active, 1) = 1
+             AND (COALESCE(is_reseller_only, 0) = 0 OR ? = 1)
            ORDER BY nama_server COLLATE NOCASE ASC`,
           [isReseller ? 1 : 0]
         ).catch(() => []);
@@ -9624,6 +9717,7 @@ try {
   const filters = [];
   const params = [];
 
+  filters.push('COALESCE(is_active, 1) = 1');
   if (type === 'zivpn') {
     filters.push('support_zivpn = 1');
   }
@@ -9644,6 +9738,9 @@ db.all(query, params, async (err, servers) => {
     logger.error('⚠️ Error fetching servers:', err.message);
     return ctx.reply('⚠️ Tidak ada server yang tersedia saat ini.', { parse_mode: 'HTML' });
   }
+    if (!servers || servers.length === 0) {
+      return ctx.reply('⚠️ Tidak ada server aktif yang tersedia saat ini.', { parse_mode: 'Markdown' });
+    }
     // ==== mulai logika pagination di bawah ini ====
     const serversPerPage = 6;
     const totalPages = Math.ceil(servers.length / serversPerPage);
@@ -9786,6 +9883,11 @@ bot.action(/(create|renew)_username_(vmess|vless|trojan|shadowsocks|ssh|zivpn|ud
       return ctx.reply('❌ *Server tidak ditemukan.*', { parse_mode: 'Markdown' });
     }
 
+    if (Number(server.is_active ?? 1) !== 1) {
+      delete userState[ctx.chat.id];
+      return ctx.reply('❌ *Server ini sedang nonaktif dan tidak bisa dipilih.*', { parse_mode: 'Markdown' });
+    }
+
     const batasCreateAkun = Number(server.batas_create_akun || 0);
     const totalCreateAkun = Number(server.total_create_akun || 0);
     const hasManualLimit = Number.isFinite(batasCreateAkun) && batasCreateAkun > 0;
@@ -9857,6 +9959,9 @@ bot.action(/create_pkg_(vmess|vless|trojan|shadowsocks|ssh|zivpn|udp_http)_(\d+)
   if (!server) {
     return ctx.reply('❌ *Server tidak ditemukan.*', { parse_mode: 'Markdown' });
   }
+  if (Number(server.is_active ?? 1) !== 1) {
+    return ctx.reply('❌ *Server ini sedang nonaktif dan tidak bisa dipilih.*', { parse_mode: 'Markdown' });
+  }
 
   const isReseller = await isUserReseller(ctx.from.id).catch(() => false);
   const dailyEnabled = isServerDailyPriceEnabled(server);
@@ -9910,6 +10015,9 @@ bot.action(/create_price_mode_(vmess|vless|trojan|shadowsocks|ssh|zivpn|udp_http
   if (!server) {
     return ctx.reply('❌ *Server tidak ditemukan.*', { parse_mode: 'Markdown' });
   }
+  if (Number(server.is_active ?? 1) !== 1) {
+    return ctx.reply('❌ *Server ini sedang nonaktif dan tidak bisa dipilih.*', { parse_mode: 'Markdown' });
+  }
   if (priceMode === 'daily' && !isServerDailyPriceEnabled(server)) {
     return ctx.reply('❌ *Harga harian sedang nonaktif untuk server ini.*', { parse_mode: 'Markdown' });
   }
@@ -9942,6 +10050,10 @@ bot.action(/(trial)_username_(vmess|vless|trojan|shadowsocks|ssh|zivpn|udp_http)
 
     if (!server) {
       return ctx.reply('⚠️ Server tidak ditemukan di database.');
+    }
+
+    if (Number(server.is_active ?? 1) !== 1) {
+      return ctx.reply('⚠️ Server ini sedang nonaktif dan tidak bisa dipilih.');
     }
 
     // Simpan state seperti semula
@@ -12818,13 +12930,15 @@ bot.action('detailserver', async (ctx) => {
     const buttons = [];
     for (let i = 0; i < servers.length; i += 2) {
       const row = [];
+      const serverActive = Number(servers[i].is_active ?? 1) === 1;
       row.push({
-        text: `${servers[i].nama_server}`,
+        text: `${serverActive ? '[AKTIF]' : '[NONAKTIF]'} ${servers[i].nama_server}`,
         callback_data: `server_detail_${servers[i].id}`
       });
       if (i + 1 < servers.length) {
+        const server2Active = Number(servers[i + 1].is_active ?? 1) === 1;
         row.push({
-          text: `${servers[i + 1].nama_server}`,
+          text: `${server2Active ? '[AKTIF]' : '[NONAKTIF]'} ${servers[i + 1].nama_server}`,
           callback_data: `server_detail_${servers[i + 1].id}`
         });
       }
@@ -12863,7 +12977,8 @@ bot.action('listserver', async (ctx) => {
 
     let serverList = '📜 *Daftar Server* 📜\n\n';
     servers.forEach((server, index) => {
-      serverList += `🔹 ${index + 1}. ${server.domain}\n`;
+      const status = Number(server.is_active ?? 1) === 1 ? 'AKTIF' : 'NONAKTIF';
+      serverList += `🔹 ${index + 1}. ${server.domain} - ${status}\n`;
     });
 
     serverList += `\nTotal Jumlah Server: ${servers.length}`;
@@ -14067,6 +14182,7 @@ bot.action(/server_detail_(\d+)/, async (ctx) => {
       `📶 *Limit IP:* \`${server.iplimit}\`\n` +
       `🔢 *Batas Create Akun:* \`${server.batas_create_akun}\`\n` +
       `📋 *Total Create Akun:* \`${server.total_create_akun}\`\n` +
+      `🕹️ *Status List User:* \`${Number(server.is_active ?? 1) === 1 ? 'Aktif' : 'Nonaktif'}\`\n` +
       `💵 *Harga Harian User 1IP:* \`${formatRupiah(getEffectiveServerPackagePrice(server, false, 1))}\`\n` +
       `💵 *Harga Harian User 2IP:* \`${formatRupiah(getEffectiveServerPackagePrice(server, false, 2))}\`\n` +
       `📆 *Harga 30 Hari User 1IP:* \`${formatRupiah(getEffectiveServerMonthlyPackagePrice(server, false, 1))}\`\n` +
