@@ -1267,6 +1267,11 @@ db.run(`CREATE TABLE IF NOT EXISTS Server (
   batas_create_akun INTEGER,
   total_create_akun INTEGER,
   is_reseller_only INTEGER DEFAULT 0,
+  support_ssh INTEGER DEFAULT 1,
+  support_vmess INTEGER DEFAULT 1,
+  support_vless INTEGER DEFAULT 1,
+  support_trojan INTEGER DEFAULT 1,
+  support_shadowsocks INTEGER DEFAULT 1,
   support_zivpn INTEGER DEFAULT 0,
   support_udp_http INTEGER DEFAULT 0,
   service TEXT DEFAULT 'ssh',
@@ -1325,6 +1330,21 @@ db.all("PRAGMA table_info(Server)", (err, rows) => {
   const cols = rows.map(r => r.name);
 
   db.serialize(() => {
+    if (!cols.includes('support_ssh')) {
+      db.run("ALTER TABLE Server ADD COLUMN support_ssh INTEGER DEFAULT 1");
+    }
+    if (!cols.includes('support_vmess')) {
+      db.run("ALTER TABLE Server ADD COLUMN support_vmess INTEGER DEFAULT 1");
+    }
+    if (!cols.includes('support_vless')) {
+      db.run("ALTER TABLE Server ADD COLUMN support_vless INTEGER DEFAULT 1");
+    }
+    if (!cols.includes('support_trojan')) {
+      db.run("ALTER TABLE Server ADD COLUMN support_trojan INTEGER DEFAULT 1");
+    }
+    if (!cols.includes('support_shadowsocks')) {
+      db.run("ALTER TABLE Server ADD COLUMN support_shadowsocks INTEGER DEFAULT 1");
+    }
     if (!cols.includes('support_zivpn')) {
       db.run("ALTER TABLE Server ADD COLUMN support_zivpn INTEGER DEFAULT 0");
     }
@@ -1405,6 +1425,11 @@ db.all("PRAGMA table_info(Server)", (err, rows) => {
     }
 
     // Jalankan normalisasi setelah migrasi kolom ter-queue
+    db.run("UPDATE Server SET support_ssh = 1 WHERE support_ssh IS NULL");
+    db.run("UPDATE Server SET support_vmess = 1 WHERE support_vmess IS NULL");
+    db.run("UPDATE Server SET support_vless = 1 WHERE support_vless IS NULL");
+    db.run("UPDATE Server SET support_trojan = 1 WHERE support_trojan IS NULL");
+    db.run("UPDATE Server SET support_shadowsocks = 1 WHERE support_shadowsocks IS NULL");
     db.run("UPDATE Server SET support_zivpn = 0 WHERE support_zivpn IS NULL");
     db.run("UPDATE Server SET support_udp_http = 0 WHERE support_udp_http IS NULL");
     db.run("UPDATE Server SET support_zivpn = 1 WHERE service = 'zivpn' AND support_zivpn = 0");
@@ -1562,6 +1587,38 @@ const dbRunAsync = (sql, params = []) => new Promise((resolve, reject) => {
 const dbGetAsync = (sql, params = []) => new Promise((resolve, reject) => {
   db.get(sql, params, (err, row) => (err ? reject(err) : resolve(row || null)));
 });
+
+const SERVER_PROTOCOL_SUPPORT = {
+  ssh: { column: 'support_ssh', label: 'SSH', defaultEnabled: 1 },
+  vmess: { column: 'support_vmess', label: 'VMess', defaultEnabled: 1 },
+  vless: { column: 'support_vless', label: 'VLess', defaultEnabled: 1 },
+  trojan: { column: 'support_trojan', label: 'Trojan', defaultEnabled: 1 },
+  shadowsocks: { column: 'support_shadowsocks', label: 'Shadowsocks', defaultEnabled: 1 },
+  zivpn: { column: 'support_zivpn', label: 'ZIVPN', defaultEnabled: 0 },
+  udp_http: { column: 'support_udp_http', label: 'UDP HTTP', defaultEnabled: 0 }
+};
+
+const SERVER_PROTOCOL_KEYS = Object.keys(SERVER_PROTOCOL_SUPPORT);
+
+function getServerProtocolSupport(type) {
+  return SERVER_PROTOCOL_SUPPORT[String(type || '').toLowerCase()] || null;
+}
+
+function isServerProtocolEnabled(server, type) {
+  const protocol = getServerProtocolSupport(type);
+  if (!protocol) return true;
+  return Number(server?.[protocol.column] ?? protocol.defaultEnabled) === 1;
+}
+
+function formatServerProtocolStatusLine(server) {
+  return SERVER_PROTOCOL_KEYS
+    .map((key) => {
+      const protocol = SERVER_PROTOCOL_SUPPORT[key];
+      const enabled = Number(server?.[protocol.column] ?? protocol.defaultEnabled) === 1;
+      return `${protocol.label}:${enabled ? 'ON' : 'OFF'}`;
+    })
+    .join(' | ');
+}
 
 function sanitizeDownloadConfigName(raw) {
   return String(raw || '')
@@ -5248,6 +5305,7 @@ async function sendAdminManageServerMenu(ctx) {
     [{ text: '🔄 Migrasi User Server', callback_data: 'admin_migrate_users_menu' }],
     [{ text: '🗑️ Hapus Semua SSH/ZIVPN', callback_data: 'admin_delete_all_accounts_manual' }],
     [{ text: '🕹️ Aktif/Nonaktifkan dari List', callback_data: 'manage_server_visibility' }],
+    [{ text: '🔌 Aktif/Nonaktifkan Protocol', callback_data: 'manage_server_protocols' }],
     [{ text: '🚫 Jadikan Server Penuh', callback_data: 'manage_server_full' }],
     [{ text: '✅ Jadikan Server Tersedia', callback_data: 'manage_server_activate' }],
     [{ text: '🔙 Kembali', callback_data: 'admin_menu_server' }]
@@ -5620,6 +5678,139 @@ bot.action(/toggle_server_visibility_(\d+)/, async (ctx) => {
   } catch (err) {
     logger.error('Gagal toggle status aktif server:', err.message);
     return ctx.reply('Gagal mengubah status server.');
+  }
+});
+
+bot.action('manage_server_protocols', async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  if (!adminIds.includes(ctx.from.id)) {
+    return ctx.reply('Anda tidak memiliki izin untuk mengubah support protocol server.');
+  }
+
+  const selectColumns = SERVER_PROTOCOL_KEYS
+    .map((key) => SERVER_PROTOCOL_SUPPORT[key].column)
+    .join(', ');
+
+  db.all(
+    `SELECT id, nama_server, domain, ${selectColumns}
+     FROM Server
+     ORDER BY nama_server COLLATE NOCASE ASC`,
+    [],
+    async (err, servers) => {
+      if (err) {
+        logger.error('❌ Kesalahan saat mengambil daftar server:', err.message);
+        return ctx.reply('❌ Terjadi kesalahan saat mengambil daftar server.');
+      }
+      if (!servers || servers.length === 0) {
+        return ctx.reply('⚠️ Tidak ada server yang tersedia.');
+      }
+
+      const keyboard = servers.map((server) => ([{
+        text: server.nama_server || server.domain || ('ID ' + server.id),
+        callback_data: `server_protocols_${server.id}`
+      }]));
+      keyboard.push([{ text: '🔙 Kembali', callback_data: 'admin_manage_server' }]);
+
+      return ctx.reply(
+        '*SUPPORT PROTOCOL SERVER*\n\n' +
+        'Pilih server untuk mengatur protocol yang muncul di list user.',
+        {
+          parse_mode: 'Markdown',
+          reply_markup: { inline_keyboard: keyboard }
+        }
+      );
+    }
+  );
+});
+
+async function sendServerProtocolToggleMenu(ctx, serverId) {
+  const selectColumns = SERVER_PROTOCOL_KEYS
+    .map((key) => SERVER_PROTOCOL_SUPPORT[key].column)
+    .join(', ');
+  const server = await dbGetAsync(
+    `SELECT id, nama_server, domain, ${selectColumns}
+     FROM Server
+     WHERE id = ?`,
+    [serverId]
+  );
+
+  if (!server) {
+    return ctx.reply('Server tidak ditemukan.');
+  }
+
+  const keyboard = SERVER_PROTOCOL_KEYS.map((key) => {
+    const protocol = SERVER_PROTOCOL_SUPPORT[key];
+    const enabled = Number(server[protocol.column] ?? protocol.defaultEnabled) === 1;
+    return [{
+      text: `${enabled ? '[ON]' : '[OFF]'} ${protocol.label}`,
+      callback_data: `toggle_server_protocol_${server.id}_${key}`
+    }];
+  });
+  keyboard.push([{ text: '🔙 Pilih Server Lain', callback_data: 'manage_server_protocols' }]);
+  keyboard.push([{ text: '🔙 Kembali', callback_data: 'admin_manage_server' }]);
+
+  return ctx.reply(
+    '*SUPPORT PROTOCOL*\n\n' +
+    `Server: *${server.nama_server || server.domain || ('ID ' + server.id)}*\n` +
+    `Status: \`${formatServerProtocolStatusLine(server)}\`\n\n` +
+    'Klik protocol untuk ON/OFF. Protocol OFF tidak muncul di list server user untuk menu protocol tersebut.',
+    {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: keyboard }
+    }
+  );
+}
+
+bot.action(/server_protocols_(\d+)/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  if (!adminIds.includes(ctx.from.id)) {
+    return ctx.reply('Anda tidak memiliki izin untuk mengubah support protocol server.');
+  }
+
+  const serverId = Number(ctx.match[1]);
+  if (!Number.isInteger(serverId) || serverId <= 0) {
+    return ctx.reply('ID server tidak valid.');
+  }
+
+  return sendServerProtocolToggleMenu(ctx, serverId);
+});
+
+bot.action(/toggle_server_protocol_(\d+)_(ssh|vmess|vless|trojan|shadowsocks|zivpn|udp_http)/, async (ctx) => {
+  await ctx.answerCbQuery().catch(() => {});
+  if (!adminIds.includes(ctx.from.id)) {
+    return ctx.reply('Anda tidak memiliki izin untuk mengubah support protocol server.');
+  }
+
+  const serverId = Number(ctx.match[1]);
+  const protocolKey = String(ctx.match[2] || '').toLowerCase();
+  const protocol = getServerProtocolSupport(protocolKey);
+  if (!Number.isInteger(serverId) || serverId <= 0 || !protocol) {
+    return ctx.reply('Data protocol tidak valid.');
+  }
+
+  try {
+    const server = await dbGetAsync(
+      `SELECT id, nama_server, domain, ${protocol.column}
+       FROM Server
+       WHERE id = ?`,
+      [serverId]
+    );
+    if (!server) {
+      return ctx.reply('Server tidak ditemukan.');
+    }
+
+    const current = Number(server[protocol.column] ?? protocol.defaultEnabled) === 1 ? 1 : 0;
+    const nextValue = current === 1 ? 0 : 1;
+    await dbRunAsync(`UPDATE Server SET ${protocol.column} = ? WHERE id = ?`, [nextValue, serverId]);
+
+    await ctx.reply(
+      `${protocol.label} untuk server ${server.nama_server || server.domain || ('ID ' + server.id)} sekarang ` +
+      (nextValue === 1 ? 'ON.' : 'OFF dan tidak muncul di list protocol itu.')
+    );
+    return sendServerProtocolToggleMenu(ctx, serverId);
+  } catch (err) {
+    logger.error('Gagal toggle support protocol server:', err.message);
+    return ctx.reply('Gagal mengubah support protocol server.');
   }
 });
 
@@ -9718,11 +9909,9 @@ try {
   const params = [];
 
   filters.push('COALESCE(is_active, 1) = 1');
-  if (type === 'zivpn') {
-    filters.push('support_zivpn = 1');
-  }
-  if (type === 'udp_http') {
-    filters.push('support_udp_http = 1');
+  const protocolSupport = getServerProtocolSupport(type);
+  if (protocolSupport) {
+    filters.push(`COALESCE(${protocolSupport.column}, ${protocolSupport.defaultEnabled}) = 1`);
   }
   if (!isR) {
     // user biasa hanya bisa lihat server publik/non-reseller
@@ -9887,6 +10076,10 @@ bot.action(/(create|renew)_username_(vmess|vless|trojan|shadowsocks|ssh|zivpn|ud
       delete userState[ctx.chat.id];
       return ctx.reply('❌ *Server ini sedang nonaktif dan tidak bisa dipilih.*', { parse_mode: 'Markdown' });
     }
+    if (!isServerProtocolEnabled(server, type)) {
+      delete userState[ctx.chat.id];
+      return ctx.reply(`❌ *Protocol ${type.toUpperCase()} sedang nonaktif untuk server ini.*`, { parse_mode: 'Markdown' });
+    }
 
     const batasCreateAkun = Number(server.batas_create_akun || 0);
     const totalCreateAkun = Number(server.total_create_akun || 0);
@@ -9962,6 +10155,9 @@ bot.action(/create_pkg_(vmess|vless|trojan|shadowsocks|ssh|zivpn|udp_http)_(\d+)
   if (Number(server.is_active ?? 1) !== 1) {
     return ctx.reply('❌ *Server ini sedang nonaktif dan tidak bisa dipilih.*', { parse_mode: 'Markdown' });
   }
+  if (!isServerProtocolEnabled(server, type)) {
+    return ctx.reply(`❌ *Protocol ${type.toUpperCase()} sedang nonaktif untuk server ini.*`, { parse_mode: 'Markdown' });
+  }
 
   const isReseller = await isUserReseller(ctx.from.id).catch(() => false);
   const dailyEnabled = isServerDailyPriceEnabled(server);
@@ -10018,6 +10214,9 @@ bot.action(/create_price_mode_(vmess|vless|trojan|shadowsocks|ssh|zivpn|udp_http
   if (Number(server.is_active ?? 1) !== 1) {
     return ctx.reply('❌ *Server ini sedang nonaktif dan tidak bisa dipilih.*', { parse_mode: 'Markdown' });
   }
+  if (!isServerProtocolEnabled(server, type)) {
+    return ctx.reply(`❌ *Protocol ${type.toUpperCase()} sedang nonaktif untuk server ini.*`, { parse_mode: 'Markdown' });
+  }
   if (priceMode === 'daily' && !isServerDailyPriceEnabled(server)) {
     return ctx.reply('❌ *Harga harian sedang nonaktif untuk server ini.*', { parse_mode: 'Markdown' });
   }
@@ -10054,6 +10253,9 @@ bot.action(/(trial)_username_(vmess|vless|trojan|shadowsocks|ssh|zivpn|udp_http)
 
     if (Number(server.is_active ?? 1) !== 1) {
       return ctx.reply('⚠️ Server ini sedang nonaktif dan tidak bisa dipilih.');
+    }
+    if (!isServerProtocolEnabled(server, type)) {
+      return ctx.reply(`⚠️ Protocol ${type.toUpperCase()} sedang nonaktif untuk server ini.`);
     }
 
     // Simpan state seperti semula
@@ -12279,6 +12481,12 @@ if (state.action === 'create' && normalizeCreatePriceMode(state.priceMode) === '
         if (!server) {
           return ctx.reply('❌ *Server tidak ditemukan.*', { parse_mode: 'Markdown' });
         }
+        if (Number(server.is_active ?? 1) !== 1) {
+          return ctx.reply('❌ *Server ini sedang nonaktif dan tidak bisa dipilih.*', { parse_mode: 'Markdown' });
+        }
+        if (!isServerProtocolEnabled(server, type)) {
+          return ctx.reply(`❌ *Protocol ${type.toUpperCase()} sedang nonaktif untuk server ini.*`, { parse_mode: 'Markdown' });
+        }
 
         const isResellerUser = await isUserReseller(ctx.from.id).catch(() => false);
         const selectedPackage = (() => {
@@ -14183,6 +14391,7 @@ bot.action(/server_detail_(\d+)/, async (ctx) => {
       `🔢 *Batas Create Akun:* \`${server.batas_create_akun}\`\n` +
       `📋 *Total Create Akun:* \`${server.total_create_akun}\`\n` +
       `🕹️ *Status List User:* \`${Number(server.is_active ?? 1) === 1 ? 'Aktif' : 'Nonaktif'}\`\n` +
+      `🔌 *Support Protocol:* \`${formatServerProtocolStatusLine(server)}\`\n` +
       `💵 *Harga Harian User 1IP:* \`${formatRupiah(getEffectiveServerPackagePrice(server, false, 1))}\`\n` +
       `💵 *Harga Harian User 2IP:* \`${formatRupiah(getEffectiveServerPackagePrice(server, false, 2))}\`\n` +
       `📆 *Harga 30 Hari User 1IP:* \`${formatRupiah(getEffectiveServerMonthlyPackagePrice(server, false, 1))}\`\n` +
