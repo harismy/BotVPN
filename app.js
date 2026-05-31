@@ -2987,11 +2987,9 @@ bot.command('resellerstats', async (ctx) => {
       
       // Hitung tanggal awal dan akhir bulan ini
       const now = new Date();
-      const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
-      const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-      
-      const startTimestamp = firstDay.getTime();
-      const endTimestamp = lastDay.getTime();
+      const monthRange = getMonthRange(0);
+      const startTimestamp = monthRange.start;
+      const endTimestamp = monthRange.end;
       
       // Query transaksi bulan ini
       const query = `
@@ -2999,9 +2997,9 @@ bot.command('resellerstats', async (ctx) => {
         FROM transactions 
         WHERE user_id = ? 
           AND timestamp >= ? 
-          AND timestamp <= ?
+          AND timestamp < ?
           AND type IN ('ssh', 'vmess', 'vless', 'trojan', 'shadowsocks', 'zivpn', 'udp_http')
-          AND reference_id NOT LIKE 'account-trial-%'
+          AND (reference_id IS NULL OR reference_id NOT LIKE 'account-trial-%')
         GROUP BY type
       `;
       
@@ -3014,7 +3012,7 @@ bot.command('resellerstats', async (ctx) => {
         const totalTopup = await new Promise((resolve) => {
           db.get(
             `SELECT SUM(amount) as total FROM transactions
-             WHERE user_id = ? AND timestamp >= ? AND timestamp <= ? AND type = 'deposit'`,
+             WHERE user_id = ? AND timestamp >= ? AND timestamp < ? AND type = 'deposit'`,
             [userId, startTimestamp, endTimestamp],
             (err2, row2) => resolve(!err2 && row2 && row2.total ? row2.total : 0)
           );
@@ -3085,10 +3083,9 @@ bot.command('allresellerstats', async (ctx) => {
     }
     
     const now = new Date();
-    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
-    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-    const startTimestamp = firstDay.getTime();
-    const endTimestamp = lastDay.getTime();
+    const monthRange = getMonthRange(0);
+    const startTimestamp = monthRange.start;
+    const endTimestamp = monthRange.end;
     
     // Total semua
     let totalAllAccounts = 0;
@@ -3110,9 +3107,9 @@ bot.command('allresellerstats', async (ctx) => {
       const transactions = await new Promise((resolve) => {
         db.all(
           `SELECT COUNT(*) as count, SUM(amount) as total FROM transactions 
-           WHERE user_id = ? AND timestamp >= ? AND timestamp <= ? 
+           WHERE user_id = ? AND timestamp >= ? AND timestamp < ? 
            AND type IN ('ssh', 'vmess', 'vless', 'trojan', 'shadowsocks', 'zivpn', 'udp_http')
-           AND reference_id NOT LIKE 'account-trial-%'`,
+           AND (reference_id IS NULL OR reference_id NOT LIKE 'account-trial-%')`,
           [resellerId, startTimestamp, endTimestamp],
           (err, rows) => {
             resolve(rows[0] || { count: 0, total: 0 });
@@ -3123,7 +3120,7 @@ bot.command('allresellerstats', async (ctx) => {
       const topupTotal = await new Promise((resolve) => {
         db.get(
           `SELECT SUM(amount) as total FROM transactions
-           WHERE user_id = ? AND timestamp >= ? AND timestamp <= ? AND type = 'deposit'`,
+           WHERE user_id = ? AND timestamp >= ? AND timestamp < ? AND type = 'deposit'`,
           [resellerId, startTimestamp, endTimestamp],
           (err, row) => resolve(!err && row && row.total ? row.total : 0)
         );
@@ -3270,9 +3267,9 @@ async function getResellerStatsForPeriod(userId, startTimestamp, endTimestamp) {
        FROM transactions
        WHERE user_id = ?
         AND timestamp >= ?
-        AND timestamp <= ?
+        AND timestamp < ?
         AND type IN ('ssh', 'vmess', 'vless', 'trojan', 'shadowsocks', 'zivpn', 'udp_http')
-        AND reference_id NOT LIKE 'account-trial-%'`,
+        AND (reference_id IS NULL OR reference_id NOT LIKE 'account-trial-%')`,
       [userId, startTimestamp, endTimestamp],
       (err, row) => {
         const count = !err && row ? row.count : 0;
@@ -3281,8 +3278,8 @@ async function getResellerStatsForPeriod(userId, startTimestamp, endTimestamp) {
            FROM transactions
            WHERE user_id = ?
              AND timestamp >= ?
-             AND timestamp <= ?
-             AND type = 'deposit'`,
+              AND timestamp < ?
+              AND type = 'deposit'`,
           [userId, startTimestamp, endTimestamp],
           (err2, row2) => {
             const total = !err2 && row2 && row2.total ? row2.total : 0;
@@ -3546,42 +3543,42 @@ async function sendMainMenu(ctx) {
   try {
     userToday = await new Promise((resolve) => {
       db.get(
-        'SELECT COUNT(*) as count FROM transactions WHERE user_id = ? AND timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http","zivpn") AND reference_id NOT LIKE "account-trial-%"',
+        'SELECT COUNT(*) as count FROM transactions WHERE user_id = ? AND timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http","zivpn") AND (reference_id IS NULL OR reference_id NOT LIKE "account-trial-%")',
         [userId, todayStart],
         (err, row) => resolve(row ? row.count : 0)
       );
     });
     userWeek = await new Promise((resolve) => {
       db.get(
-        'SELECT COUNT(*) as count FROM transactions WHERE user_id = ? AND timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http","zivpn") AND reference_id NOT LIKE "account-trial-%"',
+        'SELECT COUNT(*) as count FROM transactions WHERE user_id = ? AND timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http","zivpn") AND (reference_id IS NULL OR reference_id NOT LIKE "account-trial-%")',
         [userId, weekStart],
         (err, row) => resolve(row ? row.count : 0)
       );
     });
     userMonth = await new Promise((resolve) => {
       db.get(
-        'SELECT COUNT(*) as count FROM transactions WHERE user_id = ? AND timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http","zivpn") AND reference_id NOT LIKE "account-trial-%"',
+        'SELECT COUNT(*) as count FROM transactions WHERE user_id = ? AND timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http","zivpn") AND (reference_id IS NULL OR reference_id NOT LIKE "account-trial-%")',
         [userId, monthStart],
         (err, row) => resolve(row ? row.count : 0)
       );
     });
     globalToday = await new Promise((resolve) => {
       db.get(
-        'SELECT COUNT(*) as count FROM transactions WHERE timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http","zivpn") AND reference_id NOT LIKE "account-trial-%"',
+        'SELECT COUNT(*) as count FROM transactions WHERE timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http","zivpn") AND (reference_id IS NULL OR reference_id NOT LIKE "account-trial-%")',
         [todayStart],
         (err, row) => resolve(row ? row.count : 0)
       );
     });
     globalWeek = await new Promise((resolve) => {
       db.get(
-        'SELECT COUNT(*) as count FROM transactions WHERE timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http","zivpn") AND reference_id NOT LIKE "account-trial-%"',
+        'SELECT COUNT(*) as count FROM transactions WHERE timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http","zivpn") AND (reference_id IS NULL OR reference_id NOT LIKE "account-trial-%")',
         [weekStart],
         (err, row) => resolve(row ? row.count : 0)
       );
     });
     globalMonth = await new Promise((resolve) => {
       db.get(
-        'SELECT COUNT(*) as count FROM transactions WHERE timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http","zivpn") AND reference_id NOT LIKE "account-trial-%"',
+        'SELECT COUNT(*) as count FROM transactions WHERE timestamp >= ? AND type IN ("ssh","vmess","vless","trojan","shadowsocks","udp_http","zivpn") AND (reference_id IS NULL OR reference_id NOT LIKE "account-trial-%")',
         [monthStart],
         (err, row) => resolve(row ? row.count : 0)
       );
@@ -8982,9 +8979,9 @@ bot.action('hapus_saldo', async (ctx) => {
 });
 
 //callback handller statistik reseller
-bot.action('reseller_stats', async (ctx) => {
+async function handleResellerStats(ctx) {
   try {
-    await ctx.answerCbQuery();
+    await ctx.answerCbQuery().catch(() => {});
     const userId = ctx.from.id;
     
     // Cek reseller
@@ -9010,16 +9007,15 @@ bot.action('reseller_stats', async (ctx) => {
       
       const saldo = user ? user.saldo : 0;
       const now = new Date();
-      const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
-      const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+      const monthRange = getMonthRange(0);
       
       db.all(
         `SELECT type, COUNT(*) as count FROM transactions 
-         WHERE user_id = ? AND timestamp >= ? AND timestamp <= ?
+         WHERE user_id = ? AND timestamp >= ? AND timestamp < ?
          AND type IN ('ssh', 'vmess', 'vless', 'trojan', 'shadowsocks', 'zivpn', 'udp_http')
-         AND reference_id NOT LIKE 'account-trial-%'
+         AND (reference_id IS NULL OR reference_id NOT LIKE 'account-trial-%')
          GROUP BY type`,
-        [userId, firstDay.getTime(), lastDay.getTime()],
+        [userId, monthRange.start, monthRange.end],
         async (err, rows) => {
           // ✅ HAPUS PESAN LOADING SETELAH DATA SIAP
           try {
@@ -9036,8 +9032,8 @@ bot.action('reseller_stats', async (ctx) => {
           const totalTopup = await new Promise((resolve) => {
             db.get(
               `SELECT SUM(amount) as total FROM transactions
-               WHERE user_id = ? AND timestamp >= ? AND timestamp <= ? AND type = 'deposit'`,
-              [userId, firstDay.getTime(), lastDay.getTime()],
+               WHERE user_id = ? AND timestamp >= ? AND timestamp < ? AND type = 'deposit'`,
+              [userId, monthRange.start, monthRange.end],
               (err2, row2) => resolve(!err2 && row2 && row2.total ? row2.total : 0)
             );
           });
@@ -9082,12 +9078,13 @@ bot.action('reseller_stats', async (ctx) => {
     logger.error('Error di reseller_stats:', error);
     await ctx.reply('❌ Terjadi kesalahan.');
   }
-});
+}
+
+bot.action('reseller_stats', handleResellerStats);
 
 // Handler untuk refresh
 bot.action('reseller_stats_refresh', async (ctx) => {
-  await ctx.answerCbQuery();
-  await bot.action['reseller_stats'](ctx); // Panggil ulang handler
+  await handleResellerStats(ctx);
 });
 
 //handler untuk add server reseller
@@ -16207,7 +16204,7 @@ async function recordAccountTransaction(userId, type, amount = 0, action = 'othe
                 `SELECT COUNT(*) as count FROM transactions 
                  WHERE user_id = ? AND timestamp >= ? 
                  AND type IN ('ssh', 'vmess', 'vless', 'trojan', 'shadowsocks', 'zivpn', 'udp_http')
-                 AND reference_id NOT LIKE 'account-trial-%'`,
+                  AND (reference_id IS NULL OR reference_id NOT LIKE 'account-trial-%')`,
                 [userId, firstDay.getTime()],
                 (err, row) => {
                   if (!err && row) {
@@ -16267,7 +16264,7 @@ schedule.scheduleJob('reseller_monthly_check', resellerRule, async () => {
     const year = now.getFullYear();
     const month = now.getMonth();
     const start = new Date(year, month - 1, 1, 0, 0, 0, 0);
-    const end = new Date(year, month, 0, 23, 59, 59, 999);
+    const end = new Date(year, month, 1, 0, 0, 0, 0);
     const periodLabel = start.toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
     await evaluateResellerTermsForPeriod(start.getTime(), end.getTime(), periodLabel);
   } catch (err) {
