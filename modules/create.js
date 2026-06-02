@@ -2,6 +2,10 @@
 const { exec } = require('child_process');
 const sqlite3 = require('sqlite3').verbose();
 const db = new sqlite3.Database('./sellvpn.db');
+const CREATE_REQUEST_TIMEOUT_SECONDS = Math.max(
+  30,
+  Number(process.env.CREATE_REQUEST_TIMEOUT_SECONDS || process.env.CREATE_REQUEST_TIMEOUT || 120) || 120
+);
 
 function normalizeApiBase(rawDomain) {
   const value = String(rawDomain || '').trim();
@@ -49,6 +53,24 @@ function splitCurlOutput(rawOut) {
 function isHttp2xx(statusCode) {
   return Number(statusCode) >= 200 && Number(statusCode) < 300;
 }
+
+function shortText(input, maxLen = 900) {
+  const text = String(input || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length > maxLen ? `${text.slice(0, maxLen - 3)}...` : text;
+}
+
+function invalidServerResponseMessage(statusCode, body, stderr, errExec) {
+  const parts = ['Format respon dari server tidak valid.'];
+  if (statusCode) parts.push(`HTTP: ${statusCode}`);
+  if (errExec?.message) parts.push(`Curl: ${shortText(errExec.message, 180)}`);
+  if (stderr) parts.push(`Stderr: ${shortText(stderr, 260)}`);
+  if (body) parts.push(`Body: ${shortText(body, 600)}`);
+  if (!statusCode && !body) {
+    parts.push(`Server tidak merespon dalam ${CREATE_REQUEST_TIMEOUT_SECONDS} detik atau koneksi terputus.`);
+  }
+  return `❌ ${parts.join('\n')}`;
+}
 async function createssh(username, password, exp, iplimit, serverId, telegramUserId = '', telegramChatId = '') {
   console.log(`Creating SSH account for ${username} with expiry ${exp} days, IP limit ${iplimit}, and password ${password}`);
 
@@ -75,7 +97,7 @@ async function createssh(username, password, exp, iplimit, serverId, telegramUse
       const KUOTA = "0"; // jika perlu di-hardcode, bisa diubah jadi parameter juga
       const LIMIT_IP = iplimit;
 
-      const curlCommand = `curl -k -sS -L --connect-timeout 10 --max-time 30 -X POST "${web_URL}" \
+      const curlCommand = `curl -k -sS -L --connect-timeout 10 --max-time ${CREATE_REQUEST_TIMEOUT_SECONDS} -X POST "${web_URL}" \
 -H "Authorization: ${AUTH_TOKEN}" \
 -H "X-Telegram-User-Id: ${telegramUserId}" \
 -H "X-Telegram-Chat-Id: ${telegramChatId}" \
@@ -94,7 +116,7 @@ async function createssh(username, password, exp, iplimit, serverId, telegramUse
           if (errExec) console.error('Curl request gagal:', errExec.message);
           if (stderr) console.error('Curl stderr:', stderr);
           console.error('Output:', body);
-          return resolve('Ã¢ÂÅ’ Format respon dari server tidak valid.');
+          return resolve(invalidServerResponseMessage(statusCode, body, stderr, errExec));
         }
 
         if (d?.meta?.code !== 200 || !d.data) {
@@ -178,7 +200,7 @@ async function createudphttp(username, password, exp, iplimit, serverId, telegra
       const KUOTA = "0";
       const LIMIT_IP = iplimit;
 
-      const curlCommand = `curl -k -sS -L --connect-timeout 10 --max-time 30 -X POST "${web_URL}" \
+      const curlCommand = `curl -k -sS -L --connect-timeout 10 --max-time ${CREATE_REQUEST_TIMEOUT_SECONDS} -X POST "${web_URL}" \
 -H "Authorization: ${AUTH_TOKEN}" \
 -H "X-Telegram-User-Id: ${telegramUserId}" \
 -H "X-Telegram-Chat-Id: ${telegramChatId}" \
@@ -197,7 +219,7 @@ async function createudphttp(username, password, exp, iplimit, serverId, telegra
           if (errExec) console.error('Curl request gagal:', errExec.message);
           if (stderr) console.error('Curl stderr:', stderr);
           console.error('Output:', body);
-          return resolve('Ã¢ÂÅ’ Format respon dari server tidak valid.');
+          return resolve(invalidServerResponseMessage(statusCode, body, stderr, errExec));
         }
 
         if (d?.meta?.code !== 200 || !d.data) {
@@ -255,7 +277,7 @@ async function createvmess(username, exp, quota, limitip, serverId, telegramUser
       const KUOTA = quota;
       const LIMIT_IP = limitip;
 
-      const curlCommand = `curl -k -sS -L --connect-timeout 10 --max-time 30 -X POST "${web_URL}" \
+      const curlCommand = `curl -k -sS -L --connect-timeout 10 --max-time ${CREATE_REQUEST_TIMEOUT_SECONDS} -X POST "${web_URL}" \
 -H "Authorization: ${AUTH_TOKEN}" \
 -H "X-Telegram-User-Id: ${telegramUserId}" \
 -H "X-Telegram-Chat-Id: ${telegramChatId}" \
@@ -274,7 +296,7 @@ async function createvmess(username, exp, quota, limitip, serverId, telegramUser
           if (errExec) console.error('Curl request failed:', errExec.message);
           if (stderr) console.error('Curl stderr:', stderr);
           console.error('Output:', body);
-          return resolve('Format respon dari server tidak valid.');
+          return resolve(invalidServerResponseMessage(statusCode, body, stderr, errExec));
         }
 
         if (d?.meta?.code !== 200 || !d.data) {
@@ -394,7 +416,7 @@ async function createvless(username, exp, quota, limitip, serverId, telegramUser
       const KUOTA = quota;
       const LIMIT_IP = limitip;
 
-      const curlCommand = `curl -k -sS -L --connect-timeout 10 --max-time 30 -X POST "${web_URL}" \
+      const curlCommand = `curl -k -sS -L --connect-timeout 10 --max-time ${CREATE_REQUEST_TIMEOUT_SECONDS} -X POST "${web_URL}" \
 -H "Authorization: ${AUTH_TOKEN}" \
 -H "X-Telegram-User-Id: ${telegramUserId}" \
 -H "X-Telegram-Chat-Id: ${telegramChatId}" \
@@ -413,7 +435,7 @@ async function createvless(username, exp, quota, limitip, serverId, telegramUser
           if (errExec) console.error('Curl request gagal:', errExec.message);
           if (stderr) console.error('Curl stderr:', stderr);
           console.error('Output:', body);
-          return resolve('Ã¢ÂÅ’ Format respon dari server tidak valid.');
+          return resolve(invalidServerResponseMessage(statusCode, body, stderr, errExec));
         }
 
         if (d?.meta?.code !== 200 || !d.data) {
@@ -504,7 +526,7 @@ async function createtrojan(username, exp, quota, limitip, serverId, telegramUse
       const KUOTA = quota;
       const LIMIT_IP = limitip;
 
-      const curlCommand = `curl -k -sS -L --connect-timeout 10 --max-time 30 -X POST "${web_URL}" \
+      const curlCommand = `curl -k -sS -L --connect-timeout 10 --max-time ${CREATE_REQUEST_TIMEOUT_SECONDS} -X POST "${web_URL}" \
 -H "Authorization: ${AUTH_TOKEN}" \
 -H "X-Telegram-User-Id: ${telegramUserId}" \
 -H "X-Telegram-Chat-Id: ${telegramChatId}" \
@@ -523,7 +545,7 @@ async function createtrojan(username, exp, quota, limitip, serverId, telegramUse
           if (errExec) console.error('Curl request gagal:', errExec.message);
           if (stderr) console.error('Curl stderr:', stderr);
           console.error('Output:', body);
-          return resolve('Ã¢ÂÅ’ Format respon dari server tidak valid.');
+          return resolve(invalidServerResponseMessage(statusCode, body, stderr, errExec));
         }
 
         if (d?.meta?.code !== 200 || !d.data) {
