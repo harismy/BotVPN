@@ -71,6 +71,13 @@ function invalidServerResponseMessage(statusCode, body, stderr, errExec) {
   }
   return `❌ ${parts.join('\n')}`;
 }
+
+function locationFromServerPayload(s) {
+  return {
+    city: s?.city || s?.kota || s?.location || '-',
+    isp: s?.isp || s?.org || s?.organization || '-'
+  };
+}
 async function createssh(username, password, exp, iplimit, serverId, telegramUserId = '', telegramChatId = '') {
   console.log(`Creating SSH account for ${username} with expiry ${exp} days, IP limit ${iplimit}, and password ${password}`);
 
@@ -126,6 +133,7 @@ async function createssh(username, password, exp, iplimit, serverId, telegramUse
         }
 
         const s = d.data;
+        const { city, isp } = locationFromServerPayload(s);
 
         const msg = `
 =============================
@@ -141,6 +149,8 @@ async function createssh(username, password, exp, iplimit, serverId, telegramUse
 *[ HOST INFORMATION ]*
 -----------------------------
 *Hostname*     : \`${s.hostname}\`
+*City*         : \`${city}\`
+*ISP*          : \`${isp}\`
 *Username*     : \`${s.username}\`
 *Password*     : \`${s.password}\`
 *Expiry Date*  : \`${s.exp}\`
@@ -233,10 +243,13 @@ async function createudphttp(username, password, exp, iplimit, serverId, telegra
         const expired = s.exp || s.expired || s.to || 'N/A';
         const ipLimitText = LIMIT_IP === "0" ? "Unlimited" : LIMIT_IP;
         const copy = `${s.hostname}:${port}@${s.username}:${s.password}`;
+        const { city, isp } = locationFromServerPayload(s);
 
         const msg = `*UDP HTTP CUSTOM ACCOUNT*
 
 *Hostname*   : \`${s.hostname}\`
+*City*       : \`${city}\`
+*ISP*        : \`${isp}\`
 *Username*   : \`${s.username}\`
 *Password*   : \`${s.password}\`
 *Port*       : \`${port}\`
@@ -308,8 +321,7 @@ async function createvmess(username, exp, quota, limitip, serverId, telegramUser
         const s = d.data;
 
         const remarks = s.remark || s.remarks || s.username || username;
-        const city = s.city || s.kota || s.location || '-';
-        const isp = s.isp || s.org || s.organization || '-';
+        const { city, isp } = locationFromServerPayload(s);
         const pathWs = (s.path && (s.path.ws || s.path.stn)) || s.path || '/vmess';
         const serviceName = s.serviceName || 'vmess';
         const pathUpgrade = s.path && (s.path.upgrade || s.path.up || s.path.upws)
@@ -445,6 +457,7 @@ async function createvless(username, exp, quota, limitip, serverId, telegramUser
         }
 
         const s = d.data;
+        const { city, isp } = locationFromServerPayload(s);
 
         const msg = `
 =============================
@@ -484,6 +497,8 @@ Up Non-TLS:
 -----------------------------
 *Domain*      : \`${s.hostname}\`
 *SNI*         : \`${s.hostname}\`
+*City*        : \`${city}\`
+*ISP*         : \`${isp}\`
 
 *[ PORTS ]*
 -----------------------------
@@ -555,6 +570,7 @@ async function createtrojan(username, exp, quota, limitip, serverId, telegramUse
         }
 
         const s = d.data;
+        const { city, isp } = locationFromServerPayload(s);
 
         const msg = `
 =============================
@@ -588,6 +604,8 @@ Up TLS:
 -----------------------------
 *Domain*      : \`${s.hostname}\`
 *SNI*         : \`${s.hostname}\`
+*City*        : \`${city}\`
+*ISP*         : \`${isp}\`
 
 *[ PORTS ]*
 -----------------------------
